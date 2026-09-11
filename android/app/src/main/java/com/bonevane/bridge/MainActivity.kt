@@ -55,6 +55,12 @@ class MainActivity : Activity() {
 
     /** The Mac's "Set up over USB" button opens the app with ACTION_START. */
     private fun handleIntent(intent: Intent?) {
+        // Experiment: `am start -a com.bonevane.bridge.ADB_CYCLE` turns USB
+        // debugging off, then back on 20 s later, using WRITE_SECURE_SETTINGS.
+        if (intent?.action == "com.bonevane.bridge.ADB_CYCLE") {
+            AdbToggle.cycle(this)
+            return
+        }
         if (intent?.action == TunnelService.ACTION_START || Prefs.wantRunning(this)) {
             TunnelService.start(this)
         }

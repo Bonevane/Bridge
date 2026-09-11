@@ -1,107 +1,64 @@
+<p align="center">
+  <img src="assets/bridge-banner.png" height=400 width="auto" alt="Bridge Banner" />
+</p>
+
 # Bridge
-### **Your Android phone, on your Mac, from anywhere**
 
-<div><img src="assets/bridge-banner.png"></div>
+<p align="center">
+  <b>Your Android phone, on your Mac, from anywhere</b>
+</p>
+<p align="center">
+  See and control a locked phone over any network, with nothing left listening when you're done.
+</p>
 
-Your phone is in a bag across town, locked, on cellular. Click **Connect** on your Mac and it's on your screen: unlock it, read the message, tap the thing, done. No cable, no same-Wi-Fi, no cloud service holding your screen, and nothing left listening on the network when you're finished.
+<div align="center">
 
----
+  <img src="https://img.shields.io/badge/Status-Working%20Prototype-orange?style=for-the-badge" alt="Status" />
+  <img src="https://img.shields.io/badge/Stack-Kotlin%20%7C%20Swift%20%7C%20iroh-blue?style=for-the-badge" alt="Stack" />
+  <img src="https://img.shields.io/badge/Platforms-Android%2011%2B%20%7C%20macOS%2013%2B-green?style=for-the-badge" alt="Platforms" />
 
-## 🧩 The Problem
+</div>
 
-Remote-controlling your own Android phone is oddly hard for a device you own:
+<br>
 
-- 🔌 **scrcpy** is excellent, but it's tied to ADB: a cable, or the phone on the same Wi-Fi with a port that changes on every reboot.
-- 🔒 **Screen-mirroring apps** can't show the lock screen. Android 14+ asks for consent every session and stops capture when the phone locks, so you can't unlock from afar.
-- 🌐 **KDE Connect** finds devices by broadcasting on the LAN; a VPN or a cellular connection breaks it.
-- 🏦 **Banking apps** refuse to run while USB debugging is on, so "just leave adb enabled" isn't an option for a daily phone.
-- ☁️ **Vendor clouds** (Samsung, etc.) work, when they work, by routing your screen through their servers.
+## <img src="https://api.iconify.design/lucide/telescope.svg?color=%2334d399" width="24" height="24"> The Problem
+Remote-controlling a phone you own is strangely hard. The tools exist, but each one stops exactly where daily life begins.
 
-**Nothing does "locked phone, any network, no exposure, no monthly fee."**
+<table width="100%">
+  <tr>
+    <td width="33%" valign="top">
+      <h3 align="center"><img src="https://api.iconify.design/lucide/cable.svg?color=%2334d399" width="20" height="20"> Tied to ADB</h3>
+      <p align="center">scrcpy is excellent, but it needs a cable or the same Wi-Fi, and a port that changes on every reboot.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3 align="center"><img src="https://api.iconify.design/lucide/lock.svg?color=%2334d399" width="20" height="20"> Locked Out</h3>
+      <p align="center">Mirroring apps can't show the lock screen. Android 14+ stops capture the moment the phone locks, so you can't unlock it from afar.</p>
+    </td>
+    <td width="33%" valign="top">
+      <h3 align="center"><img src="https://api.iconify.design/lucide/landmark.svg?color=%2334d399" width="20" height="20"> Banking Apps</h3>
+      <p align="center">They refuse to run while USB debugging is on. "Just leave adb enabled" is not an option on a real phone.</p>
+    </td>
+  </tr>
+</table>
 
----
+<br>
 
-## 💡 How Bridge Does It
+## <img src="https://api.iconify.design/lucide/cpu.svg?color=%2334d399" width="24" height="24"> The Solution
+Bridge treats it as a **connectivity and privilege problem**, not a screen-sharing problem. Each phone has a permanent key; the Mac dials that key over [iroh](https://iroh.computer) (direct when possible, encrypted relay when not). The phone grants itself shell privileges through a one-second wireless-debugging window on localhost, runs scrcpy's capture code, and forwards the streams to a native Mac viewer.
 
-🔑 **Devices, not accounts.** Each phone has a permanent key. The Mac dials it by that key over [iroh](https://iroh.computer): direct when possible, through an encrypted relay when not. Works on cellular and with VPNs on both ends.
+### How it works
+<p align="center">
+  <img src="assets/bridge-architecture.png" width="auto" height="400" alt="Architecture Diagram" />
+</p>
 
-🛡️ **Privileges only when needed.** The phone starts its own shell-level helper through a one-second wireless-debugging window on localhost, using ADB's own protocol and its own already-trusted key. No pairing code, no computer, no Shizuku.
+1.  **Tunnel:** The phone keeps an outbound iroh connection open (bundled `dumbpipe`, foreground service). Works on cellular and with VPNs on both ends.
+2.  **Wake:** The Mac sends `START`. The phone turns USB debugging on, opens wireless debugging on a random localhost port for about a second, and connects to its own adbd with its own already-trusted key. No pairing code, no computer.
+3.  **Daemon:** Over that connection it spawns a shell-uid helper with `app_process`, then closes the window. The helper launches scrcpy's server and relays its video, audio and control sockets.
+4.  **Session:** The Mac decodes H.264 with `AVSampleBufferDisplayLayer` and AAC with AudioToolbox, and turns mouse and keyboard into scrcpy control messages. Bitrate adapts to the link.
+5.  **Lock down:** Disconnect turns USB debugging off again. Or keep it ready for cellular and pause it from a Quick Settings tile when a banking app complains.
 
-🎥 **scrcpy's server, our client.** The phone runs scrcpy's battle-tested capture and input code; the Mac runs a small native viewer (hardware H.264 decode, AAC audio), so no `adb` ever listens on your network during a session.
-
-🏦 **Locked down by default.** Disconnect turns USB debugging off again. Or keep it ready for cellular and pause it with a Quick Settings tile when a banking app complains. Your choice.
-
-### What Makes Bridge Different
-
-**Lock screen included** 🔓
-Because the helper runs with shell privileges, the lock screen is just another screen. Type the PIN from your keyboard.
-
-**Verified zero network exposure** 🔍
-During a session the phone has no ADB listener on any interface (we port-scanned it to be sure). The only window is ~1 s of wireless debugging on a Wi-Fi network you've approved, at bootstrap.
-
-**Survives reboots without a cable** 🔁
-After a restart the phone bootstraps itself the next time it sees Wi-Fi. Cellular-only after a reboot is the one case that needs Wi-Fi first: a deliberate trade-off for security.
-
-**Adapts to the link** 📶
-The viewer watches how far behind the stream falls and steps the bitrate down (and back up) by restarting the encoder. Relayed cellular sessions stay usable.
-
----
-
-## 🎥 Demo
-
-<!-- ![Bridge demo](assets/demo.gif) -->
-
-**[🎬 Watch the demo](#)** *(coming)*
-
----
-
-## ✨ Features
-
-### 📱 Phone (Android 11+, tested on Pixel 9 Pro / Android 17)
-- Foreground service holding the iroh tunnel (bundled `dumbpipe`, permanent identity)
-- Built-in ADB client (RSA auth and TLS) that talks to the phone's own adbd over loopback
-- Shell-uid daemon started with `app_process`; spawns scrcpy-server and relays its sockets
-- Wi-Fi bootstrap after reboot via mDNS + TLS, no pairing
-- Lock-down / keep-ready setting, "Pause for banking" button and Quick Settings tile
-- Self-update through the tunnel (`pm install` by the daemon)
-
-### 💻 Mac (macOS 13+, menu-bar app)
-- **Connect** / **Disconnect**, ticket pairing over USB once
-- Native viewer: `AVSampleBufferDisplayLayer` H.264, `AudioToolbox` AAC
-- Touch, drag, hover, scroll, keyboard, ⌘B back · ⌘H home · ⌘R recents · ⌘N notifications · ⌘P power · ⌘O screen off
-- Options: bitrate, max size, phone screen off, mute phone while mirroring, keep ready
-- Dock icon only while a phone window is open
-
-### 📋 Control protocol (one port, one ticket)
-```
-START            bring the phone up (USB debugging on, daemon spawned)   → OK daemon running
-STOP             end of session: USB debugging off (unless keep-ready / on cellular)
-PAUSE 15         off for 15 minutes, auto-resume on Wi-Fi if keep-ready
-MODE keep|lock   the user's choice
-VIDEO <opts>     raw scrcpy video stream        AUDIO <scid>    AAC stream
-CTRL <scid>      scrcpy control messages        INSTALL <n>     APK bytes → pm install
-```
-
----
-
-## 🛠️ Tech Stack
-
-### Phone
-- **Kotlin**, no third-party libraries
-- **dumbpipe / iroh** — QUIC, hole punching, relay fallback (prebuilt musl binary)
-- **scrcpy-server** — capture, encode, input (Apache-2.0, bundled as-is)
-- ADB client adapted from **Shizuku** (Apache-2.0)
-
-### Mac
-- **Swift Package**, SwiftUI `MenuBarExtra` + AppKit
-- **AVFoundation / AudioToolbox** for decoding
-- **dumbpipe** (Homebrew) for the tunnel; `adb` only for the one-time USB setup
-
----
-
-## 🏗️ Architecture
-
-<!-- ![Architecture](assets/architecture.png) -->
+<details>
+<summary>Text version of the diagram</summary>
 
 ```
  Mac                                      Phone
@@ -121,12 +78,47 @@ CTRL <scid>      scrcpy control messages        INSTALL <n>     APK bytes → pm
                                          │       USB only, no TCP listener     │
                                          └─────────────────────────────────────┘
 ```
+</details>
 
-**Bootstrap** (once per boot, or after a lock-down): app sets `adb_enabled=1` and `adb_wifi_enabled=1` → finds adbd's port via mDNS → TLS with its own trusted key → `app_process … Daemon` → `adb_wifi_enabled=0`. About one second.
+<br>
 
----
+## <img src="https://api.iconify.design/lucide/shield-check.svg?color=%2334d399" width="24" height="24"> Security Model
+We port-scanned the phone during a session to make sure of this.
 
-## 🚀 Getting Started
+| **When**                  | **What's reachable**                                                                                       |
+| :------------------------ | :--------------------------------------------------------------------------------------------------------- |
+| **Idle (default)**        | USB debugging off. Nothing from Bridge but the outbound tunnel. Banking apps see a normal phone.           |
+| **Bootstrap (~1 s)**      | Wireless debugging on a random port, only on Wi-Fi networks you approved, gated by adbd's key check.       |
+| **During a session**      | No ADB listener on any interface. adbd is USB-only; the daemon and proxy bind to loopback.                 |
+| **Over the internet**     | Only someone holding the ticket. End-to-end encrypted QUIC; relays forward ciphertext.                     |
+| **Known gap**             | Other apps on the phone can reach the loopback ports. A shared secret between app and daemon is planned.   |
+
+<br>
+
+## <img src="https://api.iconify.design/lucide/layers.svg?color=%2334d399" width="24" height="24"> Tech Stack
+No third-party libraries in either app. Two carefully chosen binaries do the heavy lifting.
+
+| **Component**        | **Technology**                                                                                                | **Description**                                                                            |
+| :------------------- | :------------------------------------------------------------------------------------------------------------ | :----------------------------------------------------------------------------------------- |
+| **Phone app**        | <img src="https://skillicons.dev/icons?i=kotlin,androidstudio,gradle" valign="middle" />                       | Kotlin, no dependencies. Foreground service, in-app ADB client (RSA + TLS), Wi-Fi bootstrap. |
+| **Mac app**          | <img src="https://skillicons.dev/icons?i=swift,apple" valign="middle" />                                       | Swift Package: SwiftUI menu bar, AppKit viewer, AVFoundation and AudioToolbox decoding.    |
+| **Connectivity**     | <img src="https://skillicons.dev/icons?i=rust" valign="middle" />                                              | [iroh](https://github.com/n0-computer/iroh) via `dumbpipe`: QUIC, hole punching, relay fallback. |
+| **Capture & input**  | <img src="https://raw.githubusercontent.com/Genymobile/scrcpy/master/app/data/icon.svg" width="40" valign="middle" /> | [scrcpy](https://github.com/Genymobile/scrcpy)'s server, bundled as-is, run by our shell-uid daemon. |
+| **ADB client**       | <img src="https://api.iconify.design/lucide/terminal.svg?color=%2334d399" width="36" valign="middle" />        | Adapted from [Shizuku](https://github.com/RikkaApps/Shizuku); talks to the phone's own adbd over loopback. |
+
+<br>
+
+## <img src="https://api.iconify.design/lucide/images.svg?color=%2334d399" width="24" height="24"> Visuals
+
+| Mac menu | Phone window |
+| :---: | :---: |
+| <img src="assets/screenshot-menu.png" width="100%"/> | <img src="assets/screenshot-window.png" width="100%" /> |
+| **Phone app** | **Quick Settings tile** |
+| <img src="assets/screenshot-phone.png" width="100%" /> | <img src="assets/screenshot-tile.png" width="100%" /> |
+
+<br>
+
+## <img src="https://api.iconify.design/lucide/rocket.svg?color=%2334d399" width="24" height="24"> Getting Started
 
 ```bash
 brew install dumbpipe && brew install --cask android-platform-tools
@@ -144,42 +136,40 @@ echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
 cd mac && ./make-app.sh && open build/Bridge.app
 ```
 
-Then: enable USB debugging, plug in, **Set up over USB** in the menu (grants the phone app the one permission it needs and copies the ticket), accept "Allow USB debugging" for `bridge@phone` with *Always allow*. Unplug. **Connect.**
+Then, once: enable USB debugging, plug in, **Set up over USB** in the menu, accept "Allow USB debugging" for `bridge@phone` with *Always allow*. Unplug. **Connect.** The first time on each Wi-Fi network, Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
 
-First time on each Wi-Fi network, Android asks "Allow wireless debugging on this network?" once; tick *Always allow on this network*.
+Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N notifications · ⌘P power · ⌘O screen off · right-click back.
 
----
+<br>
 
-## 🔐 Security Model
+## <img src="https://api.iconify.design/lucide/map.svg?color=%2334d399" width="24" height="24"> Roadmap
+- [x] **Tunnel:** iroh connection with a permanent identity; works on cellular and through VPNs
+- [x] **Remote wake:** phone turns USB debugging on and starts its own privileged daemon on request
+- [x] **Reboot without cable:** Wi-Fi bootstrap via mDNS + TLS, no pairing
+- [x] **adb-free sessions:** native viewer, no ADB port on the network while mirroring
+- [x] **Audio:** AAC stream, optional mute of the phone's own speaker
+- [x] **Adaptive bitrate:** steps down on a slow link, back up when it clears
+- [x] **Banking mode:** lock down by default, or keep ready with a Quick Settings pause tile
+- [x] **Self-update:** new builds installed through the tunnel
+- [ ] **Clipboard sync** and file drop
+- [ ] **Notification mirroring**
+- [ ] **Auto-pause** when a listed app comes to the foreground
+- [ ] **Device pairing:** approve new Macs on the phone instead of a bearer ticket
+- [ ] **iroh in-app:** replace the dumbpipe binary with the library; self-hosted relay
+- [ ] **More clients:** Linux and Windows
 
-| | |
-|---|---|
-| **Who can connect** | Anyone holding the ticket. Treat it like a password. (Device-key pairing with a phone-side prompt is on the roadmap.) |
-| **On the network during a session** | Nothing from ADB. adbd runs USB-only; the daemon and proxy bind to loopback. |
-| **At bootstrap** | Wireless debugging on a random port for ~1 s, only on Wi-Fi networks you approved, gated by adbd's key check. |
-| **When idle (default)** | USB debugging off. Banking apps see a normal phone. |
-| **Relay** | End-to-end encrypted QUIC; the relay forwards ciphertext. Public n0 relays for now; self-hosting is a config change. |
-| **Known gap** | Other apps on the phone can reach the loopback ports (5580/5577). A shared secret between app and daemon will close this. |
+<br>
 
----
-
-## 🔮 Roadmap
-
-**Milestone 1** ✅ Tunnel + scrcpy over adb *(superseded)*
-**Milestone 1.5** ✅ USB debugging off by default, remote wake, reboot without cable
-**Milestone 2** ✅ adb-free sessions: native viewer, audio, adaptive bitrate, self-update
-**Milestone 3** 🚧 Clipboard sync, file drop, notification mirroring, auto-pause for listed apps
-**Milestone 4** 📋 Device-key pairing with on-phone approval, self-hosted relay, iroh in-app (drop the dumbpipe binary), Linux/Windows clients
-
----
-
-## 🙏 Acknowledgments
-
-- [scrcpy](https://github.com/Genymobile/scrcpy) — the server does the real work on the phone
-- [iroh](https://github.com/n0-computer/iroh) and [dumbpipe](https://github.com/n0-computer/dumbpipe) — connectivity that just works
-- [Shizuku](https://github.com/RikkaApps/Shizuku) — the in-app ADB client is adapted from theirs
-- [thedjchi's Shizuku fork](https://github.com/thedjchi/Shizuku/wiki) — for showing the intent/TCP-mode trick that unlocked the banking-app problem
+## <img src="https://api.iconify.design/lucide/heart-handshake.svg?color=%2334d399" width="24" height="24"> Acknowledgements
+- [scrcpy](https://github.com/Genymobile/scrcpy): the server does the real work on the phone
+- [iroh](https://github.com/n0-computer/iroh) and [dumbpipe](https://github.com/n0-computer/dumbpipe): connectivity that just works
+- [Shizuku](https://github.com/RikkaApps/Shizuku): the in-app ADB client is adapted from theirs
+- [thedjchi's Shizuku fork](https://github.com/thedjchi/Shizuku/wiki): for the TCP-mode-and-intents trick that unlocked the banking-app problem
 
 See `NOTICE` for licenses.
 
----
+<br>
+
+<p align="center">
+  <sub>Built with <img src="https://api.iconify.design/lucide/heart.svg?color=%2334d399" width="12" height="12"> for a phone that's never where you are.</sub>
+</p>

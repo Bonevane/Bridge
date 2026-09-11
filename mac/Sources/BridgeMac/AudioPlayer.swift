@@ -51,16 +51,28 @@ final class AudioPlayer {
         var output = format.streamDescription.pointee
         var c: AudioConverterRef?
         guard AudioConverterNew(&input, &output, &c) == noErr, let conv = c else { return }
-        cookie.withUnsafeBytes { _ = AudioConverterSetProperty(conv, kAudioConverterDecompressionMagicCookie, UInt32(cookie.count), $0.baseAddress!) }
+        // CoreAudio wants the AudioSpecificConfig wrapped in an MPEG-4 ES descriptor
+        // (what an .mp4's "esds" box holds), not the bare 2 bytes scrcpy sends.
+        let wrapped = esds(cookie)
+        wrapped.withUnsafeBytes { _ = AudioConverterSetProperty(conv, kAudioConverterDecompressionMagicCookie, UInt32(wrapped.count), $0.baseAddress!) }
         converter = conv
         if !started {
             do { try engine.start(); started = true } catch { return }
         }
     }
 
+    /// ES_Descriptor { DecoderConfigDescriptor { DecoderSpecificInfo = asc }, SLConfig }.
+    private func esds(_ asc: [UInt8]) -> [UInt8] {
+        func tag(_ t: UInt8, _ body: [UInt8]) -> [UInt8] { [t, 0x80, 0x80, 0x80, UInt8(body.count)] + body }
+        let dsi = tag(0x05, asc)
+        let dcd = tag(0x04, [0x40, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] + dsi)   // AAC, audio stream
+        return tag(0x03, [0, 0, 0] + dcd + tag(0x06, [0x02]))
+    }
+
     /// One AAC packet in, up to 1024 frames of PCM out.
     private func decode(_ packet: [UInt8], with converter: AudioConverterRef) -> AVAudioPCMBuffer? {
         guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024) else { return nil }
+        pcm.frameLength = 1024   // the converter reads the output sizes from this
         var frames: UInt32 = 1024
         // Copy the packet into memory we own for the duration of the call; the
         // converter's callback hands AudioToolbox a pointer into it.

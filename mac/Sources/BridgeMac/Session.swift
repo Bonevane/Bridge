@@ -20,13 +20,46 @@ final class Session {
     var onEnd: ((String?) -> Void)?
     var onLog: ((String) -> Void)?
 
+    // MARK: Adaptive bitrate
+    //
+    // Each frame carries the phone's capture time (PTS). If frames arrive later
+    // and later relative to their PTS, the link can't carry the bitrate: bits
+    // are queueing up somewhere between the encoder and us. The encoder can't
+    // change bitrate live, so we restart the stream one step lower (the window
+    // just gets a fresh keyframe). After a quiet stretch we step back up.
+    private var baseOptions = ""
+    private var targetBitrate = 0          // bits/s the user chose
+    private var level = 0                  // 0 = target, 1 = half, 2 = quarter, 3 = eighth
+    private var restarting = false
+    private var firstPts: Int64 = 0, firstArrival: Double = 0
+    private var minLag: Double = .infinity
+    private var slowSince: Double? = nil
+    private var levelStart: Double = 0
+
     init(port: Int, player: H264Player) {
         self.port = port
         self.player = player
     }
 
     /// Opens both streams. Throws with a readable message on failure.
+    /// `options` are scrcpy server options; `video_bit_rate=` is managed here.
     func start(options: String) throws {
+        baseOptions = options.split(separator: " ").filter { !$0.hasPrefix("video_bit_rate=") }.joined(separator: " ")
+        if let bits = options.split(separator: " ").first(where: { $0.hasPrefix("video_bit_rate=") }) {
+            targetBitrate = Int(bits.dropFirst("video_bit_rate=".count)) ?? 4_000_000
+        }
+        try open()
+    }
+
+    private func currentOptions() -> String {
+        let bitrate = max(targetBitrate >> level, 300_000)
+        var opts = "\(baseOptions) video_bit_rate=\(bitrate)"
+        if level >= 3 { opts += " max_size=720" }   // keep text readable at very low rates
+        return opts
+    }
+
+    private func open() throws {
+        let options = currentOptions()
         let v = try TCPStream(port: port)
         try v.write("VIDEO \(options)\n")
         let reply = try v.readLine()
@@ -40,8 +73,44 @@ final class Session {
 
         video = v
         control = c
+        firstArrival = 0; minLag = .infinity; slowSince = nil; levelStart = Date().timeIntervalSince1970
         Thread(block: { [weak self] in self?.readVideo(v) }).start()
         Thread(block: { [weak self] in self?.readControl(c) }).start()
+    }
+
+    /// Restarts the stream one bitrate level up or down. Called from the video thread.
+    private func changeLevel(to newLevel: Int, reason: String) {
+        guard !restarting, !stopped, newLevel != level, (0...3).contains(newLevel) else { return }
+        restarting = true
+        level = newLevel
+        onLog?("\(reason): bitrate → \(max(targetBitrate >> level, 300_000) / 1000) kbps")
+        video?.closeStream(); control?.closeStream()
+        Thread { [weak self] in
+            guard let self = self else { return }
+            Thread.sleep(forTimeInterval: 0.3)   // let the phone tear the old server down
+            do { try self.open() } catch {
+                DispatchQueue.main.async { self.onEnd?("restart failed: \(error.localizedDescription)") }
+            }
+            self.restarting = false
+        }.start()
+    }
+
+    /// Per-frame lag bookkeeping. `pts` in microseconds from the phone.
+    private func observe(pts: Int64) {
+        let now = Date().timeIntervalSince1970
+        if firstArrival == 0 { firstArrival = now; firstPts = pts; return }
+        // How much later than "expected" did this frame arrive, relative to the first one?
+        let lag = (now - firstArrival) - Double(pts - firstPts) / 1_000_000
+        minLag = min(minLag, lag)
+        let backlog = lag - minLag           // seconds of queued video, roughly
+        if backlog > 0.5 {
+            if slowSince == nil { slowSince = now }
+            if now - slowSince! > 2, level < 3 { changeLevel(to: level + 1, reason: "Link is slow (\(Int(backlog * 1000)) ms behind)") }
+        } else {
+            slowSince = nil
+            // Clean for 30 s at a reduced level: try one step up.
+            if level > 0, now - levelStart > 30, backlog < 0.1 { changeLevel(to: level - 1, reason: "Link looks fine again") }
+        }
     }
 
     func stop() {
@@ -81,9 +150,10 @@ final class Session {
                 let isKey = ptsAndFlags & (1 << 61) != 0
                 let data = try s.readExactly(size)
                 player.handle(packet: data, isConfig: isConfig, isKeyframe: isKey)
+                if !isConfig { observe(pts: Int64(ptsAndFlags & ((1 << 61) - 1))) }
             }
         } catch {
-            if !stopped { DispatchQueue.main.async { self.onEnd?(error.localizedDescription) } }
+            if !stopped && !restarting && s === video { DispatchQueue.main.async { self.onEnd?(error.localizedDescription) } }
         }
     }
 

@@ -18,6 +18,15 @@ import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.RSAKeyGenParameterSpec
 import java.security.spec.RSAPublicKeySpec
 import javax.crypto.Cipher
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.X509ExtendedKeyManager
+import javax.net.ssl.X509ExtendedTrustManager
+import java.security.Principal
+import java.security.PrivateKey
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLEngine
 
 /*
  * A minimal ADB *client* that runs inside the phone and talks to the phone's
@@ -47,6 +56,7 @@ class AdbClient(private val host: String, private val port: Int, private val key
         const val A_STLS = 0x534C5453
         const val A_VERSION = 0x01000000
         const val A_MAXDATA = 4096
+        const val A_STLS_VERSION = 0x01000000
         const val AUTH_TOKEN = 1
         const val AUTH_SIGNATURE = 2
         const val AUTH_RSAPUBLICKEY = 3
@@ -69,8 +79,15 @@ class AdbClient(private val host: String, private val port: Int, private val key
         write(A_CNXN, A_VERSION, A_MAXDATA, "host::".cstr())
         var msg = read()
         if (msg.command == A_STLS) {
-            // Wireless debugging wants TLS; we only speak the classic RSA auth.
-            error("adbd requires TLS (wireless debugging); use TCP mode on port 5555")
+            // Wireless debugging: adbd wants a TLS handshake. Our client certificate
+            // carries the same RSA key the user already authorized, so adbd accepts
+            // it without the pairing dance.
+            write(A_STLS, A_STLS_VERSION, 0)
+            val tls = key.sslContext.socketFactory.createSocket(socket, host, port, true) as SSLSocket
+            tls.startHandshake()
+            input = DataInputStream(tls.inputStream)
+            output = DataOutputStream(tls.outputStream)
+            msg = read()
         }
         if (msg.command == A_AUTH) {
             check(msg.arg0 == AUTH_TOKEN) { "unexpected AUTH type ${msg.arg0}" }
@@ -86,10 +103,13 @@ class AdbClient(private val host: String, private val port: Int, private val key
     }
 
     /** Runs `shell:<command>` and returns its combined output. */
-    fun shell(command: String): String {
+    fun shell(command: String): String = service("shell:$command")
+
+    /** Opens any adbd service stream (e.g. `tcpip:5555`) and returns what it wrote. */
+    fun service(name: String): String {
         val localId = 1
         val out = StringBuilder()
-        write(A_OPEN, localId, 0, "shell:$command".cstr())
+        write(A_OPEN, localId, 0, name.cstr())
         var msg = read()
         when (msg.command) {
             A_OKAY -> while (true) {
@@ -192,6 +212,29 @@ class AdbKey private constructor(private val privateKey: RSAPrivateKey) {
 
     private val publicKey: RSAPublicKey = KeyFactory.getInstance("RSA")
         .generatePublic(RSAPublicKeySpec(privateKey.modulus, RSAKeyGenParameterSpec.F4)) as RSAPublicKey
+
+    /** TLS 1.3 context presenting our self-signed cert; adbd's cert is not verified (it's our own phone, over loopback). */
+    val sslContext: SSLContext by lazy {
+        val cert = SelfSignedCert.create(publicKey, privateKey)
+        val km = object : X509ExtendedKeyManager() {
+            override fun chooseClientAlias(keyTypes: Array<out String>?, issuers: Array<out Principal>?, socket: java.net.Socket?) = "key"
+            override fun getCertificateChain(alias: String?) = arrayOf(cert)
+            override fun getPrivateKey(alias: String?): PrivateKey = privateKey
+            override fun getClientAliases(keyType: String?, issuers: Array<out Principal>?) = arrayOf("key")
+            override fun getServerAliases(keyType: String?, issuers: Array<out Principal>?) = null
+            override fun chooseServerAlias(keyType: String?, issuers: Array<out Principal>?, socket: java.net.Socket?) = null
+        }
+        val tm = object : X509ExtendedTrustManager() {
+            override fun checkClientTrusted(c: Array<out X509Certificate>?, a: String?) {}
+            override fun checkClientTrusted(c: Array<out X509Certificate>?, a: String?, s: java.net.Socket?) {}
+            override fun checkClientTrusted(c: Array<out X509Certificate>?, a: String?, e: SSLEngine?) {}
+            override fun checkServerTrusted(c: Array<out X509Certificate>?, a: String?) {}
+            override fun checkServerTrusted(c: Array<out X509Certificate>?, a: String?, s: java.net.Socket?) {}
+            override fun checkServerTrusted(c: Array<out X509Certificate>?, a: String?, e: SSLEngine?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        }
+        SSLContext.getInstance("TLSv1.3").apply { init(arrayOf(km), arrayOf(tm), SecureRandom()) }
+    }
 
     fun sign(token: ByteArray?): ByteArray {
         val cipher = Cipher.getInstance("RSA/ECB/NoPadding")

@@ -91,6 +91,9 @@ class ControlProxy(private val ctx: Context) {
                 .onSuccess { reply("OK daemon running") }
                 .onFailure { reply("ERR ${it.message}") }
             "STOP" -> { DaemonManager.stop(ctx, disableAdb = true); reply("OK stopped, USB debugging off") }
+            "BOOTSTRAP" -> runCatching { WifiBootstrap.run(ctx) }
+                .onSuccess { reply("OK bootstrapped") }
+                .onFailure { reply("ERR ${it.message}") }
             "STATUS" -> {
                 val adb = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
                 reply("OK adb=$adb daemon=${DaemonManager.isDaemonAlive()}")

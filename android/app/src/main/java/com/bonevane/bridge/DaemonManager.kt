@@ -42,15 +42,14 @@ object DaemonManager {
             AdbToggle.set(ctx, true)
         }
 
-        // adbd takes a second or two to come up after the setting flips.
-        val client = AdbClient("127.0.0.1", ADB_PORT, AdbKey.load(ctx))
-        var lastError: Throwable? = null
-        for (attempt in 1..15) {
-            try { client.connect(); lastError = null; break } catch (e: Exception) {
-                lastError = e; Thread.sleep(1000)
-            }
+        // adbd takes a second or two to come up after the setting flips. If it
+        // never listens on 5555, the phone was rebooted: set TCP mode again over
+        // wireless debugging, then retry.
+        var client = connectWithRetry(ctx, attempts = 5)
+        if (client == null) {
+            WifiBootstrap.run(ctx)
+            client = connectWithRetry(ctx, attempts = 10) ?: error("adbd not reachable on $ADB_PORT")
         }
-        lastError?.let { error("adbd not reachable on $ADB_PORT: ${it.message}") }
         TunnelState.log("Connected to adbd")
 
         client.use {
@@ -70,6 +69,15 @@ object DaemonManager {
             Thread.sleep(250)
         }
         error("daemon did not answer on $DAEMON_PORT")
+    }
+
+    private fun connectWithRetry(ctx: Context, attempts: Int): AdbClient? {
+        val key = AdbKey.load(ctx)
+        repeat(attempts) {
+            val client = AdbClient("127.0.0.1", ADB_PORT, key)
+            try { client.connect(); return client } catch (e: Exception) { client.close(); Thread.sleep(1000) }
+        }
+        return null
     }
 
     /** Kills the daemon and, if asked, turns USB debugging off again. */

@@ -22,7 +22,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  *   VIDEO <scrcpy options…>   spawn scrcpy's server for this session; this
  *                             connection then carries its raw video stream
+ *   AUDIO <scid>              attach to that session's audio stream (AAC)
  *   CTRL <scid>               attach to that session's control stream
+ *   INSTALL <bytes>           then that many bytes of APK: installs it with
+ *                             `pm install` (shell may), so updates need no cable
  *   QUIT                      exit (the app does this after it was updated,
  *                             because this process still points at the old APK)
  *
@@ -35,7 +38,7 @@ object Daemon {
     private const val SCRCPY_VERSION = "4.1"  // must match the bundled jar
     private val LOG = File("/data/local/tmp/bridge-daemon.log")
 
-    private class Session(val scid: String, val process: Process, val control: LocalSocket)
+    private class Session(val scid: String, val process: Process, val audio: LocalSocket, val control: LocalSocket)
     private val sessions = ConcurrentHashMap<String, Session>()
 
     @JvmStatic
@@ -69,7 +72,9 @@ object Daemon {
         val rest = line.substringAfter(' ', "")
         when (cmd) {
             "VIDEO" -> video(s, rest)
+            "AUDIO" -> audio(s, rest.trim())
             "CTRL" -> control(s, rest.trim())
+            "INSTALL" -> install(s, rest.trim().toLongOrNull() ?: 0)
             "QUIT" -> { log("quit requested"); reply(s, "OK bye"); System.exit(0) }
             else -> s.getOutputStream().write("ERR unknown command\n".toByteArray())
         }
@@ -81,8 +86,8 @@ object Daemon {
         val scid = "%08x".format((Math.random() * 0x7fffffff).toInt())
         val args = mutableListOf(
             "app_process", "/", "com.genymobile.scrcpy.Server", SCRCPY_VERSION,
-            "scid=$scid", "tunnel_forward=true", "audio=false", "send_dummy_byte=false",
-            "log_level=info"
+            "scid=$scid", "tunnel_forward=true", "audio=true", "audio_codec=aac",
+            "send_dummy_byte=false", "log_level=info"
         )
         args += options.split(' ').filter { it.isNotBlank() }
         val process = ProcessBuilder(args).apply {
@@ -92,14 +97,17 @@ object Daemon {
         }.start()
         log("session $scid: started scrcpy-server (${args.drop(4).joinToString(" ")})")
 
-        // The server accepts the video socket first, then the control socket.
+        // The server accepts the sockets in a fixed order: video, audio, control.
         val videoSock = connectLocal("scrcpy_$scid") ?: run {
             process.destroy(); reply(s, "ERR scrcpy-server did not start"); return
         }
-        val controlSock = connectLocal("scrcpy_$scid") ?: run {
-            videoSock.close(); process.destroy(); reply(s, "ERR control socket"); return
+        val audioSock = connectLocal("scrcpy_$scid") ?: run {
+            videoSock.close(); process.destroy(); reply(s, "ERR audio socket"); return
         }
-        sessions[scid] = Session(scid, process, controlSock)
+        val controlSock = connectLocal("scrcpy_$scid") ?: run {
+            videoSock.close(); audioSock.close(); process.destroy(); reply(s, "ERR control socket"); return
+        }
+        sessions[scid] = Session(scid, process, audioSock, controlSock)
         reply(s, "OK scid=$scid")
         try {
             pump(videoSock.inputStream, s.getOutputStream())
@@ -107,9 +115,17 @@ object Daemon {
             log("session $scid: video ended")
             sessions.remove(scid)
             runCatching { videoSock.close() }
+            runCatching { audioSock.close() }
             runCatching { controlSock.close() }
             process.destroy()
         }
+    }
+
+    /** Pipes a running session's audio stream to [s]. */
+    private fun audio(s: Socket, scid: String) {
+        val session = sessions[scid] ?: run { reply(s, "ERR no such session"); return }
+        reply(s, "OK")
+        pump(session.audio.inputStream, s.getOutputStream())
     }
 
     /** Attaches [s] to a running session's control stream (both directions). */
@@ -122,6 +138,27 @@ object Daemon {
         pump(s.getInputStream(), ctl.outputStream)
         runCatching { ctl.close() }
         t.join()
+    }
+
+    private fun install(s: Socket, size: Long) {
+        if (size <= 0) { reply(s, "ERR size"); return }
+        val apk = File("/data/local/tmp/bridge-update.apk")
+        apk.outputStream().use { out ->
+            val buf = ByteArray(64 * 1024)
+            var left = size
+            val input = s.getInputStream()
+            while (left > 0) {
+                val r = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                if (r < 0) { reply(s, "ERR short upload"); return }
+                out.write(buf, 0, r); left -= r
+            }
+        }
+        log("installing ${apk.length()} bytes")
+        val p = ProcessBuilder("pm", "install", "-r", apk.absolutePath).redirectErrorStream(true).start()
+        val output = p.inputStream.bufferedReader().readText().trim()
+        val code = p.waitFor()
+        apk.delete()
+        reply(s, if (code == 0) "OK $output" else "ERR $output")
     }
 
     private fun connectLocal(name: String): LocalSocket? {

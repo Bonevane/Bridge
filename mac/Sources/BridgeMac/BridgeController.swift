@@ -42,6 +42,10 @@ final class BridgeController: ObservableObject {
     @Published var turnScreenOff: Bool {
         didSet { UserDefaults.standard.set(turnScreenOff, forKey: "turnScreenOff") }
     }
+    /// Take the phone's audio instead of copying it (phone goes silent while mirroring).
+    @Published var mutePhone: Bool {
+        didSet { UserDefaults.standard.set(mutePhone, forKey: "mutePhone") }
+    }
     /// Mirrors the phone's "keep ready after disconnect" setting (sent at each Connect).
     @Published var keepReady: Bool {
         didSet { UserDefaults.standard.set(keepReady, forKey: "keepReady") }
@@ -63,6 +67,7 @@ final class BridgeController: ObservableObject {
         maxSize = defaults.object(forKey: "maxSize") as? Int ?? 1280
         turnScreenOff = defaults.bool(forKey: "turnScreenOff")
         keepReady = defaults.bool(forKey: "keepReady")
+        mutePhone = defaults.bool(forKey: "mutePhone")
     }
 
     // MARK: - State helpers
@@ -276,6 +281,9 @@ final class BridgeController: ObservableObject {
             }
             var options = "max_size=\(maxSize) video_bit_rate=\(bitrateMbps)000000"
             if turnScreenOff { options += " power_off_on_close=false" }
+            // "playback" capture takes the audio away from the speaker (Android 13+);
+            // audio_dup gives it back, i.e. the phone keeps playing too.
+            options += mutePhone ? " audio_source=playback" : " audio_source=playback audio_dup=true"
             let finalOptions = options
             let startError: String? = await background {
                 do { try session.start(options: finalOptions); return nil } catch { return error.localizedDescription }

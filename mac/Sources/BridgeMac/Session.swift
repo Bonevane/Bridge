@@ -12,7 +12,9 @@ final class Session {
     private(set) var videoHeight: UInt16 = 0
 
     private var video: TCPStream?
+    private var audio: TCPStream?
     private var control: TCPStream?
+    let audioPlayer = AudioPlayer()
     private let controlQueue = DispatchQueue(label: "bridge.control")
     private var stopped = false
 
@@ -66,15 +68,22 @@ final class Session {
         guard reply.hasPrefix("OK scid=") else { throw TCPStream.StreamError.failed("phone: \(reply)") }
         let scid = String(reply.dropFirst("OK scid=".count))
 
+        let a = try TCPStream(port: port)
+        try a.write("AUDIO \(scid)\n")
+        let areply = try a.readLine()
+        guard areply.hasPrefix("OK") else { throw TCPStream.StreamError.failed("phone: \(areply)") }
+
         let c = try TCPStream(port: port)
         try c.write("CTRL \(scid)\n")
         let creply = try c.readLine()
         guard creply.hasPrefix("OK") else { throw TCPStream.StreamError.failed("phone: \(creply)") }
 
         video = v
+        audio = a
         control = c
         firstArrival = 0; minLag = .infinity; slowSince = nil; levelStart = Date().timeIntervalSince1970
         Thread(block: { [weak self] in self?.readVideo(v) }).start()
+        Thread(block: { [weak self] in self?.readAudio(a) }).start()
         Thread(block: { [weak self] in self?.readControl(c) }).start()
     }
 
@@ -84,7 +93,7 @@ final class Session {
         restarting = true
         level = newLevel
         onLog?("\(reason): bitrate → \(max(targetBitrate >> level, 300_000) / 1000) kbps")
-        video?.closeStream(); control?.closeStream()
+        video?.closeStream(); audio?.closeStream(); control?.closeStream()
         Thread { [weak self] in
             guard let self = self else { return }
             Thread.sleep(forTimeInterval: 0.3)   // let the phone tear the old server down
@@ -116,7 +125,9 @@ final class Session {
     func stop() {
         stopped = true
         video?.closeStream()
+        audio?.closeStream()
         control?.closeStream()
+        audioPlayer.stop()
     }
 
     func send(_ message: [UInt8]) {
@@ -154,6 +165,26 @@ final class Session {
             }
         } catch {
             if !stopped && !restarting && s === video { DispatchQueue.main.async { self.onEnd?(error.localizedDescription) } }
+        }
+    }
+
+    /// Same framing as video: 4-byte codec id, then 12-byte packet headers.
+    /// A codec id of 0 or 1 means the phone couldn't capture audio (0: continue
+    /// without, 1: configuration error).
+    private func readAudio(_ s: TCPStream) {
+        do {
+            let codec = try s.readExactly(4)
+            let id = be32(codec, 0)
+            if id == 0 || id == 1 { onLog?("Phone: no audio (code \(id))"); return }
+            while !stopped {
+                let header = try s.readExactly(12)
+                let ptsAndFlags = be64(header, 0)
+                let size = Int(be32(header, 8))
+                let data = try s.readExactly(size)
+                audioPlayer.handle(packet: data, isConfig: ptsAndFlags & (1 << 62) != 0)
+            }
+        } catch {
+            // Audio is best-effort; the video stream decides when the session ends.
         }
     }
 

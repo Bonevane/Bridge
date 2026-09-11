@@ -178,6 +178,14 @@ final class BridgeController: ObservableObject {
                 return
             }
 
+            // Lets the phone app switch USB debugging on/off by itself (see AdbToggle.kt).
+            let package = BridgeController.phonePackage
+            let grant = await background {
+                Shell.run(adb, ["-d", "shell", "pm", "grant", package,
+                                "android.permission.WRITE_SECURE_SETTINGS"], timeout: 15)
+            }
+            if !grant.ok { appendLog(grant.output, source: "adb") }
+
             phase = .idle
             notice = "Set up. You can unplug the phone and click Connect."
         }
@@ -207,6 +215,7 @@ final class BridgeController: ObservableObject {
         notice = nil
         phase = .working("Opening tunnel...")
         let serial = self.serial
+        let port = localPort
 
         Task {
             _ = await background { Shell.run(adb, ["start-server"]) }
@@ -229,7 +238,29 @@ final class BridgeController: ObservableObject {
             }
             tunnel = tunnelProcess
 
-            // Step 2: adb connect, retrying while the tunnel finds the phone.
+            // Step 2: tell the phone to switch USB debugging on for this session.
+            // Retried because the tunnel needs a moment to find the phone.
+            phase = .working("Waking the phone...")
+            var reply: String?
+            for _ in 0..<15 {
+                if userStopped { return }
+                reply = await background { Control.send("START", port: port) }
+                if reply != nil { break }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            guard let startReply = reply else {
+                stopProcesses()
+                fail("The phone didn't answer. Is the tunnel on in the phone app?")
+                return
+            }
+            appendLog(startReply, source: "phone")
+            guard startReply.hasPrefix("OK") else {
+                stopProcesses()
+                fail("Phone: \(startReply)")
+                return
+            }
+
+            // Step 3: adb connect, retrying while adbd comes up.
             phase = .working("Reaching your phone...")
             var adbConnected = false
             var ready = false
@@ -266,7 +297,7 @@ final class BridgeController: ObservableObject {
                 return
             }
 
-            // Step 3: scrcpy.
+            // Step 4: scrcpy.
             phase = .working("Starting mirroring...")
             var arguments = [
                 "-s", serial,
@@ -303,8 +334,17 @@ final class BridgeController: ObservableObject {
 
     func disconnect() {
         userStopped = true
-        stopProcesses()
-        phase = .idle
+        let hadTunnel = tunnel?.isRunning ?? false
+        let port = localPort
+        mirror?.terminate()
+        guard hadTunnel else { stopProcesses(); phase = .idle; return }
+        phase = .working("Turning USB debugging off...")
+        Task {
+            let reply = await background { Control.send("STOP", port: port, timeout: 20) }
+            appendLog(reply ?? "No reply to STOP; USB debugging may still be on.", source: "phone")
+            stopProcesses()
+            phase = .idle
+        }
     }
 
 

@@ -91,9 +91,25 @@ object DaemonManager {
     /**
      * Turns USB debugging off, which takes the daemon down with it (init kills
      * adbd's whole cgroup). This is the "lock down" state banking apps want.
+     *
+     * Exception, agreed with Bone: on cellular (no Wi-Fi) the daemon stays up,
+     * because starting it again needs wireless debugging, which needs Wi-Fi;
+     * locking down there would mean no way back in until the next Wi-Fi.
+     * Returns a one-line description of what happened.
      */
-    fun stop(ctx: Context) {
+    fun stop(ctx: Context, force: Boolean = false): String {
+        if (!force && !onWifi(ctx)) {
+            TunnelState.log("Disconnect on cellular: keeping the daemon (no Wi-Fi to restart it)")
+            return "kept ready: phone is on cellular"
+        }
         AdbToggle.set(ctx, false)
         TunnelState.log("Daemon stopped")
+        return "stopped, USB debugging off"
+    }
+
+    private fun onWifi(ctx: Context): Boolean {
+        val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
     }
 }

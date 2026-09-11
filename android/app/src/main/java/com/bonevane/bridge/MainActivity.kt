@@ -144,7 +144,7 @@ class MainActivity : Activity() {
             }.start()
         })
         daemonRow.addView(button("Stop + adb off") {
-            Thread { DaemonManager.stop(this) }.start()
+            Thread { DaemonManager.stop(this, force = true) }.start()
         })
         column.addView(daemonRow)
         gap(20)

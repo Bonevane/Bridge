@@ -112,9 +112,9 @@ final class Session {
         let lag = (now - firstArrival) - Double(pts - firstPts) / 1_000_000
         minLag = min(minLag, lag)
         let backlog = lag - minLag           // seconds of queued video, roughly
-        if backlog > 0.5 {
+        if backlog > 0.35 {
             if slowSince == nil { slowSince = now }
-            if now - slowSince! > 2, level < 3 { changeLevel(to: level + 1, reason: "Link is slow (\(Int(backlog * 1000)) ms behind)") }
+            if now - slowSince! > 1.5, level < 3 { changeLevel(to: level + 1, reason: "Link is slow (\(Int(backlog * 1000)) ms behind)") }
         } else {
             slowSince = nil
             // Clean for 30 s at a reduced level: try one step up.

@@ -19,6 +19,11 @@ final class H264Player: NSView {
         wantsLayer = true
         layerView.videoGravity = .resizeAspect
         layerView.backgroundColor = NSColor.black.cgColor
+        // Drive the layer from a timebase running fast, so it never holds a frame
+        // back waiting for a presentation time; we want lowest latency, not smoothness.
+        var tb: CMTimebase?
+        CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault, sourceClock: CMClockGetHostTimeClock(), timebaseOut: &tb)
+        if let tb = tb { CMTimebaseSetRate(tb, rate: 1.0); layerView.controlTimebase = tb }
         layer = layerView
     }
 

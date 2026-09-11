@@ -33,6 +33,12 @@ final class TCPStream {
         if fd >= 0 { shutdown(fd, SHUT_RDWR); close(fd); fd = -1 }
     }
 
+    /// True if something is already listening on 127.0.0.1:<port>.
+    static func portOpen(_ port: Int) -> Bool {
+        guard let s = try? TCPStream(port: port, timeout: 1) else { return false }
+        s.closeStream(); return true
+    }
+
     func write(_ bytes: [UInt8]) throws {
         var offset = 0
         while offset < bytes.count {

@@ -51,6 +51,11 @@ final class BridgeController: ObservableObject {
         didSet { UserDefaults.standard.set(syncClipboard, forKey: "syncClipboard")
                  if isConnected { syncClipboard ? startClipboardWatch() : stopClipboardWatch() } }
     }
+    /// Keep the clipboard synced even with no mirroring window (needs the phone ready).
+    @Published var backgroundClipboard: Bool {
+        didSet { UserDefaults.standard.set(backgroundClipboard, forKey: "backgroundClipboard")
+                 updateBackgroundClipboard() }
+    }
     /// Mirrors the phone's "keep ready after disconnect" setting (sent at each Connect).
     @Published var keepReady: Bool {
         didSet { UserDefaults.standard.set(keepReady, forKey: "keepReady") }
@@ -73,6 +78,7 @@ final class BridgeController: ObservableObject {
         turnScreenOff = defaults.bool(forKey: "turnScreenOff")
         keepReady = defaults.bool(forKey: "keepReady")
         syncClipboard = defaults.object(forKey: "syncClipboard") as? Bool ?? true
+        backgroundClipboard = defaults.bool(forKey: "backgroundClipboard")
         mutePhone = defaults.bool(forKey: "mutePhone")
     }
 
@@ -218,6 +224,7 @@ final class BridgeController: ObservableObject {
 
         userStopped = false
         notice = nil
+        clipboardBridge.stop()   // the session will own the clipboard
         phase = .working("Opening tunnel...")
         let serial = self.serial
         let port = localPort
@@ -315,6 +322,21 @@ final class BridgeController: ObservableObject {
     // MARK: - Disconnect
 
     // MARK: - Clipboard (both directions, while a session is open)
+
+    private lazy var clipboardBridge = ClipboardBridge(
+        onPhoneText: { [weak self] text in self?.phoneClipboardChanged(text) },
+        macText: { NSPasteboard.general.string(forType: .string) },
+        markSynced: { [weak self] text in self?.lastSyncedText = text })
+
+    /// The background bridge runs only when enabled AND no window is mirroring.
+    func updateBackgroundClipboard() {
+        let t = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
+        if backgroundClipboard, !isConnected, t.hasPrefix("endpoint") {
+            clipboardBridge.start(ticket: t, port: localPort)
+        } else {
+            clipboardBridge.stop()
+        }
+    }
 
     private var clipboardTimer: Timer?
     private var lastChangeCount = 0

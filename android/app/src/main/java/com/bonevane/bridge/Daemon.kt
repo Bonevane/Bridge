@@ -24,6 +24,9 @@ import java.util.concurrent.ConcurrentHashMap
  *                             connection then carries its raw video stream
  *   AUDIO <scid>              attach to that session's audio stream (AAC)
  *   CTRL <scid>               attach to that session's control stream
+ *   CLIP                      a standalone clipboard channel: a control-only
+ *                             scrcpy-server (no video), relayed both ways, so
+ *                             the clipboard syncs without a mirroring window
  *   INSTALL <bytes>           then that many bytes of APK: installs it with
  *                             `pm install` (shell may), so updates need no cable
  *   QUIT                      exit (the app does this after it was updated,
@@ -74,6 +77,7 @@ object Daemon {
             "VIDEO" -> video(s, rest)
             "AUDIO" -> audio(s, rest.trim())
             "CTRL" -> control(s, rest.trim())
+            "CLIP" -> clip(s)
             "INSTALL" -> install(s, rest.trim().toLongOrNull() ?: 0)
             "QUIT" -> { log("quit requested"); reply(s, "OK bye"); System.exit(0) }
             else -> s.getOutputStream().write("ERR unknown command\n".toByteArray())
@@ -159,6 +163,38 @@ object Daemon {
         val code = p.waitFor()
         apk.delete()
         reply(s, if (code == 0) "OK $output" else "ERR $output")
+    }
+
+    @Volatile private var clipProcess: Process? = null
+
+    /**
+     * A control-only scrcpy-server (video=false audio=false control=true) whose
+     * single control socket is relayed to [s]. scrcpy's clipboard autosync then
+     * works with no encoder running. One at a time; a new CLIP replaces the old.
+     */
+    private fun clip(s: Socket) {
+        val jar = findJar() ?: run { reply(s, "ERR scrcpy jar not found"); return }
+        clipProcess?.destroy()
+        val scid = "c1%06x".format((Math.random() * 0xffffff).toInt())
+        val args = listOf(
+            "app_process", "/", "com.genymobile.scrcpy.Server", SCRCPY_VERSION,
+            "scid=$scid", "tunnel_forward=true", "video=false", "audio=false",
+            "control=true", "send_dummy_byte=false", "cleanup=false", "log_level=info"
+        )
+        val process = ProcessBuilder(args).apply {
+            environment()["CLASSPATH"] = jar
+            redirectErrorStream(true); redirectOutput(File("/data/local/tmp/clip.log"))
+        }.start()
+        clipProcess = process
+        log("clip channel $scid started")
+        val ctl = connectLocal("scrcpy_$scid") ?: run { process.destroy(); reply(s, "ERR clip server"); return }
+        reply(s, "OK")
+        val t = Thread { pump(ctl.inputStream, s.getOutputStream()) }
+        t.start()
+        pump(s.getInputStream(), ctl.outputStream)
+        runCatching { ctl.close() }; t.join(); process.destroy()
+        if (clipProcess === process) clipProcess = null
+        log("clip channel ended")
     }
 
     private fun connectLocal(name: String): LocalSocket? {

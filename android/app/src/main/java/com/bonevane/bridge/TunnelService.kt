@@ -48,6 +48,7 @@ class TunnelService : Service() {
     @Volatile private var process: Process? = null
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
     private var proxy: ControlProxy? = null
     var policy: ReadyPolicy? = null
         private set
@@ -109,6 +110,14 @@ class TunnelService : Service() {
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Bridge::tunnel")
             .apply { setReferenceCounted(false); acquire() }
+        // Keep the Wi-Fi radio out of power-saving. Without this, an idle phone's
+        // radio sleeps between beacons and adds ~150 ms to every packet after any
+        // gap, which shows up as constant lag and stutter while mirroring.
+        val wifi = applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+        val mode = if (Build.VERSION.SDK_INT >= 29)
+            android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        else @Suppress("DEPRECATION") android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        wifiLock = wifi.createWifiLock(mode, "Bridge::wifi").apply { setReferenceCounted(false); acquire() }
         // Tunnel streams land on the proxy, which sorts ADB traffic from commands.
         proxy = ControlProxy(this).also { p ->
             runCatching { p.start() }.onFailure { TunnelState.log("Proxy failed: ${it.message}") }
@@ -182,6 +191,8 @@ class TunnelService : Service() {
         policy?.stop()
         policy = null
         current = null
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         TunnelState.update("Stopped", ready = false)

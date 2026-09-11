@@ -55,12 +55,6 @@ class MainActivity : Activity() {
 
     /** The Mac's "Set up over USB" button opens the app with ACTION_START. */
     private fun handleIntent(intent: Intent?) {
-        // Experiment: `am start -a com.bonevane.bridge.ADB_CYCLE` turns USB
-        // debugging off, then back on 20 s later, using WRITE_SECURE_SETTINGS.
-        if (intent?.action == "com.bonevane.bridge.ADB_CYCLE") {
-            AdbToggle.cycle(this)
-            return
-        }
         if (intent?.action == TunnelService.ACTION_START || Prefs.wantRunning(this)) {
             TunnelService.start(this)
         }
@@ -139,6 +133,20 @@ class MainActivity : Activity() {
         })
 
         column.addView(button("New identity...") { confirmNewIdentity() })
+        gap(20)
+
+        // Milestone 2 experiment: start/stop the shell-uid daemon from the phone.
+        val daemonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        daemonRow.addView(button("Start daemon") {
+            Thread {
+                runCatching { DaemonManager.start(this) }
+                    .onFailure { TunnelState.log("Daemon start failed: ${it.message}") }
+            }.start()
+        })
+        daemonRow.addView(button("Stop + adb off") {
+            Thread { DaemonManager.stop(this, disableAdb = true) }.start()
+        })
+        column.addView(daemonRow)
         gap(20)
 
         column.addView(text("Log", 13f).apply { setTypeface(typeface, Typeface.BOLD) })

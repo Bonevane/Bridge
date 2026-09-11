@@ -25,6 +25,7 @@ object TunnelState {
     }
 
     fun log(line: String) {
+        android.util.Log.i("Bridge", line) // also visible via `adb logcat -s Bridge`
         synchronized(lines) {
             lines.addLast(line)
             while (lines.size > 200) lines.removeFirst()

@@ -29,11 +29,4 @@ object AdbToggle {
         TunnelState.log("USB debugging ${if (enabled) "on" else "off"}: ${if (ok) "ok" else "FAILED"}")
         return ok
     }
-
-    /** Experiment helper: off now, on again after 20 seconds. */
-    fun cycle(ctx: Context) {
-        if (!isGranted(ctx)) { TunnelState.log("WRITE_SECURE_SETTINGS not granted"); return }
-        set(ctx, false)
-        Handler(Looper.getMainLooper()).postDelayed({ set(ctx.applicationContext, true) }, 20_000)
-    }
 }

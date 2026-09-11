@@ -1,0 +1,6 @@
+Bridge includes code adapted from:
+
+- Shizuku (https://github.com/RikkaApps/Shizuku), Apache License 2.0
+  Copyright Rikka and contributors. The ADB client in
+  android/app/src/main/java/com/bonevane/bridge/AdbClient.kt is adapted
+  from manager/src/main/java/moe/shizuku/manager/adb/.

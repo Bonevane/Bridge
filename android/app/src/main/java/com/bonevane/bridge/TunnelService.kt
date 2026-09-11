@@ -46,6 +46,7 @@ class TunnelService : Service() {
     @Volatile private var process: Process? = null
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var proxy: ControlProxy? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -104,6 +105,10 @@ class TunnelService : Service() {
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Bridge::tunnel")
             .apply { setReferenceCounted(false); acquire() }
+        // Tunnel streams land on the proxy, which sorts ADB traffic from commands.
+        proxy = ControlProxy(this).also { p ->
+            runCatching { p.start() }.onFailure { TunnelState.log("Proxy failed: ${it.message}") }
+        }
         worker = Thread({ runLoop() }, "dumbpipe").also { it.start() }
     }
 
@@ -119,7 +124,7 @@ class TunnelService : Service() {
             TunnelState.update("Starting...", ready = false)
             try {
                 val builder = ProcessBuilder(
-                    binary.absolutePath, "listen-tcp", "--host", "127.0.0.1:$ADB_PORT"
+                    binary.absolutePath, "listen-tcp", "--host", "127.0.0.1:${ControlProxy.PORT}"
                 ).redirectErrorStream(true)
                 builder.environment().apply {
                     put("IROH_SECRET", Prefs.secret(this@TunnelService))
@@ -166,6 +171,8 @@ class TunnelService : Service() {
         process?.destroy()          // closes dumbpipe; the read loop then ends
         worker?.interrupt()
         worker = null
+        proxy?.stop()
+        proxy = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         TunnelState.update("Stopped", ready = false)

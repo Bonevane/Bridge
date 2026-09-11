@@ -21,6 +21,7 @@ final class Session {
     var onSize: ((Int, Int) -> Void)?
     var onEnd: ((String?) -> Void)?
     var onLog: ((String) -> Void)?
+    var onClipboard: ((String) -> Void)?   // phone → Mac
 
     // MARK: Adaptive bitrate
     //
@@ -195,7 +196,10 @@ final class Session {
             guard let type = try? s.readExactly(1).first else { return }
             switch type {
             case 0:  // clipboard: 4-byte length + text
-                guard let len = try? s.readExactly(4), let _ = try? s.readExactly(Int(be32(len, 0))) else { return }
+                guard let len = try? s.readExactly(4) else { return }
+                guard let text = try? s.readExactly(Int(be32(len, 0))) else { return }
+                let str = String(decoding: text, as: UTF8.self)
+                DispatchQueue.main.async { self.onClipboard?(str) }
             case 1:  // ack clipboard: 8-byte sequence
                 guard (try? s.readExactly(8)) != nil else { return }
             case 2:  // uhid output: 2-byte id, 2-byte size, data

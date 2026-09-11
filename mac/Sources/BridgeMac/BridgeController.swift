@@ -46,6 +46,11 @@ final class BridgeController: ObservableObject {
     @Published var mutePhone: Bool {
         didSet { UserDefaults.standard.set(mutePhone, forKey: "mutePhone") }
     }
+    /// Sync the clipboard both ways while a session is open.
+    @Published var syncClipboard: Bool {
+        didSet { UserDefaults.standard.set(syncClipboard, forKey: "syncClipboard")
+                 if isConnected { syncClipboard ? startClipboardWatch() : stopClipboardWatch() } }
+    }
     /// Mirrors the phone's "keep ready after disconnect" setting (sent at each Connect).
     @Published var keepReady: Bool {
         didSet { UserDefaults.standard.set(keepReady, forKey: "keepReady") }
@@ -67,6 +72,7 @@ final class BridgeController: ObservableObject {
         maxSize = defaults.object(forKey: "maxSize") as? Int ?? 1280
         turnScreenOff = defaults.bool(forKey: "turnScreenOff")
         keepReady = defaults.bool(forKey: "keepReady")
+        syncClipboard = defaults.object(forKey: "syncClipboard") as? Bool ?? true
         mutePhone = defaults.bool(forKey: "mutePhone")
     }
 
@@ -269,6 +275,7 @@ final class BridgeController: ObservableObject {
             window.session = session
             session.onLog = { [weak self] line in self?.appendLog(line, source: "video") }
             session.onSize = { [weak window] w, h in window?.apply(videoWidth: w, videoHeight: h) }
+            session.onClipboard = { [weak self] text in self?.phoneClipboardChanged(text) }
             session.onEnd = { [weak self] message in
                 guard let self = self, !self.userStopped else { return }
                 self.appendLog("Video stream ended: \(message ?? "")")
@@ -296,6 +303,7 @@ final class BridgeController: ObservableObject {
             if turnScreenOff { session.send(ScrcpyProtocol.displayPower(on: false)) }
             self.session = session
             self.sessionWindow = window
+            if syncClipboard { startClipboardWatch() }
             // Show in the Dock and ⌘-Tab while the phone window is open.
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
@@ -306,17 +314,74 @@ final class BridgeController: ObservableObject {
 
     // MARK: - Disconnect
 
+    // MARK: - Clipboard (both directions, while a session is open)
+
+    private var clipboardTimer: Timer?
+    private var lastChangeCount = 0
+    private var lastSyncedText: String?   // to break the Mac<->phone echo loop
+
+    private func startClipboardWatch() {
+        stopClipboardWatch()
+        lastChangeCount = NSPasteboard.general.changeCount
+        clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self = self, let s = self.session else { return }
+            let pb = NSPasteboard.general
+            guard pb.changeCount != self.lastChangeCount else { return }
+            self.lastChangeCount = pb.changeCount
+            guard let text = pb.string(forType: .string), text != self.lastSyncedText else { return }
+            self.lastSyncedText = text
+            s.send(ScrcpyProtocol.clipboard(text))
+        }
+    }
+
+    private func stopClipboardWatch() {
+        clipboardTimer?.invalidate()
+        clipboardTimer = nil
+    }
+
+    /// The phone copied something; put it on the Mac clipboard (without echoing back).
+    private func phoneClipboardChanged(_ text: String) {
+        guard syncClipboard, text != lastSyncedText else { return }
+        lastSyncedText = text
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        lastChangeCount = pb.changeCount
+    }
+
     func disconnect() {
         userStopped = true
-        let hadTunnel = tunnel?.isRunning ?? false
+        stopClipboardWatch()
         let port = localPort
-        mirror?.terminate()
         session?.stop()
-        guard hadTunnel else { stopProcesses(); phase = .idle; return }
+
+        // Always tell the phone to STOP, even if the tunnel already died (an
+        // adaptive-bitrate restart or a network blip can drop it just as we
+        // disconnect). If the tunnel is up, reuse it; otherwise open a brief one,
+        // so USB debugging never gets left on because we couldn't reach the phone.
+        let existing = tunnel?.isRunning == true
+        let dumbpipe = Shell.find("dumbpipe")
+        let currentTicket = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
         phase = .working("Turning USB debugging off...")
         Task {
-            let reply = await background { Control.send("STOP", port: port, timeout: 20) }
-            appendLog(reply ?? "No reply to STOP; USB debugging may still be on.", source: "phone")
+            var temp: Process?
+            if !existing, let dumbpipe = dumbpipe, currentTicket.hasPrefix("endpoint") {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: dumbpipe)
+                p.arguments = ["connect-tcp", "--addr", serial, currentTicket]
+                p.environment = Shell.environment
+                streamOutput(of: p, source: "tunnel")
+                try? p.run()
+                temp = p
+            }
+            var reply: String?
+            for _ in 0..<20 {
+                reply = await background { Control.send("STOP", port: port, timeout: 20) }
+                if reply != nil { break }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            temp?.terminate()
+            appendLog(reply ?? "Couldn't reach the phone to turn USB debugging off. Use the phone's \"USB debugging off\" button.", source: "phone")
             stopProcesses()
             phase = .idle
         }

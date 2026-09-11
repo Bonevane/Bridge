@@ -13,6 +13,7 @@ enum ScrcpyProtocol {
     static let expandNotificationPanel: UInt8 = 5
     static let collapsePanels: UInt8 = 7
     static let setDisplayPower: UInt8 = 10
+    static let setClipboard: UInt8 = 9
 
     // Android MotionEvent actions
     static let actionDown: UInt8 = 0
@@ -68,6 +69,12 @@ enum ScrcpyProtocol {
     static func text(_ s: String) -> [UInt8] {
         let bytes = Array(s.utf8)
         return [injectText] + be(Int32(bytes.count)) + bytes
+    }
+
+    /// Push text to the phone's clipboard (paste=false: set only, don't auto-paste).
+    static func clipboard(_ text: String, sequence: UInt64 = 0) -> [UInt8] {
+        let bytes = Array(text.utf8)
+        return [setClipboard] + be(sequence) + [0] + be(UInt32(bytes.count)) + bytes
     }
 
     static func back(down: Bool) -> [UInt8] { [backOrScreenOn, down ? actionDown : actionUp] }

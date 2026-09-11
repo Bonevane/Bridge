@@ -43,6 +43,7 @@ struct MenuView: View {
                     }
                     Toggle("Turn phone screen off while mirroring", isOn: $bridge.turnScreenOff)
                     Toggle("Mute the phone while mirroring (audio only on the Mac)", isOn: $bridge.mutePhone)
+                    Toggle("Sync clipboard both ways", isOn: $bridge.syncClipboard)
                     Toggle("Keep phone ready after disconnect", isOn: $bridge.keepReady)
                     Text(bridge.keepReady
                          ? "USB debugging stays on (USB only, nothing on the network) so Connect works on cellular. Use \"Pause\" for banking apps."

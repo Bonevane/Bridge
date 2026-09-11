@@ -98,6 +98,10 @@ object DaemonManager {
      * Returns a one-line description of what happened.
      */
     fun stop(ctx: Context, force: Boolean = false): String {
+        if (!force && Prefs.keepReady(ctx)) {
+            TunnelState.log("Disconnect: keeping the daemon (\"keep ready\" is on)")
+            return "kept ready (setting)"
+        }
         if (!force && !onWifi(ctx)) {
             TunnelState.log("Disconnect on cellular: keeping the daemon (no Wi-Fi to restart it)")
             return "kept ready: phone is on cellular"
@@ -107,7 +111,7 @@ object DaemonManager {
         return "stopped, USB debugging off"
     }
 
-    private fun onWifi(ctx: Context): Boolean {
+    fun onWifi(ctx: Context): Boolean {
         val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
         val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
         return caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)

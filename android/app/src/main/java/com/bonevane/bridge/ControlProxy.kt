@@ -12,8 +12,10 @@ import java.net.Socket
  * What dumbpipe forwards incoming tunnel streams to. Each stream is either:
  *
  *  - a session stream for the daemon ("VIDEO …" / "CTRL …", see Daemon.kt), or
- *  - a control line from the Mac: "START\n" brings the daemon up (turning USB
- *    debugging on), "STOP\n" turns USB debugging off, "STATUS\n" reports.
+ *  - a control line from the Mac: "START" brings the daemon up (turning USB
+ *    debugging on); "STOP" ends a session (USB debugging off unless "keep ready"
+ *    or on cellular); "LOCKDOWN" forces it off; "PAUSE <min>" / "RESUME";
+ *    "MODE keep|lock" sets the keep-ready choice; "STATUS".
  *    Replies are one line: "OK …" or "ERR …".
  *
  * One ticket and one port carry everything, so the Mac's Connect button can
@@ -95,9 +97,21 @@ class ControlProxy(private val ctx: Context) {
                 .onFailure { reply("ERR ${it.message}") }
             "STOP" -> reply("OK " + DaemonManager.stop(ctx))
             "LOCKDOWN" -> reply("OK " + DaemonManager.stop(ctx, force = true))
+            "PAUSE" -> {
+                val minutes = line.substringAfter(' ', "15").trim().toIntOrNull() ?: 15
+                val policy = TunnelService.current?.policy
+                reply("OK " + (policy?.pause(minutes) ?: DaemonManager.stop(ctx, force = true)))
+            }
+            "RESUME" -> { TunnelService.current?.policy?.resume(); reply("OK resuming") }
+            "MODE" -> {   // MODE keep | MODE lock: the Mac mirrors the user's setting
+                val keep = line.substringAfter(' ', "").trim() == "keep"
+                Prefs.setKeepReady(ctx, keep)
+                reply("OK mode=${if (keep) "keep" else "lock"}")
+            }
             "STATUS" -> {
                 val adb = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
-                reply("OK adb=$adb daemon=${DaemonManager.isDaemonAlive()}")
+                val paused = TunnelService.current?.policy?.isPaused ?: false
+                reply("OK adb=$adb daemon=${DaemonManager.isDaemonAlive()} keep=${Prefs.keepReady(ctx)} paused=$paused")
             }
             else -> reply("ERR unknown command")
         }

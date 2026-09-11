@@ -25,6 +25,9 @@ import java.io.File
 class TunnelService : Service() {
 
     companion object {
+        /** The running service, so the proxy, screen and tile can reach the policy. */
+        @Volatile var current: TunnelService? = null
+
         const val ACTION_START = "com.bonevane.bridge.START"
         const val ACTION_STOP = "com.bonevane.bridge.STOP"
 
@@ -46,6 +49,8 @@ class TunnelService : Service() {
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var proxy: ControlProxy? = null
+    var policy: ReadyPolicy? = null
+        private set
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -108,6 +113,8 @@ class TunnelService : Service() {
         proxy = ControlProxy(this).also { p ->
             runCatching { p.start() }.onFailure { TunnelState.log("Proxy failed: ${it.message}") }
         }
+        policy = ReadyPolicy(this).also { it.start() }
+        current = this
         worker = Thread({ runLoop() }, "dumbpipe").also { it.start() }
     }
 
@@ -172,6 +179,9 @@ class TunnelService : Service() {
         worker = null
         proxy?.stop()
         proxy = null
+        policy?.stop()
+        policy = null
+        current = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         TunnelState.update("Stopped", ready = false)

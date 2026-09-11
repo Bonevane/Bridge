@@ -20,9 +20,13 @@ struct MenuView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11, design: .monospaced))
                     .disabled(bridge.isBusy || bridge.isConnected)
+                Button("Pause phone for banking (15 min)") {
+                    bridge.sendCommand("PAUSE 15", label: "Pausing the phone...")
+                }
+                    .disabled(bridge.isBusy)
                 Button("Set up over USB") { bridge.setUpOverUSB() }
                     .disabled(bridge.isBusy || bridge.isConnected)
-                Text("After each phone restart: plug in, unlock, click.")
+                Text("Only needed once; after a restart the phone gets ready on Wi-Fi.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -38,6 +42,12 @@ struct MenuView: View {
                         Text("Full").tag(0)
                     }
                     Toggle("Turn phone screen off while mirroring", isOn: $bridge.turnScreenOff)
+                    Toggle("Keep phone ready after disconnect", isOn: $bridge.keepReady)
+                    Text(bridge.keepReady
+                         ? "USB debugging stays on (USB only, nothing on the network) so Connect works on cellular. Use \"Pause\" for banking apps."
+                         : "USB debugging turns off after each session (safest). From cellular you can only connect if the last disconnect was on cellular.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Text("Changes apply on the next Connect.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)

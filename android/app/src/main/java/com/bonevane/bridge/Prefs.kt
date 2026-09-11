@@ -31,6 +31,17 @@ object Prefs {
     fun autostart(ctx: Context): Boolean = prefs(ctx).getBoolean("autostart", true)
     fun setAutostart(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("autostart", on).apply()
 
+    /**
+     * After a session ends: false = turn USB debugging off (default, safest);
+     * true = keep the daemon so Connect works on cellular; pause manually for banking.
+     */
+    fun keepReady(ctx: Context): Boolean = prefs(ctx).getBoolean("keepReady", false)
+    fun setKeepReady(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("keepReady", on).apply()
+
+    /** "Pause for banking": USB debugging stays off until this time (epoch ms). */
+    fun pausedUntil(ctx: Context): Long = prefs(ctx).getLong("pausedUntil", 0)
+    fun setPausedUntil(ctx: Context, t: Long) = prefs(ctx).edit().putLong("pausedUntil", t).apply()
+
     /** Whether the user last left the tunnel on. */
     fun wantRunning(ctx: Context): Boolean = prefs(ctx).getBoolean("wantRunning", false)
     fun setWantRunning(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("wantRunning", on).apply()

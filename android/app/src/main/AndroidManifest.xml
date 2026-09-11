@@ -50,6 +50,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- Quick Settings tile: pause for banking apps. -->
+        <service
+            android:name=".PauseTile"
+            android:exported="true"
+            android:icon="@android:drawable/ic_lock_lock"
+            android:label="Pause Bridge"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- Lets the Mac read the ticket over USB via `adb shell content query`.
              The provider itself refuses anyone except adb shell. -->
         <provider

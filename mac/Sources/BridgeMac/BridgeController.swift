@@ -42,6 +42,10 @@ final class BridgeController: ObservableObject {
     @Published var turnScreenOff: Bool {
         didSet { UserDefaults.standard.set(turnScreenOff, forKey: "turnScreenOff") }
     }
+    /// Mirrors the phone's "keep ready after disconnect" setting (sent at each Connect).
+    @Published var keepReady: Bool {
+        didSet { UserDefaults.standard.set(keepReady, forKey: "keepReady") }
+    }
 
     let localPort = 7555
     var serial: String { "127.0.0.1:\(localPort)" }
@@ -58,6 +62,7 @@ final class BridgeController: ObservableObject {
         bitrateMbps = defaults.object(forKey: "bitrateMbps") as? Int ?? 4
         maxSize = defaults.object(forKey: "maxSize") as? Int ?? 1280
         turnScreenOff = defaults.bool(forKey: "turnScreenOff")
+        keepReady = defaults.bool(forKey: "keepReady")
     }
 
     // MARK: - State helpers
@@ -243,6 +248,8 @@ final class BridgeController: ObservableObject {
                 return
             }
             appendLog(startReply, source: "phone")
+            let mode = keepReady ? "MODE keep" : "MODE lock"
+            _ = await background { Control.send(mode, port: port, timeout: 10) }
             guard startReply.hasPrefix("OK") else {
                 stopProcesses()
                 fail("Phone: \(startReply)")
@@ -307,6 +314,44 @@ final class BridgeController: ObservableObject {
         }
     }
 
+
+    /// Sends one control line to the phone, opening a temporary tunnel if needed.
+    func sendCommand(_ command: String, label: String) {
+        guard !isBusy else { return }
+        let port = localPort
+        if tunnel?.isRunning == true {
+            Task {
+                let reply = await background { Control.send(command, port: port, timeout: 30) }
+                appendLog(reply ?? "No reply", source: "phone")
+                notice = reply
+            }
+            return
+        }
+        let currentTicket = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard currentTicket.hasPrefix("endpoint"), let dumbpipe = Shell.find("dumbpipe") else {
+            fail("No ticket, or dumbpipe is missing.")
+            return
+        }
+        phase = .working(label)
+        Task {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: dumbpipe)
+            p.arguments = ["connect-tcp", "--addr", serial, currentTicket]
+            p.environment = Shell.environment
+            streamOutput(of: p, source: "tunnel")
+            do { try p.run() } catch { fail("Couldn't start dumbpipe"); return }
+            var reply: String?
+            for _ in 0..<15 {
+                reply = await background { Control.send(command, port: port, timeout: 30) }
+                if reply != nil { break }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            p.terminate()
+            appendLog(reply ?? "The phone didn't answer.", source: "phone")
+            notice = reply ?? "The phone didn't answer."
+            phase = .idle
+        }
+    }
 
     /// Called by the app delegate when quitting.
     func stopProcessesNow() {

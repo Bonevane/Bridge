@@ -137,16 +137,28 @@ class MainActivity : Activity() {
 
         // Milestone 2 experiment: start/stop the shell-uid daemon from the phone.
         val daemonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        daemonRow.addView(button("Start daemon") {
+        daemonRow.addView(button("Get ready now") {
             Thread {
                 runCatching { DaemonManager.start(this) }
                     .onFailure { TunnelState.log("Daemon start failed: ${it.message}") }
             }.start()
         })
-        daemonRow.addView(button("Stop + adb off") {
+        daemonRow.addView(button("Pause 15 min") {
+            val policy = TunnelService.current?.policy
+            Thread { if (policy != null) policy.pause(15) else DaemonManager.stop(this, force = true) }.start()
+        })
+        daemonRow.addView(button("USB debugging off") {
             Thread { DaemonManager.stop(this, force = true) }.start()
         })
         column.addView(daemonRow)
+        column.addView(CheckBox(this).apply {
+            text = "Keep ready after disconnect (works on cellular; pause for banking apps)"
+            isChecked = Prefs.keepReady(this@MainActivity)
+            setOnCheckedChangeListener { _, checked ->
+                Prefs.setKeepReady(this@MainActivity, checked)
+                if (checked) TunnelService.current?.policy?.maybeStart("setting turned on")
+            }
+        })
         gap(20)
 
         column.addView(text("Log", 13f).apply { setTypeface(typeface, Typeface.BOLD) })

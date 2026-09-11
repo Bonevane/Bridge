@@ -36,7 +36,21 @@ object DaemonManager {
 
     /** Blocking; call from a background thread. Throws with a readable message on failure. */
     fun start(ctx: Context) {
-        if (isDaemonAlive()) { TunnelState.log("Daemon already running"); return }
+        probe(DAEMON_PORT)?.let { hello ->
+            // A daemon from before an app update still runs the old code from a
+            // directory that no longer exists; replace it.
+            val apk = hello.substringAfter("apk=", "")
+            if (apk == ctx.applicationInfo.sourceDir) { TunnelState.log("Daemon already running"); return }
+            TunnelState.log("Daemon is from an older install; restarting it")
+            runCatching {
+                Socket("127.0.0.1", DAEMON_PORT).use { s ->
+                    s.getInputStream().bufferedReader().readLine()
+                    s.getOutputStream().write("QUIT\n".toByteArray()); s.getOutputStream().flush()
+                    s.getInputStream().read()
+                }
+            }
+            Thread.sleep(500)
+        }
 
         if (!AdbToggle.isGranted(ctx)) {
             error("WRITE_SECURE_SETTINGS not granted yet; run \"Set up over USB\" once")

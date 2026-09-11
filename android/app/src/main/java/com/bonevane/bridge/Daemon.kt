@@ -23,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   VIDEO <scrcpy options…>   spawn scrcpy's server for this session; this
  *                             connection then carries its raw video stream
  *   CTRL <scid>               attach to that session's control stream
+ *   QUIT                      exit (the app does this after it was updated,
+ *                             because this process still points at the old APK)
  *
  * scrcpy's server only talks over a Unix "localabstract" socket, which the app
  * (untrusted uid) isn't allowed to reach; a shell process is. So the daemon's
@@ -49,7 +51,8 @@ object Daemon {
             Thread {
                 runCatching {
                     val up = (System.currentTimeMillis() - started) / 1000
-                    s.getOutputStream().write("bridge-daemon uid=$uid pid=$pid up=${up}s\n".toByteArray())
+                    val apk = System.getenv("CLASSPATH") ?: "?"
+                    s.getOutputStream().write("bridge-daemon uid=$uid pid=$pid up=${up}s apk=$apk\n".toByteArray())
                     s.getOutputStream().flush()
                     handle(s)
                 }.onFailure { log("connection error: $it") }
@@ -67,6 +70,7 @@ object Daemon {
         when (cmd) {
             "VIDEO" -> video(s, rest)
             "CTRL" -> control(s, rest.trim())
+            "QUIT" -> { log("quit requested"); reply(s, "OK bye"); System.exit(0) }
             else -> s.getOutputStream().write("ERR unknown command\n".toByteArray())
         }
     }

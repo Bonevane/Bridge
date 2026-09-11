@@ -11,20 +11,18 @@ import java.net.Socket
 /**
  * What dumbpipe forwards incoming tunnel streams to. Each stream is either:
  *
- *  - an ADB session: every one starts with the 4 bytes "CNXN", so we pipe it
- *    straight through to adbd on 127.0.0.1:5555 (only running during a session), or
- *  - a control line from the Mac, e.g. "START\n": bring the daemon up (turning
- *    USB debugging on), "STOP\n": tear it down and turn USB debugging off,
- *    "STATUS\n": report. Replies are one line: "OK …" or "ERR …".
+ *  - a session stream for the daemon ("VIDEO …" / "CTRL …", see Daemon.kt), or
+ *  - a control line from the Mac: "START\n" brings the daemon up (turning USB
+ *    debugging on), "STOP\n" turns USB debugging off, "STATUS\n" reports.
+ *    Replies are one line: "OK …" or "ERR …".
  *
- * This lets one ticket and one port carry both, so the Mac's Connect button can
+ * One ticket and one port carry everything, so the Mac's Connect button can
  * enable everything remotely and Disconnect can put the phone back into the
  * "no USB debugging" state that banking apps insist on.
  */
 class ControlProxy(private val ctx: Context) {
     companion object {
         const val PORT = 5580
-        private val CNXN = "CNXN".toByteArray()
     }
 
     private var server: ServerSocket? = null
@@ -53,23 +51,9 @@ class ControlProxy(private val ctx: Context) {
                 n += r
             }
             when (String(head)) {
-                "CNXN" -> pipeToAdb(it, head)
                 "VIDE", "CTRL" -> pipeToDaemon(it, head)   // "VIDEO …" / "CTRL …" session streams
                 else -> control(it, head)
             }
-        }
-    }
-
-    private fun pipeToAdb(client: Socket, head: ByteArray) {
-        val adb = runCatching { Socket("127.0.0.1", DaemonManager.ADB_PORT) }
-            .getOrElse { TunnelState.log("adb stream refused: adbd not running"); return }
-        adb.use {
-            it.getOutputStream().write(head)
-            val t = Thread { pump(it.getInputStream(), client.getOutputStream()); runCatching { client.shutdownOutput() } }
-            t.start()
-            pump(client.getInputStream(), it.getOutputStream())
-            runCatching { it.shutdownOutput() }
-            t.join()
         }
     }
 
@@ -109,10 +93,7 @@ class ControlProxy(private val ctx: Context) {
             "START" -> runCatching { DaemonManager.start(ctx) }
                 .onSuccess { reply("OK daemon running") }
                 .onFailure { reply("ERR ${it.message}") }
-            "STOP" -> { DaemonManager.stop(ctx, disableAdb = true); reply("OK stopped, USB debugging off") }
-            "BOOTSTRAP" -> runCatching { WifiBootstrap.run(ctx) }
-                .onSuccess { reply("OK bootstrapped") }
-                .onFailure { reply("ERR ${it.message}") }
+            "STOP" -> { DaemonManager.stop(ctx); reply("OK stopped, USB debugging off") }
             "STATUS" -> {
                 val adb = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
                 reply("OK adb=$adb daemon=${DaemonManager.isDaemonAlive()}")

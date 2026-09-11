@@ -19,6 +19,7 @@ final class SessionWindow: NSWindow {
         title = "Phone (Bridge)"
         contentView = InputView(player: player, owner: self)
         isReleasedWhenClosed = false
+        acceptsMouseMovedEvents = true   // for hover
         center()
     }
 
@@ -156,6 +157,11 @@ final class InputView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard let p = position(for: event) else { return }
         owner.session?.send(ScrcpyProtocol.touch(action: ScrcpyProtocol.actionUp, at: p, pressed: false))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard let p = position(for: event) else { return }
+        owner.session?.send(ScrcpyProtocol.hover(at: p))
     }
 
     override func rightMouseDown(with event: NSEvent) {

@@ -8,13 +8,18 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * After a reboot adbd forgets `tcpip 5555`, and the only way to set it again
- * is through some ADB connection. Without a cable, that's *wireless debugging*:
+ * The only door into adbd we allow ourselves: *wireless debugging*, for about a
+ * second, on the phone's own loopback.
  *
  *   1. turn it on (adb_wifi_enabled, needs Wi-Fi; Android picks a random port)
  *   2. find the port with mDNS (`_adb-tls-connect._tcp`, advertised on this phone)
- *   3. connect over TLS with our already-authorized key and run `tcpip:5555`
+ *   3. connect over TLS with our already-authorized key, run the commands
  *   4. turn wireless debugging off again
+ *
+ * We deliberately never use `adb tcpip`: that leaves adbd listening on the
+ * Wi-Fi for the whole session, and anyone on the network could make the
+ * "Allow USB debugging?" dialog pop up. Wireless debugging is on only while
+ * [withAdb] runs.
  *
  * No pairing code needed: adbd accepts a TLS client whose key it already trusts,
  * and ours was accepted the first time ("Always allow").
@@ -22,17 +27,15 @@ import java.util.concurrent.TimeUnit
 object WifiBootstrap {
     private const val SERVICE_TYPE = "_adb-tls-connect._tcp"
 
-    fun run(ctx: Context) {
-        TunnelState.log("No adbd on 5555; bootstrapping over wireless debugging")
+    fun <T> withAdb(ctx: Context, block: (AdbClient) -> T): T {
         Settings.Global.putInt(ctx.contentResolver, "adb_wifi_enabled", 1)
         try {
             val port = discoverPort(ctx, timeoutSec = 25)
                 ?: error("wireless debugging port not found (is Wi-Fi on?)")
             TunnelState.log("Wireless debugging on port $port")
-            AdbClient("127.0.0.1", port, AdbKey.load(ctx)).use {
+            return AdbClient("127.0.0.1", port, AdbKey.load(ctx)).use {
                 it.connect()
-                val reply = it.service("tcpip:${DaemonManager.ADB_PORT}").trim()
-                TunnelState.log("adbd: $reply")
+                block(it)
             }
         } finally {
             Settings.Global.putInt(ctx.contentResolver, "adb_wifi_enabled", 0)

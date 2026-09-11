@@ -8,19 +8,22 @@ import java.net.Socket
 /**
  * Starts and stops the shell-uid [Daemon] from inside the app, no computer needed.
  *
- * Preconditions (both set up once over USB by the Mac, or by an earlier run):
- *  - adbd is in TCP mode on 5555 (`adb tcpip 5555`; the setting lasts until reboot)
- *  - this app holds WRITE_SECURE_SETTINGS (`pm grant`), so it can switch USB
- *    debugging on for the session and off again afterwards.
+ * Precondition: this app holds WRITE_SECURE_SETTINGS (granted once over USB by
+ * the Mac, or by an earlier daemon), so it can switch USB debugging on for the
+ * session and off again afterwards.
  *
- * Steps: enable USB debugging → wait for adbd on 127.0.0.1:5555 → authenticate
- * with our RSA key → run the `app_process` command → wait for the daemon on 5577.
+ * Steps: enable USB debugging (adbd must stay alive: ADB-spawned processes die
+ * with it) → open the wireless-debugging door for a second → `app_process` the
+ * daemon → wait for it on 5577. adbd never listens on TCP.
  */
 object DaemonManager {
-    const val ADB_PORT = 5555
     const val DAEMON_PORT = 5577
 
     fun isDaemonAlive(): Boolean = probe(DAEMON_PORT) != null
+
+    private fun portOpen(port: Int): Boolean = runCatching {
+        Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }; true
+    }.getOrDefault(false)
 
     /** Returns the daemon's hello line ("bridge-daemon uid=2000 pid=… up=…s") or null. */
     fun probe(port: Int, timeoutMs: Int = 500): String? = runCatching {
@@ -42,17 +45,17 @@ object DaemonManager {
             AdbToggle.set(ctx, true)
         }
 
-        // adbd takes a second or two to come up after the setting flips. If it
-        // never listens on 5555, the phone was rebooted: set TCP mode again over
-        // wireless debugging, then retry.
-        var client = connectWithRetry(ctx, attempts = 5)
-        if (client == null) {
-            WifiBootstrap.run(ctx)
-            client = connectWithRetry(ctx, attempts = 10) ?: error("adbd not reachable on $ADB_PORT")
+        // Safety net: if adbd is in TCP mode (a leftover `adb tcpip` from before a
+        // reboot clears it), switch it back to USB-only first. This restarts adbd,
+        // so it has to happen before we spawn anything.
+        if (probe(5555, timeoutMs = 300) != null || portOpen(5555)) {
+            TunnelState.log("adbd is listening on TCP 5555; switching it back to USB mode")
+            WifiBootstrap.withAdb(ctx) { it.service("usb:") }
+            Thread.sleep(2000)
         }
-        TunnelState.log("Connected to adbd")
 
-        client.use {
+        WifiBootstrap.withAdb(ctx) {
+            TunnelState.log("Connected to adbd")
             // Keep the permission fresh (idempotent), then spawn the daemon detached.
             it.shell("pm grant ${ctx.packageName} android.permission.WRITE_SECURE_SETTINGS")
             val apk = ctx.applicationInfo.sourceDir
@@ -71,23 +74,12 @@ object DaemonManager {
         error("daemon did not answer on $DAEMON_PORT")
     }
 
-    private fun connectWithRetry(ctx: Context, attempts: Int): AdbClient? {
-        val key = AdbKey.load(ctx)
-        repeat(attempts) {
-            val client = AdbClient("127.0.0.1", ADB_PORT, key)
-            try { client.connect(); return client } catch (e: Exception) { client.close(); Thread.sleep(1000) }
-        }
-        return null
-    }
-
-    /** Kills the daemon and, if asked, turns USB debugging off again. */
-    fun stop(ctx: Context, disableAdb: Boolean) {
-        runCatching {
-            AdbClient("127.0.0.1", ADB_PORT, AdbKey.load(ctx)).use {
-                it.connect(); it.shell("pkill -f com.bonevane.bridge.Daemon")
-            }
-            TunnelState.log("Daemon stopped")
-        }.onFailure { TunnelState.log("Stop failed: ${it.message}") }
-        if (disableAdb) AdbToggle.set(ctx, false)
+    /**
+     * Turns USB debugging off, which takes the daemon down with it (init kills
+     * adbd's whole cgroup). This is the "lock down" state banking apps want.
+     */
+    fun stop(ctx: Context) {
+        AdbToggle.set(ctx, false)
+        TunnelState.log("Daemon stopped")
     }
 }

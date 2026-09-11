@@ -3,10 +3,9 @@ import Foundation
 
 /// Everything the menu does: pairing over USB, and Connect / Disconnect.
 ///
-/// Connect runs the same three steps you did by hand:
-///   1. dumbpipe connect-tcp --addr 127.0.0.1:7555 <ticket>   (window 1)
-///   2. adb connect 127.0.0.1:7555                             (window 2)
-///   3. scrcpy -s 127.0.0.1:7555 ...                           (window 2)
+/// Connect: dumbpipe connect-tcp --addr 127.0.0.1:7555 <ticket>, then "START"
+/// over that port (phone brings up its daemon), then the VIDEO/CTRL streams.
+/// adb is only used by "Set up over USB".
 @MainActor
 final class BridgeController: ObservableObject {
     static let shared = BridgeController()
@@ -172,14 +171,6 @@ final class BridgeController: ObservableObject {
             ticket = newTicket
             appendLog("Got ticket from phone.")
 
-            phase = .working("Enabling network debugging...")
-            let tcpip = await background { Shell.run(adb, ["-d", "tcpip", "5555"], timeout: 15) }
-            appendLog(tcpip.output, source: "adb")
-            guard tcpip.output.contains("restarting") || tcpip.ok else {
-                fail("adb tcpip failed: \(tcpip.output)")
-                return
-            }
-
             // Lets the phone app switch USB debugging on/off by itself (see AdbToggle.kt).
             let package = BridgeController.phonePackage
             let grant = await background {
@@ -290,6 +281,8 @@ final class BridgeController: ObservableObject {
             if turnScreenOff { session.send(ScrcpyProtocol.displayPower(on: false)) }
             self.session = session
             self.sessionWindow = window
+            // Show in the Dock and ⌘-Tab while the phone window is open.
+            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             phase = .connected
@@ -331,6 +324,7 @@ final class BridgeController: ObservableObject {
         session?.stop()
         session = nil
         if let w = sessionWindow { sessionWindow = nil; w.onClose = nil; w.close() }
+        NSApp.setActivationPolicy(.accessory)   // back to menu-bar only
         if let m = oldMirror, m.isRunning { m.terminate() }
         if let adb = Shell.find("adb") {
             let serial = self.serial

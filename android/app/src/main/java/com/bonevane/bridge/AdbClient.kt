@@ -30,7 +30,7 @@ import javax.net.ssl.SSLEngine
 
 /*
  * A minimal ADB *client* that runs inside the phone and talks to the phone's
- * own adbd on 127.0.0.1:5555 (after `adb tcpip 5555`). Adapted from Shizuku's
+ * own adbd over loopback (wireless debugging, TLS). Adapted from Shizuku's
  * manager (https://github.com/RikkaApps/Shizuku, Apache-2.0); see NOTICE.
  *
  * The wire protocol (system/core/adb/protocol.txt) is a sequence of 24-byte
@@ -105,7 +105,7 @@ class AdbClient(private val host: String, private val port: Int, private val key
     /** Runs `shell:<command>` and returns its combined output. */
     fun shell(command: String): String = service("shell:$command")
 
-    /** Opens any adbd service stream (e.g. `tcpip:5555`) and returns what it wrote. */
+    /** Opens any adbd service stream and returns what it wrote. */
     fun service(name: String): String {
         val localId = 1
         val out = StringBuilder()

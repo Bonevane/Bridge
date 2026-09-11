@@ -17,17 +17,16 @@ import java.io.File
 /**
  * Foreground service that runs the bundled dumbpipe binary:
  *
- *   dumbpipe listen-tcp --host 127.0.0.1:5555
+ *   dumbpipe listen-tcp --host 127.0.0.1:5580
  *
- * i.e. exactly what you ran in Termux. Incoming iroh connections are forwarded
- * to the phone's own adbd. If dumbpipe dies, it is restarted after 5 seconds.
+ * Incoming iroh streams are forwarded to the ControlProxy. If dumbpipe dies,
+ * it is restarted after 5 seconds.
  */
 class TunnelService : Service() {
 
     companion object {
         const val ACTION_START = "com.bonevane.bridge.START"
         const val ACTION_STOP = "com.bonevane.bridge.STOP"
-        const val ADB_PORT = 5555
 
         private const val CHANNEL_ID = "tunnel"
         private const val NOTIFICATION_ID = 1

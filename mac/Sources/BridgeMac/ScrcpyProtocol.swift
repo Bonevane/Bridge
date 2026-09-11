@@ -18,9 +18,12 @@ enum ScrcpyProtocol {
     static let actionDown: UInt8 = 0
     static let actionUp: UInt8 = 1
     static let actionMove: UInt8 = 2
+    static let actionHoverMove: UInt8 = 7
 
     /// "Generic finger": the server injects a touchscreen event, no mouse cursor.
     static let pointerFinger: Int64 = -2
+    /// The mouse pointer: used for hover, so apps show their hover effects.
+    static let pointerMouse: Int64 = -1
 
     struct Position {
         var x: Int32, y: Int32
@@ -34,6 +37,14 @@ enum ScrcpyProtocol {
         m += be(UInt16(pressed ? 0xffff : 0))   // pressure, 16-bit fixed point
         m += be(Int32(pressed ? 1 : 0))         // action button (primary)
         m += be(Int32(pressed ? 1 : 0))         // buttons
+        return m
+    }
+
+    static func hover(at p: Position) -> [UInt8] {
+        var m = [injectTouch, actionHoverMove]
+        m += be(pointerMouse)
+        m += position(p)
+        m += be(UInt16(0)) + be(Int32(0)) + be(Int32(0))
         return m
     }
 

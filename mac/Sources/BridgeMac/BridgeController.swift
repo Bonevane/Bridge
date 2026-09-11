@@ -49,6 +49,8 @@ final class BridgeController: ObservableObject {
 
     private var tunnel: Process?
     private var mirror: Process?
+    private var session: Session?
+    private var sessionWindow: SessionWindow?
     private var userStopped = false
 
     private init() {
@@ -206,10 +208,6 @@ final class BridgeController: ObservableObject {
             fail("dumbpipe not found. Install it with: brew install dumbpipe")
             return
         }
-        guard let scrcpy = Shell.find("scrcpy") else {
-            fail("scrcpy not found. Install it with: brew install scrcpy")
-            return
-        }
 
         userStopped = false
         notice = nil
@@ -260,72 +258,40 @@ final class BridgeController: ObservableObject {
                 return
             }
 
-            // Step 3: adb connect, retrying while adbd comes up.
-            phase = .working("Reaching your phone...")
-            var adbConnected = false
-            var ready = false
-            for attempt in 0..<40 {
-                if userStopped { return }
-                guard tunnelProcess.isRunning else {
-                    stopProcesses()
-                    fail("The tunnel closed unexpectedly. Check the log.")
-                    return
-                }
-                if attempt > 0 && attempt % 10 == 0 {
-                    // Stuck "offline": start the adb connection over.
-                    _ = await background { Shell.run(adb, ["disconnect", serial], timeout: 5) }
-                    adbConnected = false
-                }
-                if !adbConnected {
-                    let result = await background { Shell.run(adb, ["connect", serial], timeout: 15) }
-                    appendLog(result.output, source: "adb")
-                    adbConnected = result.output.contains("connected to")
-                }
-                if adbConnected {
-                    let state = await background { Shell.run(adb, ["-s", serial, "get-state"], timeout: 8) }
-                    if state.ok && state.output.hasSuffix("device") {
-                        ready = true
-                        break
-                    }
-                }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            if userStopped { return }
-            guard ready else {
-                stopProcesses()
-                fail("Couldn't reach the phone. Is the tunnel on in the phone app, and did you run \"Set up over USB\" since the phone last restarted?")
-                return
-            }
-
-            // Step 4: scrcpy.
+            // Step 3: open the video and control streams and show the window.
+            // No adb involved: the phone's daemon runs scrcpy's server for us.
             phase = .working("Starting mirroring...")
-            var arguments = [
-                "-s", serial,
-                "--video-bit-rate", "\(bitrateMbps)M",
-                "--max-size", "\(maxSize)",
-                "--window-title", "Phone (Bridge)",
-            ]
-            if turnScreenOff {
-                arguments.append("--turn-screen-off")
+            let window = SessionWindow()
+            let session = Session(port: port, player: window.player)
+            window.session = session
+            session.onLog = { [weak self] line in self?.appendLog(line, source: "video") }
+            session.onSize = { [weak window] w, h in window?.apply(videoWidth: w, videoHeight: h) }
+            session.onEnd = { [weak self] message in
+                guard let self = self, !self.userStopped else { return }
+                self.appendLog("Video stream ended: \(message ?? "")")
+                self.disconnect()
             }
-            let mirrorProcess = Process()
-            mirrorProcess.executableURL = URL(fileURLWithPath: scrcpy)
-            mirrorProcess.arguments = arguments
-            var environment = Shell.environment
-            environment["ADB"] = adb  // make scrcpy use the same adb
-            mirrorProcess.environment = environment
-            streamOutput(of: mirrorProcess, source: "scrcpy")
-            mirrorProcess.terminationHandler = { process in
-                Task { @MainActor in BridgeController.shared.processEnded(process) }
+            window.onClose = { [weak self] in
+                guard let self = self, !self.userStopped else { return }
+                self.appendLog("Mirroring window closed.")
+                self.disconnect()
             }
-            do {
-                try mirrorProcess.run()
-            } catch {
+            var options = "max_size=\(maxSize) video_bit_rate=\(bitrateMbps)000000"
+            if turnScreenOff { options += " power_off_on_close=false" }
+            let finalOptions = options
+            let startError: String? = await background {
+                do { try session.start(options: finalOptions); return nil } catch { return error.localizedDescription }
+            }
+            if let startError = startError {
                 stopProcesses()
-                fail("Couldn't start scrcpy: \(error.localizedDescription)")
+                fail("Couldn't start mirroring: \(startError)")
                 return
             }
-            mirror = mirrorProcess
+            if turnScreenOff { session.send(ScrcpyProtocol.displayPower(on: false)) }
+            self.session = session
+            self.sessionWindow = window
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
             phase = .connected
         }
     }
@@ -337,6 +303,7 @@ final class BridgeController: ObservableObject {
         let hadTunnel = tunnel?.isRunning ?? false
         let port = localPort
         mirror?.terminate()
+        session?.stop()
         guard hadTunnel else { stopProcesses(); phase = .idle; return }
         phase = .working("Turning USB debugging off...")
         Task {
@@ -361,6 +328,9 @@ final class BridgeController: ObservableObject {
         let oldTunnel = tunnel
         mirror = nil
         tunnel = nil
+        session?.stop()
+        session = nil
+        if let w = sessionWindow { sessionWindow = nil; w.onClose = nil; w.close() }
         if let m = oldMirror, m.isRunning { m.terminate() }
         if let adb = Shell.find("adb") {
             let serial = self.serial

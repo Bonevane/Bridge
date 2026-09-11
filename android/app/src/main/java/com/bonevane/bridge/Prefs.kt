@@ -1,0 +1,37 @@
+package com.bonevane.bridge
+
+import android.content.Context
+import java.security.SecureRandom
+
+/** Small wrapper around SharedPreferences (private to this app). */
+object Prefs {
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("bridge", Context.MODE_PRIVATE)
+
+    /**
+     * The phone's permanent iroh identity: 32 random bytes as hex.
+     * Passed to dumbpipe as IROH_SECRET, so the ticket survives restarts.
+     */
+    fun secret(ctx: Context): String {
+        val p = prefs(ctx)
+        p.getString("secret", null)?.let { return it }
+        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val hex = bytes.joinToString("") { "%02x".format(it) }
+        p.edit().putString("secret", hex).apply()
+        return hex
+    }
+
+    fun resetIdentity(ctx: Context) {
+        prefs(ctx).edit().remove("secret").remove("ticket").apply()
+    }
+
+    fun ticket(ctx: Context): String? = prefs(ctx).getString("ticket", null)
+    fun setTicket(ctx: Context, ticket: String) = prefs(ctx).edit().putString("ticket", ticket).apply()
+
+    /** Start the tunnel automatically after reboot (if it was running before). */
+    fun autostart(ctx: Context): Boolean = prefs(ctx).getBoolean("autostart", true)
+    fun setAutostart(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("autostart", on).apply()
+
+    /** Whether the user last left the tunnel on. */
+    fun wantRunning(ctx: Context): Boolean = prefs(ctx).getBoolean("wantRunning", false)
+    fun setWantRunning(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("wantRunning", on).apply()
+}

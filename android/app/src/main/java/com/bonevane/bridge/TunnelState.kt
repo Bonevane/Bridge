@@ -1,0 +1,43 @@
+package com.bonevane.bridge
+
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.CopyOnWriteArrayList
+
+/**
+ * In-memory state shared by the service, the screen and the ticket provider
+ * (they all live in the same app process).
+ */
+object TunnelState {
+    @Volatile var running = false
+    @Volatile var ready = false
+    @Volatile var status = "Stopped"
+    @Volatile var ticket: String? = null
+
+    private val lines = ArrayDeque<String>()
+    private val listeners = CopyOnWriteArrayList<() -> Unit>()
+    private val main = Handler(Looper.getMainLooper())
+
+    fun update(status: String, ready: Boolean) {
+        this.status = status
+        this.ready = ready
+        notifyListeners()
+    }
+
+    fun log(line: String) {
+        synchronized(lines) {
+            lines.addLast(line)
+            while (lines.size > 200) lines.removeFirst()
+        }
+        notifyListeners()
+    }
+
+    fun logText(): String = synchronized(lines) { lines.joinToString("\n") }
+
+    fun addListener(l: () -> Unit) { listeners.add(l) }
+    fun removeListener(l: () -> Unit) { listeners.remove(l) }
+
+    private fun notifyListeners() {
+        main.post { listeners.forEach { it() } }
+    }
+}

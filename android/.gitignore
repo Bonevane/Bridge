@@ -1,0 +1,6 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+app/src/main/jniLibs/arm64-v8a/libdumbpipe.so

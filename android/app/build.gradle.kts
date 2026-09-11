@@ -39,6 +39,7 @@ android {
             useLegacyPackaging = true
             // It's not a real shared library, so don't try to strip it.
             keepDebugSymbols += "**/libdumbpipe.so"
+            keepDebugSymbols += "**/libscrcpy.so"  // scrcpy's server jar, see scripts/
         }
     }
 }

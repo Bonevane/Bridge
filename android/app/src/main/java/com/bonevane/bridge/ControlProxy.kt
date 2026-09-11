@@ -52,7 +52,11 @@ class ControlProxy(private val ctx: Context) {
                 if (r < 0) return
                 n += r
             }
-            if (head.contentEquals(CNXN)) pipeToAdb(it, head) else control(it, head)
+            when (String(head)) {
+                "CNXN" -> pipeToAdb(it, head)
+                "VIDE", "CTRL" -> pipeToDaemon(it, head)   // "VIDEO …" / "CTRL …" session streams
+                else -> control(it, head)
+            }
         }
     }
 
@@ -60,6 +64,21 @@ class ControlProxy(private val ctx: Context) {
         val adb = runCatching { Socket("127.0.0.1", DaemonManager.ADB_PORT) }
             .getOrElse { TunnelState.log("adb stream refused: adbd not running"); return }
         adb.use {
+            it.getOutputStream().write(head)
+            val t = Thread { pump(it.getInputStream(), client.getOutputStream()); runCatching { client.shutdownOutput() } }
+            t.start()
+            pump(client.getInputStream(), it.getOutputStream())
+            runCatching { it.shutdownOutput() }
+            t.join()
+        }
+    }
+
+    /** Session streams go to the shell-uid daemon, which relays scrcpy-server's sockets. */
+    private fun pipeToDaemon(client: Socket, head: ByteArray) {
+        val daemon = runCatching { Socket("127.0.0.1", DaemonManager.DAEMON_PORT) }
+            .getOrElse { TunnelState.log("session stream refused: daemon not running"); return }
+        daemon.use {
+            it.getInputStream().bufferedReader().let { r -> r.readLine() }  // skip hello line
             it.getOutputStream().write(head)
             val t = Thread { pump(it.getInputStream(), client.getOutputStream()); runCatching { client.shutdownOutput() } }
             t.start()

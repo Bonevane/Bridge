@@ -128,6 +128,24 @@ final class InputView: NSView {
         autoresizesSubviews = true
         player.autoresizingMask = [.width, .height]
         addSubview(player)
+        registerForDraggedTypes([.fileURL])   // drop files to send them to the phone
+    }
+
+    // MARK: - Dropping files onto the phone
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: nil) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+              let session = owner.session else { return false }
+        for url in urls {
+            session.pushFile(url) { reply in
+                DispatchQueue.main.async { session.onLog?(reply) }
+            }
+        }
+        return true
     }
 
     required init?(coder: NSCoder) { fatalError() }

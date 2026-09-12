@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ServiceManagement
 
 /// Everything the menu does: pairing over USB, and Connect / Disconnect.
 ///
@@ -66,6 +67,21 @@ final class BridgeController: ObservableObject {
             updateBackgroundClipboard()
         }
     }
+    /// Start Bridge when you log in, so the menu-bar icon is always there.
+    /// Backed by the system's login-items service, not a copied file.
+    @Published var launchAtLogin: Bool {
+        didSet {
+            guard launchAtLogin != oldValue else { return }
+            do {
+                if launchAtLogin { try SMAppService.mainApp.register() }
+                else { try SMAppService.mainApp.unregister() }
+            } catch {
+                appendLog("Couldn't change the login item: \(error.localizedDescription)")
+                launchAtLogin = oldValue
+            }
+        }
+    }
+
     /// Mirrors the phone's "keep ready after disconnect" setting.
     /// Pushed to the phone whenever it changes and at each Connect.
     @Published var keepReady: Bool {
@@ -98,6 +114,7 @@ final class BridgeController: ObservableObject {
         syncClipboard = defaults.object(forKey: "syncClipboard") as? Bool ?? true
         backgroundClipboard = defaults.bool(forKey: "backgroundClipboard")
         mutePhone = defaults.bool(forKey: "mutePhone")
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     // MARK: - State helpers
@@ -108,6 +125,11 @@ final class BridgeController: ObservableObject {
     }
 
     var isConnected: Bool { phase == .connected }
+
+    var isFailed: Bool {
+        if case .failed = phase { return true }
+        return false
+    }
 
     var menuIcon: String {
         switch phase {

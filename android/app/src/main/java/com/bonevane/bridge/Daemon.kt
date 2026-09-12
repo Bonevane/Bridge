@@ -27,6 +27,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   CLIP                      a standalone clipboard channel: a control-only
  *                             scrcpy-server (no video), relayed both ways, so
  *                             the clipboard syncs without a mirroring window
+ *   PUSH <bytes> <name>       then that many bytes: saves the file into
+ *                             /sdcard/Download and asks Android to index it
  *   INSTALL <bytes>           then that many bytes of APK: installs it with
  *                             `pm install` (shell may), so updates need no cable
  *   QUIT                      exit (the app does this after it was updated,
@@ -78,6 +80,7 @@ object Daemon {
             "AUDIO" -> audio(s, rest.trim())
             "CTRL" -> control(s, rest.trim())
             "CLIP" -> clip(s)
+            "PUSH" -> push(s, rest)
             "INSTALL" -> install(s, rest.trim().toLongOrNull() ?: 0)
             "QUIT" -> { log("quit requested"); reply(s, "OK bye"); System.exit(0) }
             else -> s.getOutputStream().write("ERR unknown command\n".toByteArray())
@@ -144,6 +147,40 @@ object Daemon {
         t.join()
     }
 
+    /**
+     * Receives a dropped file and saves it to the phone's Download folder. The
+     * shell user is in sdcard_rw, so it may write there; a media-scan broadcast
+     * afterwards makes the file show up in Files and the gallery straight away.
+     */
+    private fun push(s: Socket, args: String) {
+        val size = args.substringBefore(' ').trim().toLongOrNull() ?: 0
+        val rawName = args.substringAfter(' ', "").trim()
+        // Keep the name a plain file name: never let it escape the folder.
+        val name = File(rawName).name.ifEmpty { "bridge-file" }
+        if (size <= 0) { reply(s, "ERR size"); return }
+        val target = File("/sdcard/Download", name)
+        runCatching {
+            target.outputStream().use { out ->
+                val buf = ByteArray(64 * 1024)
+                var left = size
+                val input = s.getInputStream()
+                while (left > 0) {
+                    val r = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                    if (r < 0) error("short upload")
+                    out.write(buf, 0, r); left -= r
+                }
+            }
+        }.onFailure { reply(s, "ERR ${it.message}"); target.delete(); return }
+        runCatching {
+            ProcessBuilder(
+                "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                "-d", "file://${target.absolutePath}"
+            ).start().waitFor()
+        }
+        log("pushed ${target.absolutePath} (${target.length()} bytes)")
+        reply(s, "OK saved to Download/$name")
+    }
+
     private fun install(s: Socket, size: Long) {
         if (size <= 0) { reply(s, "ERR size"); return }
         val apk = File("/data/local/tmp/bridge-update.apk")
@@ -167,6 +204,13 @@ object Daemon {
         val code = p.waitFor()
         apk.delete()
         log(if (code == 0) "install ok: $output" else "install failed: $output")
+        if (code == 0) {
+            // This process still runs the *old* code from an install directory that
+            // no longer exists, so retire it: the next START spawns a fresh daemon
+            // from the new APK. (The app itself comes back via MY_PACKAGE_REPLACED.)
+            log("exiting so the next START runs the new code")
+            System.exit(0)
+        }
     }
 
     @Volatile private var clipProcess: Process? = null

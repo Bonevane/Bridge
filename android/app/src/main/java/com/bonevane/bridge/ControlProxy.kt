@@ -54,7 +54,7 @@ class ControlProxy(private val ctx: Context) {
                 n += r
             }
             when (String(head)) {
-                "VIDE", "AUDI", "CTRL", "CLIP", "INST" -> pipeToDaemon(it, head)   // daemon streams
+                "VIDE", "AUDI", "CTRL", "CLIP", "INST", "PUSH" -> pipeToDaemon(it, head)   // daemon streams
                 else -> control(it, head)
             }
         }

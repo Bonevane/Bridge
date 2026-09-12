@@ -25,5 +25,17 @@ struct BridgeApp: App {
             Image(systemName: bridge.menuIcon)
         }
         .menuBarExtraStyle(.window)
+
+        // A real settings window, the way a Mac app is expected to have one,
+        // instead of stacking every option inside the menu.
+        Window("Bridge Settings", id: "settings") {
+            SettingsView(bridge: bridge)
+                .onDisappear {
+                    // Back to menu-bar only, unless a phone window is still open.
+                    if !bridge.isConnected { NSApp.setActivationPolicy(.accessory) }
+                }
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }

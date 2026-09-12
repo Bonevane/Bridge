@@ -132,6 +132,28 @@ final class Session {
         audioPlayer.stop()
     }
 
+    /// Sends a dropped file to the phone's Download folder over its own stream.
+    /// Runs on a background thread; `completion` gets the phone's reply line.
+    func pushFile(_ url: URL, completion: @escaping (String) -> Void) {
+        let port = self.port
+        Thread {
+            let name = url.lastPathComponent
+            guard let data = try? Data(contentsOf: url) else {
+                completion("Couldn't read \(name)"); return
+            }
+            do {
+                let s = try TCPStream(port: port, timeout: 120)
+                try s.write("PUSH \(data.count) \(name)\n")
+                try s.write([UInt8](data))
+                let reply = try s.readLine()
+                s.closeStream()
+                completion(reply.hasPrefix("OK ") ? String(reply.dropFirst(3)) : reply)
+            } catch {
+                completion("Couldn't send \(name): \(error.localizedDescription)")
+            }
+        }.start()
+    }
+
     func send(_ message: [UInt8]) {
         controlQueue.async { [weak self] in
             guard let c = self?.control else { return }

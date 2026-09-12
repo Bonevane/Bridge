@@ -19,7 +19,7 @@
     <application
         android:allowBackup="false"
         android:label="Bridge"
-        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+        android:theme="@style/Theme.Bridge">
 
         <activity
             android:name=".MainActivity"

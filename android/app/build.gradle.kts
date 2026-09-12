@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -32,6 +33,10 @@ android {
         jvmTarget = "17"
     }
 
+    buildFeatures {
+        compose = true
+    }
+
     packaging {
         jniLibs {
             // Extract native libs to disk at install time, so we can execute
@@ -44,4 +49,15 @@ android {
     }
 }
 
-// No third-party dependencies on purpose: fewer things to break while learning.
+dependencies {
+    // Jetpack Compose with Material 3 (Material You: the palette follows the
+    // system wallpaper on Android 12+). The BOM keeps the artefact versions
+    // consistent, so only one version number needs maintaining.
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+}

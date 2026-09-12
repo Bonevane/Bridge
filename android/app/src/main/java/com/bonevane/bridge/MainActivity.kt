@@ -1,51 +1,77 @@
 package com.bonevane.bridge
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Typeface
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.View
-import android.view.WindowInsets
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.bonevane.bridge.ui.BridgeScreen
+import com.bonevane.bridge.ui.BridgeTheme
 
 /**
- * The one screen of the app. Built in code (no XML layouts) so that
- * everything is in one readable file.
+ * The one screen of the app. The layout lives in [BridgeScreen] (Compose,
+ * Material 3); this class keeps the Android-side plumbing: intents, the
+ * clipboard, permissions and the service.
  */
-class MainActivity : Activity() {
-
-    private lateinit var statusView: TextView
-    private lateinit var ticketView: TextView
-    private lateinit var toggleButton: Button
-    private lateinit var batteryButton: Button
-    private lateinit var logView: TextView
-
-    private val refresh: () -> Unit = { render() }
+class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(buildUi())
+        enableEdgeToEdge()
+        handleIntent(intent)
 
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
-        handleIntent(intent)
+
+        setContent {
+            BridgeTheme {
+                BridgeScreen(
+                    onToggleTunnel = {
+                        if (TunnelState.running) TunnelService.stop(this) else TunnelService.start(this)
+                    },
+                    onCopyTicket = ::copyTicket,
+                    onShareTicket = ::shareTicket,
+                    onGetReady = {
+                        Thread {
+                            runCatching { DaemonManager.start(this) }
+                                .onFailure { TunnelState.log("Couldn't get ready: ${it.message}") }
+                        }.start()
+                    },
+                    onPause = {
+                        val policy = TunnelService.current?.policy
+                        Thread {
+                            if (policy != null) policy.pause(15)
+                            else DaemonManager.stop(this, force = true)
+                        }.start()
+                    },
+                    onLockDown = {
+                        Thread { DaemonManager.stop(this, force = true) }.start()
+                    },
+                    onKeepReadyChange = { on ->
+                        Prefs.setKeepReady(this, on)
+                        if (on) TunnelService.current?.policy?.maybeStart("setting turned on")
+                    },
+                    onAutostartChange = { Prefs.setAutostart(this, it) },
+                    onBatteryExemption = ::askBatteryExemption,
+                    onNewIdentity = ::newIdentity,
+                    isIgnoringBatteryOptimisations = {
+                        getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+                    },
+                )
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -58,135 +84,6 @@ class MainActivity : Activity() {
         if (intent?.action == TunnelService.ACTION_START || Prefs.wantRunning(this)) {
             TunnelService.start(this)
         }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        TunnelState.addListener(refresh)
-        render()
-    }
-
-    override fun onPause() {
-        TunnelState.removeListener(refresh)
-        super.onPause()
-    }
-
-    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-
-    private fun text(value: String, size: Float) = TextView(this).apply {
-        text = value
-        textSize = size
-    }
-
-    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        setOnClickListener { onClick() }
-    }
-
-    private fun buildUi(): View {
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(16), dp(20), dp(24))
-        }
-        fun gap(height: Int) = column.addView(View(this), LinearLayout.LayoutParams(1, dp(height)))
-
-        column.addView(text("Bridge", 30f).apply { setTypeface(typeface, Typeface.BOLD) })
-        statusView = text("", 16f)
-        column.addView(statusView)
-        gap(16)
-
-        toggleButton = button("Start tunnel") {
-            if (TunnelState.running) TunnelService.stop(this) else TunnelService.start(this)
-        }
-        column.addView(toggleButton)
-        gap(20)
-
-        column.addView(text("Ticket", 13f).apply { setTypeface(typeface, Typeface.BOLD) })
-        ticketView = text("", 12f).apply {
-            typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
-        }
-        column.addView(ticketView)
-
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(button("Copy") { copyTicket() })
-        row.addView(button("Share") { shareTicket() })
-        column.addView(row)
-
-        column.addView(
-            text(
-                "Easiest pairing: plug the phone into your Mac, then click " +
-                    "\"Set up over USB\" in the Bridge menu. Do that again after every reboot.",
-                13f
-            )
-        )
-        gap(20)
-
-        batteryButton = button("Allow Bridge to run in the background") { askBatteryExemption() }
-        column.addView(batteryButton)
-
-        column.addView(CheckBox(this).apply {
-            text = "Start automatically after reboot"
-            isChecked = Prefs.autostart(this@MainActivity)
-            setOnCheckedChangeListener { _, checked -> Prefs.setAutostart(this@MainActivity, checked) }
-        })
-
-        column.addView(button("New identity...") { confirmNewIdentity() })
-        gap(20)
-
-        // Milestone 2 experiment: start/stop the shell-uid daemon from the phone.
-        val daemonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        daemonRow.addView(button("Get ready now") {
-            Thread {
-                runCatching { DaemonManager.start(this) }
-                    .onFailure { TunnelState.log("Daemon start failed: ${it.message}") }
-            }.start()
-        })
-        daemonRow.addView(button("Pause 15 min") {
-            val policy = TunnelService.current?.policy
-            Thread { if (policy != null) policy.pause(15) else DaemonManager.stop(this, force = true) }.start()
-        })
-        daemonRow.addView(button("USB debugging off") {
-            Thread { DaemonManager.stop(this, force = true) }.start()
-        })
-        column.addView(daemonRow)
-        column.addView(CheckBox(this).apply {
-            text = "Keep ready after disconnect (works on cellular; pause for banking apps)"
-            isChecked = Prefs.keepReady(this@MainActivity)
-            setOnCheckedChangeListener { _, checked ->
-                Prefs.setKeepReady(this@MainActivity, checked)
-                if (checked) TunnelService.current?.policy?.maybeStart("setting turned on")
-            }
-        })
-        gap(20)
-
-        column.addView(text("Log", 13f).apply { setTypeface(typeface, Typeface.BOLD) })
-        logView = text("", 11f).apply {
-            typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
-        }
-        column.addView(logView)
-
-        return ScrollView(this).apply {
-            addView(column)
-            // Android 15+ draws apps edge to edge; keep content clear of the status and nav bars.
-            setOnApplyWindowInsetsListener { v, insets ->
-                val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-                insets
-            }
-        }
-    }
-
-    private fun render() {
-        statusView.text = TunnelState.status
-        toggleButton.text = if (TunnelState.running) "Stop tunnel" else "Start tunnel"
-        ticketView.text = currentTicket() ?: "No ticket yet. Start the tunnel."
-        val pm = getSystemService(PowerManager::class.java)
-        batteryButton.visibility =
-            if (pm.isIgnoringBatteryOptimizations(packageName)) View.GONE else View.VISIBLE
-        logView.text = TunnelState.logText().takeLast(4000)
     }
 
     private fun currentTicket(): String? = TunnelState.ticket ?: Prefs.ticket(this)
@@ -210,17 +107,10 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun confirmNewIdentity() {
-        AlertDialog.Builder(this)
-            .setTitle("Create a new identity?")
-            .setMessage("Your Mac will need the new ticket. Run \"Set up over USB\" again afterwards.")
-            .setPositiveButton("Reset") { _, _ ->
-                TunnelService.stop(this)
-                Prefs.resetIdentity(this)
-                TunnelState.ticket = null
-                render()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+    private fun newIdentity() {
+        TunnelService.stop(this)
+        Prefs.resetIdentity(this)
+        TunnelState.ticket = null
+        TunnelState.update("Stopped. New identity: set up over USB again.", ready = false)
     }
 }

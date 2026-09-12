@@ -155,8 +155,10 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 - [x] **Clipboard sync** both ways, during a session or in the background
 - [x] **File drop:** drag files onto the phone window
 - [x] **Notification mirroring:** works even with USB debugging off
+- [x] **Bluetooth link:** notifications and clipboard travel over BLE when the phone is nearby, so no tunnel has to stay open
 - [x] **Native interfaces:** Material 3 Expressive on the phone, a proper menu and Settings window on the Mac
 - [ ] **Auto-pause** when a listed app comes to the foreground
+- [ ] **Files over Bluetooth** as well as the tunnel
 - [ ] **Device pairing:** approve new Macs on the phone instead of a bearer ticket
 - [ ] **iroh in-app:** replace the dumbpipe binary with the library; self-hosted relay
 - [ ] **More clients:** Linux and Windows

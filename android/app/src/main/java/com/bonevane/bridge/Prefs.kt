@@ -36,7 +36,12 @@ object Prefs {
      * true = keep the daemon so Connect works on cellular; pause manually for banking.
      */
     fun keepReady(ctx: Context): Boolean = prefs(ctx).getBoolean("keepReady", false)
-    fun setKeepReady(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("keepReady", on).apply()
+
+    /** When this was last changed, so the two devices can tell whose copy is newer. */
+    fun keepReadyAt(ctx: Context): Long = prefs(ctx).getLong("keepReadyAt", 0)
+
+    fun setKeepReady(ctx: Context, on: Boolean, at: Long = System.currentTimeMillis()) =
+        prefs(ctx).edit().putBoolean("keepReady", on).putLong("keepReadyAt", at).apply()
 
     /** "Pause for banking": USB debugging stays off until this time (epoch ms). */
     fun pausedUntil(ctx: Context): Long = prefs(ctx).getLong("pausedUntil", 0)

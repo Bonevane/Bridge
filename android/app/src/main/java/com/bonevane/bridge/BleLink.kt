@@ -152,6 +152,27 @@ class BleLink(private val context: Context) {
     }
 
     /**
+     * "keep on at=<millis>" from the Mac. Whichever side changed the setting
+     * most recently wins, so neither device can silently overwrite the other:
+     * if our copy is newer we keep it and answer with the truth instead.
+     */
+    private fun keepReady(message: String) {
+        val words = message.trim().split(" ")
+        val on = words.getOrNull(1) == "on"
+        val theirs = words.firstOrNull { it.startsWith("at=") }
+            ?.removePrefix("at=")?.toLongOrNull() ?: 0
+        val ours = Prefs.keepReadyAt(context)
+        if (theirs >= ours) {
+            Prefs.setKeepReady(context, on, theirs)
+            TunnelState.log("Mac set \"keep ready\" to $on (its change was newer)")
+            if (on) TunnelService.current?.policy?.maybeStart("Mac asked to keep ready")
+        } else {
+            TunnelState.log("Ignored the Mac's \"keep ready\": this phone changed it more recently")
+        }
+        sendStatus()
+    }
+
+    /**
      * Tells the Mac what works right now. Doubles as the heartbeat, so the Mac's
      * picture of the phone is never more than 30 s stale.
      */
@@ -169,6 +190,7 @@ class BleLink(private val context: Context) {
             "daemon=${if (daemon) 1 else 0}" +
                 " tunnel=${if (TunnelState.tunnelOn) 1 else 0}" +
                 " keep=${if (Prefs.keepReady(context)) 1 else 0}" +
+                " keepAt=${Prefs.keepReadyAt(context)}" +
                 " paused=${if (paused) 1 else 0}"
         )
     }
@@ -292,13 +314,7 @@ class BleLink(private val context: Context) {
                     TunnelState.log("Mac turned the tunnel off over Bluetooth")
                     TunnelService.setTunnel(context, false)
                 }
-                "keep on", "keep off" -> {
-                    val on = message.trim() == "keep on"
-                    Prefs.setKeepReady(context, on)
-                    TunnelState.log("Mac set \"keep ready\" to $on over Bluetooth")
-                    if (on) TunnelService.current?.policy?.maybeStart("Mac asked to keep ready")
-                    sendStatus()
-                }
+                "status" -> sendStatus()        // the Mac's refresh button
                 "session over" -> {
                     // The Mac finished mirroring. Same as the tunnel's STOP, but
                     // over Bluetooth, which still works when the tunnel is the
@@ -306,7 +322,9 @@ class BleLink(private val context: Context) {
                     TunnelState.log("Mac ended the session (Bluetooth): ${DaemonManager.stop(context)}")
                     sendStatus()
                 }
-                else -> TunnelState.log("Unknown Bluetooth command: $message")
+                // "keep on at=<millis>" carries a timestamp, so it can't match exactly.
+                else -> if (message.startsWith("keep ")) keepReady(message)
+                        else TunnelState.log("Unknown Bluetooth command: $message")
             }
             return
         }

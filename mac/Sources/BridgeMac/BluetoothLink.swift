@@ -69,6 +69,15 @@ final class BluetoothLink: NSObject {
     func start() {
         guard !wanted else { return }
         wanted = true
+        switch CBCentralManager.authorization {
+        case .denied, .restricted:
+            state = .unauthorized
+            log("Bluetooth: Bridge isn't allowed to use Bluetooth (System Settings › Privacy & Security).")
+        case .notDetermined:
+            log("Bluetooth: asking macOS for permission…")
+        default:
+            break
+        }
         // Created lazily: making a CBCentralManager is what triggers macOS's
         // Bluetooth permission prompt, so don't do it until it's wanted.
         central = CBCentralManager(delegate: self, queue: nil)
@@ -138,9 +147,16 @@ final class BluetoothLink: NSObject {
         send(type: Self.typeCommand, text: on ? "tunnel on" : "tunnel off")
     }
 
+    /// Asks the phone to report its state now, rather than waiting for the
+    /// next 30-second heartbeat.
+    func requestStatus() {
+        send(type: Self.typeCommand, text: "status")
+    }
+
     /// Pushes the "keep ready" choice to the phone. Works with no tunnel.
-    func setKeepReady(_ on: Bool) {
-        send(type: Self.typeCommand, text: on ? "keep on" : "keep off")
+    func setKeepReady(_ on: Bool, changedAt: Double) {
+        send(type: Self.typeCommand,
+             text: "keep \(on ? "on" : "off") at=\(Int64(changedAt))")
     }
 
     /// Tells the phone the session is over, so it can turn USB debugging off.
@@ -206,7 +222,14 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             state = .off
             log("Bluetooth: turned off")
             isLinked = false
-        default:
+        case .unsupported:
+            state = .off
+            log("Bluetooth: not supported on this Mac")
+        case .unknown, .resetting:
+            // Still starting up, or waiting on the permission prompt. Saying
+            // "off" here was a lie, and hid a pending prompt behind a wrong label.
+            state = .searching
+        @unknown default:
             break
         }
     }

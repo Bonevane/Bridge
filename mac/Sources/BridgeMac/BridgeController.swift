@@ -114,8 +114,9 @@ final class BridgeController: ObservableObject {
         }
     }
 
-    /// Mirrors the phone's "keep ready after disconnect" setting.
-    /// Pushed to the phone whenever it changes and at each Connect.
+    /// "Keep ready after disconnect". Both devices can change it, so each keeps
+    /// the time of its own last change and the newer one wins; neither can
+    /// silently overwrite the other.
     @Published var keepReady: Bool {
         didSet {
             guard keepReady != oldValue else { return }
@@ -123,8 +124,17 @@ final class BridgeController: ObservableObject {
             if !keepReady && backgroundClipboard {
                 backgroundClipboard = false   // can't run without a live daemon
             }
+            if !adoptingFromPhone {
+                keepReadyChangedAt = Date().timeIntervalSince1970 * 1000
+            }
             pushMode()
         }
+    }
+
+    /// Milliseconds since 1970, matching what the phone sends.
+    var keepReadyChangedAt: Double {
+        get { UserDefaults.standard.double(forKey: "keepReadyChangedAt") }
+        set { UserDefaults.standard.set(newValue, forKey: "keepReadyChangedAt") }
     }
 
     let localPort = 7555
@@ -405,6 +415,7 @@ final class BridgeController: ObservableObject {
             self.sessionWindow = window
             startClipboardWatch()
             startSessionWatchdog()
+            if bluetoothLinked { bluetoothLink.requestStatus() } else { refreshPhoneStatus() }
             // Show in the Dock and ⌘-Tab while the phone window is open.
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
@@ -470,13 +481,38 @@ final class BridgeController: ObservableObject {
         return phoneTunnelOn
     }
 
+    /// Settles "keep ready" between the two devices: the side that changed it
+    /// most recently wins, and the stale side is corrected rather than obeyed.
+    func reconcileKeepReady(phoneValue: Bool, phoneChangedAt: Double) {
+        if phoneChangedAt >= keepReadyChangedAt {
+            if phoneValue != keepReady {
+                adoptingFromPhone = true
+                keepReady = phoneValue
+                adoptingFromPhone = false
+                appendLog("Took \"keep ready\" = \(phoneValue) from the phone (changed there more recently).")
+            }
+            keepReadyChangedAt = phoneChangedAt
+        } else if phoneValue != keepReady {
+            appendLog("Sending \"keep ready\" = \(keepReady) to the phone (changed here more recently).")
+            pushKeepReady()
+        }
+    }
+
+    private func pushKeepReady() {
+        bluetoothLink.setKeepReady(keepReady, changedAt: keepReadyChangedAt)
+    }
+
     /// Menu action: look for the phone again, and re-read what it says it can do.
     func refreshBluetooth() {
         guard useBluetooth else {
             notice = "Bluetooth is switched off in Settings."
             return
         }
-        bluetoothLink.rescan()
+        if bluetoothLinked {
+            bluetoothLink.requestStatus()   // a resync without dropping the link
+        } else {
+            bluetoothLink.rescan()
+        }
         refreshPhoneStatus()
     }
 
@@ -559,7 +595,7 @@ final class BridgeController: ObservableObject {
         // Bluetooth first: the tunnel is off most of the time now, and this
         // setting used to sit unsent because of that.
         if bluetoothLinked {
-            bluetoothLink.setKeepReady(keepReady)
+            pushKeepReady()
             return
         }
         guard TCPStream.portOpen(localPort) else { return }
@@ -576,17 +612,15 @@ final class BridgeController: ObservableObject {
             guard let reply = await background { Control.send("STATUS", port: port, timeout: 8) },
                   reply.hasPrefix("OK") else { return }
             var phoneKeep: Bool?
+            var phoneKeepAt: Double = 0
             var phonePaused = false
             for field in reply.split(separator: " ") {
                 if field.hasPrefix("keep=") { phoneKeep = field.hasSuffix("true") }
+                if field.hasPrefix("keepAt=") { phoneKeepAt = Double(field.dropFirst("keepAt=".count)) ?? 0 }
                 if field.hasPrefix("paused=") { phonePaused = field.hasSuffix("true") }
             }
-            if let phoneKeep = phoneKeep, phoneKeep != keepReady {
-                // Adopt the phone's value without pushing it straight back at it.
-                adoptingFromPhone = true
-                keepReady = phoneKeep
-                adoptingFromPhone = false
-                appendLog("Adopted \"keep ready\" = \(phoneKeep) from the phone.")
+            if let phoneKeep = phoneKeep {
+                reconcileKeepReady(phoneValue: phoneKeep, phoneChangedAt: phoneKeepAt)
             }
             phonePausedForBanking = phonePaused
         }
@@ -617,15 +651,9 @@ final class BridgeController: ObservableObject {
                 self.phoneDaemonAlive = daemon
                 self.phoneTunnelOn = tunnel
                 if let paused = fields["paused"] { self.phonePausedForBanking = paused == "1" }
-                // The phone owns "keep ready": mirror it rather than pushing the
-                // Mac's copy back, which used to overwrite it on every connect.
                 if let keep = fields["keep"] {
-                    let value = keep == "1"
-                    if value != self.keepReady {
-                        self.adoptingFromPhone = true
-                        self.keepReady = value
-                        self.adoptingFromPhone = false
-                    }
+                    self.reconcileKeepReady(phoneValue: keep == "1",
+                                            phoneChangedAt: Double(fields["keepAt"] ?? "0") ?? 0)
                 }
                 // Mirroring rides the tunnel, so if the phone drops it the
                 // session is already dead: the video socket would otherwise just

@@ -44,6 +44,8 @@ struct SettingsView: View {
                      : "Notifications and the clipboard use Bluetooth; mirroring uses the tunnel.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
 
             Section {
@@ -52,6 +54,8 @@ struct SettingsView: View {
                 Text("Bridge lives in the menu bar, and shows a Dock icon only while a phone window is open.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .formStyle(.grouped)
@@ -78,6 +82,8 @@ struct SettingsView: View {
                 Text("Bridge lowers the bitrate by itself when the connection can't keep up, and raises it again afterwards.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
 
             Section("While mirroring") {
@@ -102,6 +108,8 @@ struct SettingsView: View {
                      : "USB debugging is turned off after each session, so apps that check for it behave normally. Connecting then needs Wi-Fi for about a second, which means cellular only works if the last session ended on cellular.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
 
             Section {
@@ -113,6 +121,8 @@ struct SettingsView: View {
                 Text("Notifications and the clipboard travel over Bluetooth when the phone is within range, which costs almost nothing. Without it they need an open internet tunnel.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
 
             Section {
@@ -125,6 +135,8 @@ struct SettingsView: View {
                 Text("Works even while USB debugging is off, because it needs no privileged access on the phone. Grant Bridge notification access there first. Bridge keeps a connection open while this is on, which uses a little battery and data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
 
             Section {
@@ -137,6 +149,8 @@ struct SettingsView: View {
                 Text("Copying on either device makes the text available on the other. Syncing with no window open holds a connection to the phone all the time, which costs battery and data, and needs the phone kept ready.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .formStyle(.grouped)
@@ -174,6 +188,8 @@ struct SettingsView: View {
                 Text("Needed once. Plug the phone in, unlock it, and click. Treat the ticket like a password: anyone who has it can reach the phone.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
 
             Section("Paste a ticket") {

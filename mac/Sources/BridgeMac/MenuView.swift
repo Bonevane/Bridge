@@ -23,12 +23,11 @@ struct MenuView: View {
             .padding(12)
         }
         .frame(width: 300)
-        // The panel's own rounded backdrop: SwiftUI's menu-bar window is square,
-        // so the shape is drawn here and the window made transparent behind it.
-        .background(
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(.regularMaterial)
-        )
+        // The panel's own backdrop. SwiftUI's menu-bar window is square, so the
+        // shape is drawn here and the window left transparent behind it. This is
+        // the one glass layer: `.regularMaterial` read as a plain blur and looked
+        // nothing like the system's own menu-bar panels.
+        .glassPanel(cornerRadius: 13)
         .onAppear { bridge.refreshPhoneStatus() }
     }
 
@@ -83,7 +82,7 @@ struct MenuView: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassPanel(cornerRadius: 13, tint: reach.tint == .secondary ? nil : reach.tint)
+        .innerCard(tint: reach.tint == .secondary ? nil : reach.tint)
     }
 
     private var primaryButton: some View {
@@ -114,7 +113,7 @@ struct MenuView: View {
             CapabilityRow(icon: "doc.on.clipboard", name: "Clipboard", state: bridge.clipboardCapability)
         }
         .padding(.vertical, 3)
-        .glassPanel(cornerRadius: 13)
+        .innerCard()
     }
 
     private var actions: some View {
@@ -153,7 +152,7 @@ struct MenuView: View {
             }
         }
         .padding(.vertical, 4)
-        .glassPanel(cornerRadius: 13)
+        .innerCard()
     }
 
     private var logSection: some View {
@@ -235,6 +234,17 @@ struct MenuView: View {
         return Reach(title: "Phone not nearby",
                      detail: "Out of Bluetooth range. Mirroring still works if its tunnel is on.",
                      symbol: "iphone.slash", tint: .secondary)
+    }
+}
+
+private extension View {
+    /// A card sitting *on* the panel's glass. Deliberately not glass itself:
+    /// stacking glass on glass turns both to mud.
+    func innerCard(tint: Color? = nil) -> some View {
+        background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(tint?.opacity(0.16) ?? Color.primary.opacity(0.06))
+        )
     }
 }
 

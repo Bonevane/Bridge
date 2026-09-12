@@ -97,7 +97,8 @@ class ReadyPolicy(private val ctx: Context) {
     private fun scheduleWatchdog() {
         main.postDelayed(object : Runnable {
             override fun run() {
-                if (!Prefs.keepReady(ctx) && !isPaused && AdbToggle.isEnabled(ctx) &&
+                val macNearby = TunnelService.current?.ble?.connected == true
+                if (!Prefs.keepReady(ctx) && !isPaused && AdbToggle.isEnabled(ctx) && !macNearby &&
                     !TunnelState.macActive(IDLE_LOCKDOWN_MS) && DaemonManager.isDaemonAlive()) {
                     TunnelState.log("No Mac for 10 minutes: turning USB debugging off")
                     DaemonManager.stop(ctx, force = true)

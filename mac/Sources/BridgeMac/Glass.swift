@@ -15,7 +15,7 @@ extension View {
             // A full-strength tint turns the panel into a solid slab of colour;
             // glass is meant to be a hint of it, so the colour is heavily diluted.
             let glass = tint.map { Glass.regular.tint($0.opacity(0.22)) } ?? .regular
-            self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius))
+            self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius, style: .continuous))
         } else {
             self.background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -32,7 +32,7 @@ extension View {
             // `if` statement inside it is read as a view, not as control flow.
             let glass = tint.map { Glass.regular.interactive().tint($0) }
                 ?? Glass.regular.interactive()
-            self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius))
+            self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius, style: .continuous))
         } else {
             self.background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -110,24 +110,16 @@ struct RoundedPanelWindow: NSViewRepresentable {
         // Whatever SwiftUI paints behind the panel is opaque and square. Clear it
         // so the rounded background drawn in the view itself is what shows.
         window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
-        var view = window.contentView
-        while let current = view {
-            current.wantsLayer = true
-            current.layer?.cornerRadius = cornerRadius
-            current.layer?.cornerCurve = .continuous
-            current.layer?.masksToBounds = true
-            view = current.superview
-        }
+        // Deliberately no layer cornerRadius here: a layer mask rounds with a
+        // plain circular arc, which clips the continuous (squircle) shape drawn
+        // in SwiftUI and makes the corners look hand-cut. Transparency is all
+        // this needs to do; the shape comes from the view.
     }
 
     private func roundBackdrops(in view: NSView) {
         if let effect = view as? NSVisualEffectView {
-            effect.wantsLayer = true
-            effect.layer?.cornerRadius = cornerRadius
-            effect.layer?.cornerCurve = .continuous
-            effect.layer?.masksToBounds = true
-            // maskImage is what NSVisualEffectView actually honours for shape.
-            effect.maskImage = Self.roundedMask(radius: cornerRadius)
+            // Hide SwiftUI's square backdrop entirely; the panel draws its own.
+            effect.isHidden = true
         }
         view.subviews.forEach { roundBackdrops(in: $0) }
     }

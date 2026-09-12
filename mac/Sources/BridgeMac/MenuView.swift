@@ -8,7 +8,7 @@ import SwiftUI
 /// Everything else is in Settings.
 struct MenuView: View {
     @ObservedObject var bridge: BridgeController
-    @Environment(\.openWindow) private var openWindow
+    // `openSettings` needs macOS 14; the selector works everywhere Bridge runs.
 
     var body: some View {
         GlassGroup(spacing: 14) {
@@ -26,10 +26,9 @@ struct MenuView: View {
         // The panel's own rounded backdrop: SwiftUI's menu-bar window is square,
         // so the shape is drawn here and the window made transparent behind it.
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .fill(.regularMaterial)
         )
-        .background(RoundedPanelWindow())
         .onAppear { bridge.refreshPhoneStatus() }
     }
 
@@ -128,7 +127,7 @@ struct MenuView: View {
             MenuRow("Settings…", systemImage: "gearshape", shortcut: "⌘,") {
                 NSApp.setActivationPolicy(.regular)
                 NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
+                openSettingsWindow()
             }
 
             Divider().padding(.horizontal, 9).padding(.vertical, 2)
@@ -299,4 +298,15 @@ private struct MenuRow: View {
 
 private final class HoverState: ObservableObject {
     @Published var inside = false
+}
+
+/// Opens the Settings scene. The SwiftUI environment action for this is macOS 14
+/// and later, so this goes through the app's own menu action, which AppKit has
+/// always had (and whose selector was renamed in macOS 13).
+private func openSettingsWindow() {
+    let selectors = ["showSettingsWindow:", "showPreferencesWindow:"]
+    for name in selectors {
+        let selector = Selector((name))
+        if NSApp.sendAction(selector, to: nil, from: nil) { return }
+    }
 }

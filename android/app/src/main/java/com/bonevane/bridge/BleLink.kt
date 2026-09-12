@@ -156,6 +156,11 @@ class BleLink(private val context: Context) {
      * picture of the phone is never more than 30 s stale.
      */
     fun sendStatus() {
+        // A Mac on the Bluetooth link is very much still there, even though it
+        // hasn't spoken over the tunnel. Without this the idle watchdog decides
+        // it vanished and locks the phone down, which quietly kills the daemon
+        // and drops the clipboard to Mac-to-phone only.
+        if (subscribers.isNotEmpty()) TunnelState.macSeen()
         val daemon = DaemonManager.isDaemonAlive()
         send(TYPE_STATUS, "daemon=${if (daemon) 1 else 0} tunnel=${if (TunnelState.tunnelOn) 1 else 0}")
     }
@@ -231,7 +236,7 @@ class BleLink(private val context: Context) {
                     if (on) subscribers.add(device) else subscribers.remove(device)
                     connected = subscribers.isNotEmpty()
                     TunnelState.log("Bluetooth: Mac ${if (on) "connected" else "left"}")
-                    if (on) sendStatus()
+                    if (on) { TunnelState.macSeen(); sendStatus() }
                 }
                 if (responseNeeded) {
                     server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)

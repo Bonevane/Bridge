@@ -35,10 +35,22 @@ struct MenuView: View {
     // MARK: - Header
 
     private var header: some View {
-        Text("Bridge")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
+        ZStack {
+            Text("Bridge")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button(action: bridge.refreshBluetooth) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Look for the phone again")
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 
     /// How the phone is reachable at the moment: the one line worth reading first.
@@ -62,6 +74,9 @@ struct MenuView: View {
             }
             Spacer(minLength: 0)
             if case .working = bridge.phase {
+                ProgressView().controlSize(.small)
+            } else if bridge.bluetoothState == .searching && !bridge.isConnected {
+                // Hunting for the phone: say so, rather than looking idle.
                 ProgressView().controlSize(.small)
             }
         }
@@ -199,10 +214,26 @@ struct MenuView: View {
                             : "Bluetooth linked · tunnel off, so no remote mirroring",
                          symbol: "dot.radiowaves.left.and.right", tint: .green)
         }
+        switch bridge.bluetoothState {
+        case .searching:
+            return Reach(title: "Looking for your phone",
+                         detail: "Searching over Bluetooth. Mirroring still works if its tunnel is on.",
+                         symbol: "dot.radiowaves.forward", tint: .secondary)
+        case .unauthorized:
+            return Reach(title: "Bluetooth not allowed",
+                         detail: "Allow Bridge to use Bluetooth in System Settings › Privacy & Security.",
+                         symbol: "exclamationmark.triangle.fill", tint: .orange)
+        case .off:
+            return Reach(title: "Phone not nearby",
+                         detail: bridge.useBluetooth
+                            ? "Bluetooth is off on this Mac."
+                            : "Bluetooth is switched off in Bridge's settings.",
+                         symbol: "iphone.slash", tint: .secondary)
+        case .linked:
+            break   // handled above
+        }
         return Reach(title: "Phone not nearby",
-                     detail: bridge.useBluetooth
-                        ? "Out of Bluetooth range. Mirroring still works if its tunnel is on."
-                        : "Bluetooth is switched off in Settings",
+                     detail: "Out of Bluetooth range. Mirroring still works if its tunnel is on.",
                      symbol: "iphone.slash", tint: .secondary)
     }
 }

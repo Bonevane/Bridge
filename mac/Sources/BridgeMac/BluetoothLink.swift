@@ -13,6 +13,19 @@ import Foundation
 /// to its notify characteristic, and writes to the other one. The phone requires
 /// encryption on both, so this only works with a Mac the phone is paired with.
 final class BluetoothLink: NSObject {
+
+    /// What the link is doing, so the menu can say so instead of just "not nearby".
+    enum LinkState {
+        case off             // Bluetooth is switched off on the Mac
+        case unauthorized    // macOS hasn't granted Bridge permission
+        case searching       // looking for the phone
+        case linked          // connected and subscribed
+    }
+
+    private(set) var state: LinkState = .off {
+        didSet { if state != oldValue { onStateChange?(state) } }
+    }
+    var onStateChange: ((LinkState) -> Void)?
     private static let service = CBUUID(string: "b71d0001-5c8f-4b1e-9a3a-3f1f0a7c9e11")
     private static let txUUID = CBUUID(string: "b71d0002-5c8f-4b1e-9a3a-3f1f0a7c9e11")   // phone → Mac
     private static let rxUUID = CBUUID(string: "b71d0003-5c8f-4b1e-9a3a-3f1f0a7c9e11")   // Mac → phone
@@ -65,6 +78,20 @@ final class BluetoothLink: NSObject {
         watchdog = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             self?.ensureScanning()
         }
+    }
+
+    /// Starts the hunt again from scratch: drops anything half-connected and
+    /// rescans. What the menu's refresh button calls.
+    func rescan() {
+        guard let central = central, central.state == .poweredOn else { return }
+        if let stale = phone { central.cancelPeripheralConnection(stale) }
+        phone = nil
+        rx = nil
+        isLinked = false
+        state = .searching
+        central.stopScan()
+        central.scanForPeripherals(withServices: [Self.service])
+        log("Bluetooth: looking again")
     }
 
     func stop() {
@@ -164,11 +191,14 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         switch manager.state {
         case .poweredOn:
             guard wanted else { return }
+            state = .searching
             manager.scanForPeripherals(withServices: [Self.service])
             log("Bluetooth: looking for the phone")
         case .unauthorized:
+            state = .unauthorized
             log("Bluetooth: macOS hasn't given Bridge permission")
         case .poweredOff:
+            state = .off
             log("Bluetooth: turned off")
             isLinked = false
         default:
@@ -193,7 +223,10 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         isLinked = false
         rx = nil
         log("Bluetooth: phone out of range")
-        if wanted { manager.scanForPeripherals(withServices: [Self.service]) }
+        if wanted {
+            state = .searching
+            manager.scanForPeripherals(withServices: [Self.service])
+        }
     }
 
     func centralManager(_ manager: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -223,6 +256,7 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             return
         }
         isLinked = characteristic.isNotifying
+        state = isLinked ? .linked : .searching
         if isLinked {
             lastHeard = Date()
             log("Bluetooth: linked to the phone")

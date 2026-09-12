@@ -76,6 +76,8 @@ final class BridgeController: ObservableObject {
     }
     /// True while the phone is linked over Bluetooth.
     @Published var bluetoothLinked = false
+    /// What the Bluetooth link is doing, for the menu's spinner and wording.
+    @Published var bluetoothState: BluetoothLink.LinkState = .off
     /// Reported by the phone over Bluetooth, so the Mac can say what works.
     @Published var phoneDaemonAlive = false
     @Published var phoneTunnelOn = false
@@ -470,6 +472,16 @@ final class BridgeController: ObservableObject {
         return phoneTunnelOn
     }
 
+    /// Menu action: look for the phone again, and re-read what it says it can do.
+    func refreshBluetooth() {
+        guard useBluetooth else {
+            notice = "Bluetooth is switched off in Settings."
+            return
+        }
+        bluetoothLink.rescan()
+        refreshPhoneStatus()
+    }
+
     /// Menu action: switch the phone's tunnel on or off from here.
     func togglePhoneTunnel() {
         guard bluetoothLinked else {
@@ -587,6 +599,9 @@ final class BridgeController: ObservableObject {
             bluetoothLink.stop()
             bluetoothLinked = false
             return
+        }
+        bluetoothLink.onStateChange = { [weak self] state in
+            Task { @MainActor in self?.bluetoothState = state }
         }
         bluetoothLink.onStatus = { [weak self] daemon, tunnel in
             Task { @MainActor in

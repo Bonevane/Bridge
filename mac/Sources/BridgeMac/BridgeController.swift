@@ -198,7 +198,7 @@ final class BridgeController: ObservableObject {
 
     private func adbPath() -> String? {
         guard let adb = Shell.find("adb") else {
-            fail("adb not found. Install it with: brew install --cask android-platform-tools")
+            fail("adb not found. Install it with \"brew install --cask android-platform-tools\", or set ANDROID_HOME to your SDK.")
             return nil
         }
         return adb

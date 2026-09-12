@@ -26,10 +26,15 @@ import com.bonevane.bridge.ui.BridgeTheme
  */
 class MainActivity : ComponentActivity() {
 
+    /// Permission state is read once per screen; granting happens in a system
+    /// screen, so it has to be re-read when we come back or the list lies.
+    private var accessState by mutableStateOf<List<Access>>(emptyList())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleIntent(intent)
+        accessState = Access.all(this)
 
         // Notifications for the foreground service, Bluetooth for the short-range
         // link to the Mac. Asked for together so there's one round of prompts.
@@ -78,7 +83,7 @@ class MainActivity : ComponentActivity() {
                     isIgnoringBatteryOptimisations = {
                         getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
                     },
-                    accessItems = Access.all(this),
+                    accessItems = accessState,
                 )
             }
         }
@@ -86,6 +91,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        accessState = Access.all(this)      // a permission may have just been granted
         // Bluetooth permission may have just been granted, here or in system
         // settings. Starting again is harmless if the link is already up.
         TunnelService.current?.ble?.let { runCatching { it.start() } }

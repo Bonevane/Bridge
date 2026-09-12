@@ -11,13 +11,28 @@ struct CommandResult: Sendable {
 /// Helpers for finding and running command-line tools (adb, dumbpipe, scrcpy).
 enum Shell {
     /// Apps launched from Finder don't get your terminal's PATH, so look in the usual places.
-    static let searchPaths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        NSHomeDirectory() + "/Library/Android/sdk/platform-tools",  // Android SDK (e.g. from Flutter)
-        "/usr/bin",
-        "/bin",
-    ]
+    /// A GUI app launched from Finder gets a bare PATH, so anything installed by
+    /// Homebrew or an SDK has to be looked for by hand.
+    static let searchPaths: [String] = {
+        var dirs = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            // Homebrew's android-commandlinetools puts adb here, not in bin.
+            "/opt/homebrew/share/android-commandlinetools/platform-tools",
+            "/usr/local/share/android-commandlinetools/platform-tools",
+            NSHomeDirectory() + "/Library/Android/sdk/platform-tools",       // Android Studio / Flutter
+            NSHomeDirectory() + "/Library/Android/sdk/cmdline-tools/latest/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+        // Respect an SDK location the user has already configured.
+        for key in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
+            if let root = ProcessInfo.processInfo.environment[key], !root.isEmpty {
+                dirs.append(root + "/platform-tools")
+            }
+        }
+        return dirs
+    }()
 
     static func find(_ name: String) -> String? {
         var dirs = searchPaths

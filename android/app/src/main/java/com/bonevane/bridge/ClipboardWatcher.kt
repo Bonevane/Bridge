@@ -20,14 +20,18 @@ class ClipboardWatcher(private val ble: () -> BleLink?) {
 
     @Volatile private var active = false
     private var socket: Socket? = null
+    private var thread: Thread? = null
+    private var complainedAboutDaemon = false
 
     /** The last value seen, so a clipboard that came *from* the Mac isn't echoed back. */
     @Volatile var lastValue: String? = null
 
-    fun start() {
-        if (active) return
+    /** Safe to call repeatedly: it revives the watcher if its thread has died. */
+    @Synchronized fun start() {
+        if (thread?.isAlive == true) return
         active = true
-        Thread({ loop() }, "clipboard-watcher").apply { isDaemon = true }.start()
+        thread = Thread({ loop() }, "clipboard-watcher")
+            .apply { isDaemon = true; start() }
     }
 
     fun stop() {
@@ -37,15 +41,31 @@ class ClipboardWatcher(private val ble: () -> BleLink?) {
     }
 
     private fun loop() {
+        // Nothing outside this may throw, or the thread dies silently and the
+        // phone quietly stops sending copies until the app is restarted.
         while (active) {
-            runCatching { watch() }
-                .onFailure { if (active) TunnelState.log("Clipboard watch ended: ${it.message}") }
-            if (active) Thread.sleep(15_000)      // daemon may be down; try again later
+            try {
+                watch()
+            } catch (t: Throwable) {
+                if (active) TunnelState.log("Clipboard watch ended: ${t.message}")
+            }
+            try {
+                Thread.sleep(15_000)              // daemon may be down; try again
+            } catch (e: InterruptedException) {
+                if (!active) return
+            }
         }
     }
 
     private fun watch() {
-        if (!DaemonManager.isDaemonAlive()) return
+        if (!DaemonManager.isDaemonAlive()) {
+            if (!complainedAboutDaemon) {
+                TunnelState.log("Clipboard: waiting for the helper (phone copies won't reach the Mac yet)")
+                complainedAboutDaemon = true
+            }
+            return
+        }
+        complainedAboutDaemon = false
         val s = Socket()
         s.connect(InetSocketAddress("127.0.0.1", DaemonManager.DAEMON_PORT), 3000)
         socket = s
@@ -83,6 +103,8 @@ class ClipboardWatcher(private val ble: () -> BleLink?) {
         if (link?.connected == true) {
             link.send(BleLink.TYPE_CLIPBOARD, text)
             TunnelState.log("Clipboard sent to the Mac")
+        } else {
+            TunnelState.log("Copied, but the Mac isn't linked over Bluetooth")
         }
     }
 

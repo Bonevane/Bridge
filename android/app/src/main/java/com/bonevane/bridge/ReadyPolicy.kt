@@ -97,6 +97,8 @@ class ReadyPolicy(private val ctx: Context) {
     private fun scheduleWatchdog() {
         main.postDelayed(object : Runnable {
             override fun run() {
+                // Revive anything that has quietly died.
+                TunnelService.current?.clipboard?.start()
                 val macNearby = TunnelService.current?.ble?.connected == true
                 if (!Prefs.keepReady(ctx) && !isPaused && AdbToggle.isEnabled(ctx) && !macNearby &&
                     !TunnelState.macActive(IDLE_LOCKDOWN_MS) && DaemonManager.isDaemonAlive()) {

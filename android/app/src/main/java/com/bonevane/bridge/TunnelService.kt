@@ -60,6 +60,9 @@ class TunnelService : Service() {
     @Volatile private var active = false
     @Volatile private var tunnelActive = false
     @Volatile private var process: Process? = null
+    /** Every dumbpipe ever started here, so a stray from an earlier run can't
+     *  keep the tunnel alive after the UI says it's off. */
+    private val startedProcesses = java.util.Collections.synchronizedList(mutableListOf<Process>())
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
@@ -150,7 +153,11 @@ class TunnelService : Service() {
     }
 
     @Synchronized private fun startTunnel() {
-        if (tunnelActive) return
+        if (tunnelActive) {
+            TunnelState.log("Tunnel already running")
+            return
+        }
+        killDumbpipe()          // never run two, and clear anything left over
         tunnelActive = true
         TunnelState.tunnelOn = true
         // Same idea as `termux-wake-lock`: keep the CPU awake while the screen is
@@ -164,11 +171,10 @@ class TunnelService : Service() {
 
     @Synchronized private fun stopTunnel() {
         tunnelActive = false
-        TunnelState.tunnelOn = false
-        process?.destroy()
-        process = null
         worker?.interrupt()
         worker = null
+        killDumbpipe()
+        TunnelState.tunnelOn = false
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         holdWifiAwake(false)
@@ -196,6 +202,31 @@ class TunnelService : Service() {
         }
     }
 
+    /**
+     * Ends every dumbpipe this service started and waits for them, so the state
+     * the screen shows is the state the phone is actually in. `destroy()` alone
+     * left one running once, which made "tunnel off" a lie.
+     */
+    private fun killDumbpipe() {
+        val all = synchronized(startedProcesses) { startedProcesses.toList() }
+        for (p in all) {
+            runCatching {
+                p.destroy()
+                if (!p.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    p.destroyForcibly()
+                    p.waitFor(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
+            }
+        }
+        synchronized(startedProcesses) {
+            startedProcesses.removeAll { !it.isAlive }
+            if (startedProcesses.isNotEmpty()) {
+                TunnelState.log("Warning: ${startedProcesses.size} dumbpipe still alive")
+            }
+        }
+        process = null
+    }
+
     private fun runLoop() {
         // Android installs files from jniLibs here, with permission to execute.
         val binary = File(applicationInfo.nativeLibraryDir, "libdumbpipe.so")
@@ -217,6 +248,7 @@ class TunnelService : Service() {
                 }
                 val p = builder.start()
                 process = p
+                startedProcesses.add(p)
 
                 // Read dumbpipe's output line by line until it exits.
                 p.inputStream.bufferedReader().useLines { output ->
@@ -254,9 +286,9 @@ class TunnelService : Service() {
         tunnelActive = false
         TunnelState.running = false
         TunnelState.tunnelOn = false
-        process?.destroy()          // closes dumbpipe; the read loop then ends
         worker?.interrupt()
         worker = null
+        killDumbpipe()
         proxy?.stop()
         proxy = null
         policy?.stop()

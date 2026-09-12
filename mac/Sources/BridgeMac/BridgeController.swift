@@ -404,6 +404,7 @@ final class BridgeController: ObservableObject {
             self.session = session
             self.sessionWindow = window
             startClipboardWatch()
+            startSessionWatchdog()
             // Show in the Dock and ⌘-Tab while the phone window is open.
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
@@ -413,6 +414,41 @@ final class BridgeController: ObservableObject {
     }
 
     // MARK: - Disconnect
+
+    // MARK: - Session liveness
+
+    private var sessionWatchdog: Timer?
+    private var missedPings = 0
+
+    /// Video alone can't tell us the phone is gone: a still screen legitimately
+    /// sends nothing for a long time, and dumbpipe keeps the local socket open
+    /// even after the far end vanishes. So ask the phone something small every
+    /// so often, and give up after two silences.
+    private func startSessionWatchdog() {
+        stopSessionWatchdog()
+        missedPings = 0
+        let port = localPort
+        sessionWatchdog = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, self.isConnected else { return }
+                let reply = await self.background { Control.send("STATUS", port: port, timeout: 6) }
+                if reply == nil {
+                    self.missedPings += 1
+                    if self.missedPings >= 2 {
+                        self.appendLog("The phone stopped answering; ending the session.")
+                        self.disconnect()
+                    }
+                } else {
+                    self.missedPings = 0
+                }
+            }
+        }
+    }
+
+    private func stopSessionWatchdog() {
+        sessionWatchdog?.invalidate()
+        sessionWatchdog = nil
+    }
 
     // MARK: - Clipboard (both directions, while a session is open)
 
@@ -440,7 +476,14 @@ final class BridgeController: ObservableObject {
             notice = "The phone isn't nearby, so it can't be reached over Bluetooth."
             return
         }
-        bluetoothLink.setPhoneTunnel(!phoneTunnelOn)
+        let turningOff = phoneTunnelOn
+        if turningOff && (isConnected || isBusy) {
+            // Mirroring can't survive without the tunnel, so close it cleanly
+            // rather than leaving a window reading a socket that never answers.
+            notice = "Ending the session first: mirroring needs the tunnel."
+            disconnect()
+        }
+        bluetoothLink.setPhoneTunnel(!turningOff)
     }
 
     // MARK: - What works right now
@@ -547,8 +590,17 @@ final class BridgeController: ObservableObject {
         }
         bluetoothLink.onStatus = { [weak self] daemon, tunnel in
             Task { @MainActor in
-                self?.phoneDaemonAlive = daemon
-                self?.phoneTunnelOn = tunnel
+                guard let self = self else { return }
+                let wasOn = self.phoneTunnelOn
+                self.phoneDaemonAlive = daemon
+                self.phoneTunnelOn = tunnel
+                // Mirroring rides the tunnel, so if the phone drops it the
+                // session is already dead: the video socket would otherwise just
+                // stall, leaving a frozen window until a read finally times out.
+                if wasOn && !tunnel && self.isConnected {
+                    self.appendLog("The phone turned its tunnel off; ending the session.")
+                    self.disconnect()
+                }
             }
         }
         bluetoothLink.onLinkChange = { [weak self] linked in
@@ -640,42 +692,57 @@ final class BridgeController: ObservableObject {
     }
 
     func disconnect() {
+        guard !disconnecting else { return }
+        disconnecting = true
         userStopped = true
-        let port = localPort
+        stopSessionWatchdog()
         session?.stop()
 
-        // Always tell the phone to STOP, even if the tunnel already died (an
-        // adaptive-bitrate restart or a network blip can drop it just as we
-        // disconnect). If the tunnel is up, reuse it; otherwise open a brief one,
-        // so USB debugging never gets left on because we couldn't reach the phone.
-        let existing = tunnel?.isRunning == true
-        let dumbpipe = Shell.find("dumbpipe")
+        let port = localPort
+        let tunnelAlive = tunnel?.isRunning == true
+        let viaBluetooth = bluetoothLinked
         let currentTicket = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
-        phase = .working("Turning USB debugging off...")
+        let dumbpipe = Shell.find("dumbpipe")
+        phase = .working("Ending the session…")
+
         Task {
-            var temp: Process?
-            if !existing, let dumbpipe = dumbpipe, currentTicket.hasPrefix("endpoint") {
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: dumbpipe)
-                p.arguments = ["connect-tcp", "--addr", serial, currentTicket]
-                p.environment = Shell.environment
-                streamOutput(of: p, source: "tunnel")
-                try? p.run()
-                temp = p
+            // Bluetooth first. When mirroring ends because the tunnel dropped,
+            // talking to the phone *through* that tunnel is waiting on a corpse,
+            // which is what used to leave this stuck for minutes.
+            if viaBluetooth {
+                bluetoothLink.endSession()
+                appendLog("Told the phone over Bluetooth.", source: "phone")
+            } else {
+                var temp: Process?
+                if !tunnelAlive, let dumbpipe = dumbpipe, currentTicket.hasPrefix("endpoint") {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: dumbpipe)
+                    p.arguments = ["connect-tcp", "--addr", serial, currentTicket]
+                    p.environment = Shell.environment
+                    streamOutput(of: p, source: "tunnel")
+                    try? p.run()
+                    temp = p
+                }
+                // A short, bounded attempt: three tries, five seconds each.
+                var reply: String?
+                for _ in 0..<3 {
+                    reply = await background { Control.send("STOP", port: port, timeout: 5) }
+                    if reply != nil { break }
+                }
+                temp?.terminate()
+                appendLog(reply ?? "Couldn't reach the phone to turn USB debugging off. Use the phone's \"USB debugging off\" button.",
+                          source: "phone")
             }
-            var reply: String?
-            for _ in 0..<20 {
-                reply = await background { Control.send("STOP", port: port, timeout: 20) }
-                if reply != nil { break }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            temp?.terminate()
-            appendLog(reply ?? "Couldn't reach the phone to turn USB debugging off. Use the phone's \"USB debugging off\" button.", source: "phone")
+
             stopProcesses()
             phase = .idle
+            disconnecting = false
+            self.startClipboardWatch()         // Bluetooth may still be carrying it
+            self.updateBackgroundClipboard()   // resume background sync if enabled
         }
     }
 
+    private var disconnecting = false
 
     /// Sends one control line to the phone, opening a temporary tunnel if needed.
     func sendCommand(_ command: String, label: String) {

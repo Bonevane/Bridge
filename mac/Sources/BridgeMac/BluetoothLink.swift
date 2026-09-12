@@ -111,6 +111,13 @@ final class BluetoothLink: NSObject {
         send(type: Self.typeCommand, text: on ? "tunnel on" : "tunnel off")
     }
 
+    /// Tells the phone the session is over, so it can turn USB debugging off.
+    /// Bluetooth is the right channel for this: the tunnel is often exactly what
+    /// has just died.
+    func endSession() {
+        send(type: Self.typeCommand, text: "session over")
+    }
+
     private func send(type: UInt8, text: String) {
         guard let phone = phone, let rx = rx else { return }
         // Leave room for the 3-byte ATT header plus our own 2-byte prefix.

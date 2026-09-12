@@ -284,6 +284,13 @@ class BleLink(private val context: Context) {
                     TunnelState.log("Mac turned the tunnel off over Bluetooth")
                     TunnelService.setTunnel(context, false)
                 }
+                "session over" -> {
+                    // The Mac finished mirroring. Same as the tunnel's STOP, but
+                    // over Bluetooth, which still works when the tunnel is the
+                    // very thing that just died.
+                    TunnelState.log("Mac ended the session (Bluetooth): ${DaemonManager.stop(context)}")
+                    sendStatus()
+                }
                 else -> TunnelState.log("Unknown Bluetooth command: $message")
             }
             return

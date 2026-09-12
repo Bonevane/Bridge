@@ -114,6 +114,23 @@ for (name, size) in [("16x16", 16), ("16x16@2x", 32), ("32x32", 32), ("32x32@2x"
 }
 print("wrote \(iconset)")
 
+// Menu-bar icon: a template image, black on transparent, 18 pt tall with the
+// mark's own aspect. AppKit recolours templates for light/dark menu bars.
+for (suffix, scale) in [("", 1), ("@2x", 2)] {
+    // The image is 18 pt tall like every other item; the mark itself is drawn
+    // 9 pt tall so its width (it is 2.2:1) stays close to its neighbours.
+    let ht = 18 * scale, wd = Int((CGFloat(ht) * 0.50 * bounds.width / bounds.height).rounded())
+    let c = CGContext(data: nil, width: wd, height: ht, bitsPerComponent: 8, bytesPerRow: 0,
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    c.interpolationQuality = .high
+    let box = CGRect(x: 0, y: 0, width: wd, height: ht).insetBy(dx: 0, dy: CGFloat(ht) * 0.25)
+    drawMark(c, in: box, color: .black)
+    let rep = NSBitmapImageRep(cgImage: c.makeImage()!)
+    write(rep.representation(using: .png, properties: [:])!, "\(macDir)/MenuBarIcon\(suffix).png")
+}
+print("wrote menu-bar template images")
+
 // MARK: - Android
 
 let densities: [(String, CGFloat)] = [("mdpi", 1), ("hdpi", 1.5), ("xhdpi", 2), ("xxhdpi", 3), ("xxxhdpi", 4)]
@@ -125,8 +142,10 @@ for (name, scale) in densities {
     let size = Int(108 * scale)
     let fg = png(size) { c, s in
         let safe = s * 66 / 108
-        let rect = CGRect(x: (s - safe) / 2, y: (s - safe) / 2, width: safe, height: safe)
-        drawMark(c, in: rect.insetBy(dx: safe * 0.08, dy: safe * 0.08), color: .white)
+        // Optically the mark sits high (the arches are empty space below the
+        // slab), so it's nudged down a little from the geometric centre.
+        let rect = CGRect(x: (s - safe) / 2, y: (s - safe) / 2 - safe * 0.04, width: safe, height: safe)
+        drawMark(c, in: rect.insetBy(dx: safe * 0.11, dy: safe * 0.11), color: .white)
     }
     write(fg, "\(resDir)/mipmap-\(name)/ic_launcher_fg.png")
     // The monochrome layer is only read for its alpha; the system supplies the colour.

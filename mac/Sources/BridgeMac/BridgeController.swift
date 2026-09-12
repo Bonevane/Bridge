@@ -176,15 +176,6 @@ final class BridgeController: ObservableObject {
         return false
     }
 
-    var menuIcon: String {
-        switch phase {
-        case .idle: return "iphone"
-        case .working: return "iphone.and.arrow.forward"
-        case .connected: return "iphone.radiowaves.left.and.right"
-        case .failed: return "exclamationmark.triangle"
-        }
-    }
-
     func appendLog(_ text: String, source: String? = nil) {
         for line in text.split(whereSeparator: \.isNewline) where !line.isEmpty {
             log.append(source.map { "[\($0)] \(line)" } ?? String(line))

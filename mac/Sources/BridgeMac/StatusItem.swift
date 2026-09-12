@@ -23,8 +23,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         super.init()
 
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: bridge.menuIcon, accessibilityDescription: "Bridge")
-            button.image?.isTemplate = true
+            button.image = Self.markImage
             button.target = self
             button.action = #selector(buttonClicked)
             // Ask for both buttons, so a right-click reaches us instead of being
@@ -38,9 +37,22 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// The bridge mark as a template image, so the menu bar recolours it.
+    /// Falls back to a symbol when run outside the bundle (e.g. `swift run`).
+    private static let markImage: NSImage = {
+        let image = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png")
+            .flatMap { NSImage(contentsOf: $0) }
+            ?? NSImage(systemSymbolName: "iphone", accessibilityDescription: "Bridge")!
+        image.isTemplate = true
+        image.accessibilityDescription = "Bridge"
+        return image
+    }()
+
+    /// The mark is constant; state shows as dimming, the way Wi-Fi's icon does
+    /// when there's nothing to connect to.
     private func refreshIcon() {
-        item.button?.image = NSImage(systemSymbolName: bridge.menuIcon, accessibilityDescription: "Bridge")
-        item.button?.image?.isTemplate = true
+        item.button?.image = Self.markImage
+        item.button?.alphaValue = bridge.isConnected || bridge.bluetoothLinked ? 1 : 0.5
     }
 
     // MARK: - Clicks

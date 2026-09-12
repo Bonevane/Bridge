@@ -9,7 +9,7 @@ APP="build/Bridge.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/BridgeMac "$APP/Contents/MacOS/Bridge"
-cp Bridge.icns "$APP/Contents/Resources/"   # regenerate with ../assets/make-icons.sh
+cp Bridge.icns MenuBarIcon.png MenuBarIcon@2x.png "$APP/Contents/Resources/"   # regenerate with ../assets/make-icons.sh
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -7,8 +7,9 @@ swift build -c release
 
 APP="build/Bridge.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/BridgeMac "$APP/Contents/MacOS/Bridge"
+cp Bridge.icns "$APP/Contents/Resources/"   # regenerate with ../assets/make-icons.sh
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,6 +21,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>com.bonevane.bridge.mac</string>
     <key>CFBundleExecutable</key><string>Bridge</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>Bridge</string>
     <key>CFBundleShortVersionString</key><string>0.1</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>

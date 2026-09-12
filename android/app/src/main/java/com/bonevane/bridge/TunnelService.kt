@@ -117,7 +117,7 @@ class TunnelService : Service() {
             PendingIntent.FLAG_IMMUTABLE
         )
         val notification = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle("Bridge is on")
             .setContentText("Your Mac can connect to this phone")
             .setContentIntent(openApp)

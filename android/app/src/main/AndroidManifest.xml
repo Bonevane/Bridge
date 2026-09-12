@@ -22,6 +22,7 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
         android:label="Bridge"
         android:theme="@style/Theme.Bridge">
 

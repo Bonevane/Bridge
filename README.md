@@ -150,9 +150,11 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 - [x] **Audio:** AAC stream, optional mute of the phone's own speaker
 - [x] **Adaptive bitrate:** steps down on a slow link, back up when it clears
 - [x] **Banking mode:** lock down by default, or keep ready with a Quick Settings pause tile
-- [x] **Self-update:** new builds installed through the tunnel
-- [ ] **Clipboard sync** and file drop
-- [ ] **Notification mirroring**
+- [x] **Self-update:** new builds installed through the tunnel, no cable
+- [x] **Clipboard sync** both ways, during a session or in the background
+- [x] **File drop:** drag files onto the phone window
+- [x] **Notification mirroring:** works even with USB debugging off
+- [x] **Native interfaces:** Material 3 Expressive on the phone, a proper menu and Settings window on the Mac
 - [ ] **Auto-pause** when a listed app comes to the foreground
 - [ ] **Device pairing:** approve new Macs on the phone instead of a bearer ticket
 - [ ] **iroh in-app:** replace the dumbpipe binary with the library; self-hosted relay

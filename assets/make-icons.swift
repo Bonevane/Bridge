@@ -5,11 +5,11 @@
 // pixels (alpha × darkness), so it can be recoloured white for the icons and
 // the source can be black-on-transparent or black-on-white, whichever you have.
 //
-//   macOS    → mac/Bridge.icns            white mark on a blue rounded square
+//   macOS    → mac/Bridge.icns            white mark on a navy rounded square
 //   Android  → mipmap-*/ic_launcher_fg    white mark, transparent (adaptive foreground)
 //              mipmap-*/ic_launcher_mono  same shape (themed icons; system tints it)
 //              drawable-*/ic_stat_bridge  white mark at 24 dp (notification small icon)
-//              values/ic_launcher_background.xml  the blue
+//              values/ic_launcher_background.xml  the navy
 import AppKit
 
 let args = CommandLine.arguments
@@ -18,8 +18,13 @@ guard args.count == 4 else {
 }
 let (source, macDir, resDir) = (args[1], args[2], args[3])
 
-// The brand blue. Also written to Android's colour resource below.
-let blue = NSColor(calibratedRed: 0.10, green: 0.40, blue: 0.92, alpha: 1)
+// The brand navy: a gradient on the macOS icon, and its darker end as the flat
+// Android background (the launcher adds its own lighting). #122048 → #0A1432.
+func rgb(_ r: Int, _ g: Int, _ b: Int) -> NSColor {
+    NSColor(calibratedRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
+}
+let navyTop = rgb(0x12, 0x20, 0x48)
+let navyBottom = rgb(0x0A, 0x14, 0x32)
 
 // MARK: - The mark as a mask
 
@@ -100,9 +105,13 @@ func write(_ data: Data, _ path: String) {
 func macIcon(_ c: CGContext, _ s: CGFloat) {
     let inset = s * (1 - 824.0 / 1024) / 2
     let square = CGRect(x: inset, y: inset, width: s - inset * 2, height: s - inset * 2)
+    c.saveGState()
     c.addPath(CGPath(roundedRect: square, cornerWidth: s * 185 / 1024, cornerHeight: s * 185 / 1024, transform: nil))
-    c.setFillColor(blue.cgColor)
-    c.fillPath()
+    c.clip()
+    let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                              colors: [navyTop.cgColor, navyBottom.cgColor] as CFArray, locations: [0, 1])!
+    c.drawLinearGradient(gradient, start: CGPoint(x: 0, y: square.maxY), end: CGPoint(x: 0, y: square.minY), options: [])
+    c.restoreGState()
     drawMark(c, in: square.insetBy(dx: square.width * 0.20, dy: square.height * 0.20), color: .white)
 }
 
@@ -169,7 +178,7 @@ write(Data("""
 
 """.utf8), "\(resDir)/mipmap-anydpi-v26/ic_launcher.xml")
 
-let hex = String(format: "#%02X%02X%02X", Int(blue.redComponent * 255), Int(blue.greenComponent * 255), Int(blue.blueComponent * 255))
+let hex = String(format: "#%02X%02X%02X", Int(navyBottom.redComponent * 255), Int(navyBottom.greenComponent * 255), Int(navyBottom.blueComponent * 255))
 write(Data("""
 <?xml version="1.0" encoding="utf-8"?>
 <resources>

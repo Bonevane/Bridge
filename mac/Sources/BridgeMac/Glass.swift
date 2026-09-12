@@ -145,3 +145,10 @@ struct RoundedPanelWindow: NSViewRepresentable {
         }
     }
 }
+
+extension Bundle {
+    /// The version shown in the About panel and Settings.
+    var shortVersion: String {
+        (object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.1"
+    }
+}

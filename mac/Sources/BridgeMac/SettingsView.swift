@@ -90,6 +90,21 @@ struct SettingsView: View {
                 Toggle("Turn the phone's screen off", isOn: $bridge.turnScreenOff)
                 Toggle("Mute the phone", isOn: $bridge.mutePhone)
             }
+            Section {
+                VStack(spacing: 3) {
+                    Text("Bridge \(Bundle.main.shortVersion)")
+                        .font(.caption)
+                    HStack(spacing: 5) {
+                        Text("Made by").font(.caption).foregroundStyle(.secondary)
+                        Link("Bonevane", destination: URL(string: "https://github.com/Bonevane")!)
+                            .font(.caption)
+                        Text("·").font(.caption).foregroundStyle(.secondary)
+                        Link("bonevane.vercel.app", destination: URL(string: "https://bonevane.vercel.app")!)
+                            .font(.caption)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
         }
         .formStyle(.grouped)
     }

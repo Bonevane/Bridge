@@ -85,6 +85,8 @@ fun BridgeScreen(
     onBatteryExemption: () -> Unit,
     onNewIdentity: () -> Unit,
     onGrantAccess: (Access) -> Unit,
+    onOpenLink: (String) -> Unit,
+    version: String,
     isIgnoringBatteryOptimisations: () -> Boolean,
     accessItems: List<Access>,
 ) {
@@ -208,6 +210,8 @@ fun BridgeScreen(
             }
 
             LogCard(expanded = showLog, onToggle = { showLog = !showLog })
+
+            AboutFooter(version = version, onOpen = onOpenLink)
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -310,6 +314,49 @@ private fun LogCard(expanded: Boolean, onToggle: () -> Unit) {
                     modifier = Modifier.padding(end = 12.dp, bottom = 12.dp),
                 )
             }
+        }
+    }
+}
+
+/** Who made this, and where to find them. */
+@Composable
+private fun AboutFooter(version: String, onOpen: (String) -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+    ) {
+        Text(
+            "Bridge $version",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Made by",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Bonevane",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { onOpen("https://github.com/Bonevane") },
+            )
+            Text(
+                "·",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "bonevane.vercel.app",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { onOpen("https://bonevane.vercel.app") },
+            )
         }
     }
 }

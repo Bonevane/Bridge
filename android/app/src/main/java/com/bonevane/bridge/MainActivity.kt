@@ -80,6 +80,10 @@ class MainActivity : ComponentActivity() {
                     onBatteryExemption = ::askBatteryExemption,
                     onNewIdentity = ::newIdentity,
                     onGrantAccess = ::grantAccess,
+                    onOpenLink = { url ->
+                        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                    },
+                    version = versionName(),
                     isIgnoringBatteryOptimisations = {
                         getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
                     },
@@ -124,6 +128,10 @@ class MainActivity : ComponentActivity() {
                 .onFailure { Toast.makeText(this, "Couldn't open that screen", Toast.LENGTH_SHORT).show() }
         }
     }
+
+    private fun versionName(): String = runCatching {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+    }.getOrDefault("")
 
     private fun currentTicket(): String? = TunnelState.ticket ?: Prefs.ticket(this)
 

@@ -55,6 +55,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func showContextMenu() {
         let menu = NSMenu()
+        let about = menu.addItem(withTitle: "About Bridge", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
         let settings = menu.addItem(withTitle: "Open Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(.separator())
@@ -74,6 +76,33 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         for name in ["showSettingsWindow:", "showPreferencesWindow:"] {
             if NSApp.sendAction(Selector((name)), to: nil, from: nil) { return }
         }
+    }
+
+    /// The standard About panel, with the author's links live in the credits.
+    @objc private func showAbout() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let body = NSFont.systemFont(ofSize: 11)
+        let credits = NSMutableAttributedString(
+            string: "Your Android phone on your Mac, over any network.\n\nMade by ",
+            attributes: [.font: body, .foregroundColor: NSColor.secondaryLabelColor]
+        )
+        credits.append(link("Bonevane", to: "https://github.com/Bonevane", font: body))
+        credits.append(NSAttributedString(string: " · ", attributes: [.font: body,
+                                                                     .foregroundColor: NSColor.secondaryLabelColor]))
+        credits.append(link("bonevane.vercel.app", to: "https://bonevane.vercel.app", font: body))
+        credits.setAlignment(.center, range: NSRange(location: 0, length: credits.length))
+
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+
+    private func link(_ text: String, to url: String, font: NSFont) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: font,
+            .link: URL(string: url) as Any,
+            .foregroundColor: NSColor.linkColor,
+        ])
     }
 
     @objc private func quitBridge() {

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -23,7 +24,8 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.PauseCircle
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -57,6 +59,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.bonevane.bridge.Access
 import com.bonevane.bridge.Prefs
 import com.bonevane.bridge.TunnelService
 import com.bonevane.bridge.TunnelState
@@ -81,9 +84,9 @@ fun BridgeScreen(
     onAutostartChange: (Boolean) -> Unit,
     onBatteryExemption: () -> Unit,
     onNewIdentity: () -> Unit,
-    onGrantNotificationAccess: () -> Unit,
+    onGrantAccess: (Access) -> Unit,
     isIgnoringBatteryOptimisations: () -> Boolean,
-    notificationAccess: () -> Boolean,
+    accessItems: List<Access>,
 ) {
     val context = LocalContext.current
     // TunnelState is a plain observable object shared with the service; this
@@ -175,20 +178,14 @@ fun BridgeScreen(
                 }
             }
 
-            SectionCard(title = "Notifications") {
-                val granted = notificationAccess()
+            SectionCard(title = "Permissions") {
                 Text(
-                    if (granted) "Your notifications appear on the Mac while it's connected."
-                    else "Let Bridge read notifications to show them on your Mac. This works even when USB debugging is off.",
+                    "Android keeps these on separate screens. Tap one to go straight there.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (!granted) {
-                    FilledTonalButton(onClick = onGrantNotificationAccess, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Rounded.Notifications, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Allow notification access")
-                    }
+                accessItems.forEach { item ->
+                    AccessRow(item = item, onGrant = { onGrantAccess(item) })
                 }
             }
 
@@ -313,6 +310,43 @@ private fun LogCard(expanded: Boolean, onToggle: () -> Unit) {
                     modifier = Modifier.padding(end = 12.dp, bottom = 12.dp),
                 )
             }
+        }
+    }
+}
+
+/** One permission: what it's for, whether it's granted, and a way to grant it. */
+@Composable
+private fun AccessRow(item: Access, onGrant: () -> Unit) {
+    val clickable = item.intent != null || item.runtimePermissions.isNotEmpty()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (clickable) Modifier.clickable(onClick = onGrant) else Modifier)
+            .padding(vertical = 8.dp),
+    ) {
+        Icon(
+            if (item.granted) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            tint = if (item.granted) MaterialTheme.colorScheme.primary
+                   else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.name, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                item.why,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (!item.granted && !clickable) {
+            Text(
+                "over USB",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

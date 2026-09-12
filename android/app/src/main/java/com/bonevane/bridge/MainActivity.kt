@@ -74,13 +74,11 @@ class MainActivity : ComponentActivity() {
                     onAutostartChange = { Prefs.setAutostart(this, it) },
                     onBatteryExemption = ::askBatteryExemption,
                     onNewIdentity = ::newIdentity,
-                    onGrantNotificationAccess = {
-                        startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                    },
+                    onGrantAccess = ::grantAccess,
                     isIgnoringBatteryOptimisations = {
                         getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
                     },
-                    notificationAccess = { NotificationRelay.hasAccess(this) },
+                    accessItems = Access.all(this),
                 )
             }
         }
@@ -102,6 +100,22 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         if (intent?.action == TunnelService.ACTION_START || Prefs.wantRunning(this)) {
             TunnelService.start(this)
+        }
+    }
+
+    /// Asks for one permission: a runtime prompt where that applies, otherwise
+    /// the settings screen that grants it.
+    private fun grantAccess(item: Access) {
+        val missing = item.runtimePermissions.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            requestPermissions(missing.toTypedArray(), 2)
+            return
+        }
+        item.intent?.let { intent ->
+            runCatching { startActivity(intent) }
+                .onFailure { Toast.makeText(this, "Couldn't open that screen", Toast.LENGTH_SHORT).show() }
         }
     }
 

@@ -528,7 +528,7 @@ final class BridgeController: ObservableObject {
         if bluetoothLinked {
             return phoneDaemonAlive
                 ? .working("Both ways, over Bluetooth")
-                : .limited("Mac to phone only; use the phone's tile the other way")
+                : .limited("Mac to phone only — turn on \"Keep the phone ready\" for both")
         }
         return .off("Phone out of Bluetooth range")
     }
@@ -737,6 +737,11 @@ final class BridgeController: ObservableObject {
             stopProcesses()
             phase = .idle
             disconnecting = false
+            if syncClipboard && !keepReady {
+                // Locking down kills the helper that reads the phone's clipboard,
+                // so copying *on the phone* stops reaching the Mac by itself.
+                notice = "Phone locked down. Copying on the phone now needs its \"Send clipboard\" tile; turn on \"Keep the phone ready\" to keep it automatic."
+            }
             self.startClipboardWatch()         // Bluetooth may still be carrying it
             self.updateBackgroundClipboard()   // resume background sync if enabled
         }

@@ -83,6 +83,7 @@ final class Session {
         audio = a
         control = c
         firstArrival = 0; minLag = .infinity; slowSince = nil; levelStart = Date().timeIntervalSince1970
+        try? c.write(ScrcpyProtocol.getClipboard())   // start in sync with the phone
         Thread(block: { [weak self] in self?.readVideo(v) }).start()
         Thread(block: { [weak self] in self?.readAudio(a) }).start()
         Thread(block: { [weak self] in self?.readControl(c) }).start()

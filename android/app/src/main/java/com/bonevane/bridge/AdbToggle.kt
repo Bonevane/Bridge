@@ -21,6 +21,9 @@ object AdbToggle {
         ctx.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
 
+    fun isEnabled(ctx: Context): Boolean =
+        Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+
     fun set(ctx: Context, enabled: Boolean): Boolean {
         val ok = runCatching {
             Settings.Global.putInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, if (enabled) 1 else 0)

@@ -14,6 +14,16 @@ object TunnelState {
     @Volatile var status = "Stopped"
     @Volatile var ticket: String? = null
 
+    /** When the Mac last said anything, and how many streams it has open now. */
+    @Volatile var lastMacContact = 0L
+    val openStreams = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun macSeen() { lastMacContact = System.currentTimeMillis() }
+
+    /** True while the Mac is actively using a stream, or spoke in the last [ms]. */
+    fun macActive(ms: Long): Boolean =
+        openStreams.get() > 0 || System.currentTimeMillis() - lastMacContact < ms
+
     private val lines = ArrayDeque<String>()
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
     private val main = Handler(Looper.getMainLooper())

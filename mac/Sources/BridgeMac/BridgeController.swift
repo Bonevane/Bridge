@@ -51,14 +51,32 @@ final class BridgeController: ObservableObject {
         didSet { UserDefaults.standard.set(syncClipboard, forKey: "syncClipboard")
                  if isConnected { syncClipboard ? startClipboardWatch() : stopClipboardWatch() } }
     }
-    /// Keep the clipboard synced even with no mirroring window (needs the phone ready).
+    /// Keep the clipboard synced even with no mirroring window.
+    /// This only works while the phone's daemon is alive, so it implies "keep ready".
     @Published var backgroundClipboard: Bool {
-        didSet { UserDefaults.standard.set(backgroundClipboard, forKey: "backgroundClipboard")
-                 updateBackgroundClipboard() }
+        didSet {
+            UserDefaults.standard.set(backgroundClipboard, forKey: "backgroundClipboard")
+            if backgroundClipboard {
+                if !syncClipboard { syncClipboard = true }
+                if !keepReady {
+                    keepReady = true   // pushes MODE keep; the daemon must stay up
+                    notice = "Keeping the phone ready too: background clipboard needs it."
+                }
+            }
+            updateBackgroundClipboard()
+        }
     }
-    /// Mirrors the phone's "keep ready after disconnect" setting (sent at each Connect).
+    /// Mirrors the phone's "keep ready after disconnect" setting.
+    /// Pushed to the phone whenever it changes and at each Connect.
     @Published var keepReady: Bool {
-        didSet { UserDefaults.standard.set(keepReady, forKey: "keepReady") }
+        didSet {
+            guard keepReady != oldValue else { return }
+            UserDefaults.standard.set(keepReady, forKey: "keepReady")
+            if !keepReady && backgroundClipboard {
+                backgroundClipboard = false   // can't run without a live daemon
+            }
+            pushMode()
+        }
     }
 
     let localPort = 7555
@@ -327,6 +345,50 @@ final class BridgeController: ObservableObject {
         onPhoneText: { [weak self] text in self?.phoneClipboardChanged(text) },
         macText: { NSPasteboard.general.string(forType: .string) },
         markSynced: { [weak self] text in self?.lastSyncedText = text })
+
+    // MARK: - Settings sync with the phone
+    //
+    // Only one setting lives on both sides: "keep ready". The Mac pushes it
+    // whenever it changes (if the phone is reachable without dialling out), and
+    // pulls the phone's view when the menu opens, so the two can't drift apart
+    // if it was changed on the phone's own screen.
+
+    /// Sends the current mode to the phone, but only over a tunnel that already
+    /// exists: changing a switch should never start dialling the phone.
+    private var adoptingFromPhone = false
+
+    private func pushMode() {
+        guard !adoptingFromPhone, TCPStream.portOpen(localPort) else { return }
+        let mode = keepReady ? "MODE keep" : "MODE lock"
+        let port = localPort
+        Task { _ = await background { Control.send(mode, port: port, timeout: 8) } }
+    }
+
+    /// Pulls `keep=` and `paused=` from the phone and reflects them in the menu.
+    func refreshPhoneStatus() {
+        guard TCPStream.portOpen(localPort) else { return }
+        let port = localPort
+        Task {
+            guard let reply = await background { Control.send("STATUS", port: port, timeout: 8) },
+                  reply.hasPrefix("OK") else { return }
+            var phoneKeep: Bool?
+            var phonePaused = false
+            for field in reply.split(separator: " ") {
+                if field.hasPrefix("keep=") { phoneKeep = field.hasSuffix("true") }
+                if field.hasPrefix("paused=") { phonePaused = field.hasSuffix("true") }
+            }
+            if let phoneKeep = phoneKeep, phoneKeep != keepReady {
+                // Adopt the phone's value without pushing it straight back at it.
+                adoptingFromPhone = true
+                keepReady = phoneKeep
+                adoptingFromPhone = false
+                appendLog("Adopted \"keep ready\" = \(phoneKeep) from the phone.")
+            }
+            phonePausedForBanking = phonePaused
+        }
+    }
+
+    @Published var phonePausedForBanking = false
 
     /// The background bridge runs only when enabled AND no window is mirroring.
     func updateBackgroundClipboard() {

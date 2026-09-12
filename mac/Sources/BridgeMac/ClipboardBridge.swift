@@ -78,6 +78,8 @@ final class ClipboardBridge {
         } catch { return }
         stream = s
         lastChangeCount = NSPasteboard.general.changeCount
+        // Pull the phone's current clipboard once, so the two start in sync.
+        try? s.write(ScrcpyProtocol.getClipboard())
 
         // Poll the Mac clipboard on a side thread; the main loop reads the phone's.
         let poller = Thread { [weak self] in

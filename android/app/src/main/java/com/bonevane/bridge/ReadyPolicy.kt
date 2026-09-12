@@ -33,7 +33,13 @@ class ReadyPolicy(private val ctx: Context) {
         override fun onAvailable(network: Network) { maybeStart("Wi-Fi available") }
     }
 
+    companion object {
+        /** Lock down this long after the Mac goes quiet (it may have crashed). */
+        const val IDLE_LOCKDOWN_MS = 10 * 60_000L
+    }
+
     fun start() {
+        scheduleWatchdog()
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
@@ -80,6 +86,25 @@ class ReadyPolicy(private val ctx: Context) {
                 starting.set(false)
             }
         }.start()
+    }
+
+    /**
+     * If the Mac disappears mid-session (crash, closed laptop, lost network) nothing
+     * would otherwise turn USB debugging off again. Check every minute and lock
+     * down once it has been quiet for [IDLE_LOCKDOWN_MS], unless the user asked
+     * to keep the phone ready.
+     */
+    private fun scheduleWatchdog() {
+        main.postDelayed(object : Runnable {
+            override fun run() {
+                if (!Prefs.keepReady(ctx) && !isPaused && AdbToggle.isEnabled(ctx) &&
+                    !TunnelState.macActive(IDLE_LOCKDOWN_MS) && DaemonManager.isDaemonAlive()) {
+                    TunnelState.log("No Mac for 10 minutes: turning USB debugging off")
+                    DaemonManager.stop(ctx, force = true)
+                }
+                main.postDelayed(this, 60_000)
+            }
+        }, 60_000)
     }
 
     private fun scheduleResumeCheck() {

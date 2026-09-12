@@ -158,11 +158,15 @@ object Daemon {
             }
         }
         log("installing ${apk.length()} bytes")
+        // Reply first: `pm install` kills the app process, and that process is the
+        // one relaying this answer to the Mac, so a later reply would never arrive.
+        // The app restarts itself through MY_PACKAGE_REPLACED (see BootReceiver).
+        reply(s, "OK received ${apk.length()} bytes, installing")
         val p = ProcessBuilder("pm", "install", "-r", apk.absolutePath).redirectErrorStream(true).start()
         val output = p.inputStream.bufferedReader().readText().trim()
         val code = p.waitFor()
         apk.delete()
-        reply(s, if (code == 0) "OK $output" else "ERR $output")
+        log(if (code == 0) "install ok: $output" else "install failed: $output")
     }
 
     @Volatile private var clipProcess: Process? = null
@@ -175,11 +179,15 @@ object Daemon {
     private fun clip(s: Socket) {
         val jar = findJar() ?: run { reply(s, "ERR scrcpy jar not found"); return }
         clipProcess?.destroy()
-        val scid = "c1%06x".format((Math.random() * 0xffffff).toInt())
+        // Must fit a *signed* 32-bit int: scrcpy does Integer.parseInt(scid, 16).
+        val scid = "%08x".format((Math.random() * 0x7fffffff).toInt())
         val args = listOf(
             "app_process", "/", "com.genymobile.scrcpy.Server", SCRCPY_VERSION,
             "scid=$scid", "tunnel_forward=true", "video=false", "audio=false",
-            "control=true", "send_dummy_byte=false", "cleanup=false", "log_level=info"
+            // With video off the control socket is the *first* socket, and scrcpy
+            // would prefix it with its 64-byte device-name header; we don't want that.
+            "control=true", "send_dummy_byte=false", "send_device_meta=false",
+            "cleanup=false", "log_level=info"
         )
         val process = ProcessBuilder(args).apply {
             environment()["CLASSPATH"] = jar

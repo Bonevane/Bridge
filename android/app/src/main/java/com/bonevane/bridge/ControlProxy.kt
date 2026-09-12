@@ -43,6 +43,7 @@ class ControlProxy(private val ctx: Context) {
     fun stop() { runCatching { server?.close() }; server = null }
 
     private fun handle(client: Socket) {
+        TunnelState.macSeen()
         client.use {
             val input = it.getInputStream()
             val head = ByteArray(4)
@@ -61,6 +62,14 @@ class ControlProxy(private val ctx: Context) {
 
     /** Session streams go to the shell-uid daemon, which relays scrcpy-server's sockets. */
     private fun pipeToDaemon(client: Socket, head: ByteArray) {
+        TunnelState.openStreams.incrementAndGet()
+        try { pipeToDaemonInner(client, head) } finally {
+            TunnelState.openStreams.decrementAndGet()
+            TunnelState.macSeen()
+        }
+    }
+
+    private fun pipeToDaemonInner(client: Socket, head: ByteArray) {
         val daemon = runCatching { Socket("127.0.0.1", DaemonManager.DAEMON_PORT) }
             .getOrElse { TunnelState.log("session stream refused: daemon not running"); return }
         daemon.use {

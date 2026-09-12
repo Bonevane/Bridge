@@ -14,6 +14,7 @@ enum ScrcpyProtocol {
     static let collapsePanels: UInt8 = 7
     static let setDisplayPower: UInt8 = 10
     static let setClipboard: UInt8 = 9
+    static let getClipboardType: UInt8 = 8
 
     // Android MotionEvent actions
     static let actionDown: UInt8 = 0
@@ -76,6 +77,9 @@ enum ScrcpyProtocol {
         let bytes = Array(text.utf8)
         return [setClipboard] + be(sequence) + [0] + be(UInt32(bytes.count)) + bytes
     }
+
+    /// Ask the phone to send its current clipboard back (arrives as a device message).
+    static func getClipboard() -> [UInt8] { [getClipboardType, 0] }
 
     static func back(down: Bool) -> [UInt8] { [backOrScreenOn, down ? actionDown : actionUp] }
     static func displayPower(on: Bool) -> [UInt8] { [setDisplayPower, on ? 1 : 0] }

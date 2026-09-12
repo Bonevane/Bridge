@@ -67,16 +67,17 @@ Bridge treats it as a **connectivity and privilege problem**, not a screen-shari
 │  viewer + input  │                     │  TunnelService ── dumbpipe listen   │
 │        │         │   iroh / QUIC       │        │                            │
 │  dumbpipe ───────┼══ direct or relay ══┼──> ControlProxy :5580               │
-│  connect-tcp     │                     │     ├─ START/STOP/PAUSE/MODE        │
-└──────────────────┘                     │     └─ VIDEO/AUDIO/CTRL/INSTALL ─┐  │
-                                         │                                  │  │
-                                         │ Daemon (shell uid, app_process)  │  │
-                                         │  :5577 <──────────────────────────┘  │
+│  connect-tcp     │                     │     ├─ START/STOP/PAUSE/MODE/STATUS │
+└──────────────────┘                     │     ├─ NOTIF ── NotificationService │
+                                         │     └─ VIDEO/AUDIO/CTRL/CLIP/PUSH ┐ │
+                                         │                                   │ │
+                                         │ Daemon (shell uid, app_process)   │ │
+                                         │  :5577 <───────────────────────────┘ │
                                          │   └─ scrcpy-server ── localabstract  │
-                                         │                                     │
-                                         │ adbd: alive during a session,       │
-                                         │       USB only, no TCP listener     │
-                                         └─────────────────────────────────────┘
+                                         │                                      │
+                                         │ adbd: alive during a session,        │
+                                         │       USB only, no TCP listener      │
+                                         └──────────────────────────────────────┘
 ```
 </details>
 
@@ -96,11 +97,11 @@ We port-scanned the phone during a session to make sure of this.
 <br>
 
 ## <img src="https://api.iconify.design/lucide/layers.svg?color=%2334d399" width="24" height="24"> Tech Stack
-No third-party libraries in either app. Two carefully chosen binaries do the heavy lifting.
+Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binaries doing the heavy lifting. No networking or protocol libraries: the ADB client, the scrcpy protocol and the H.264/AAC handling are all written here.
 
 | **Component**        | **Technology**                                                                                                | **Description**                                                                            |
 | :------------------- | :------------------------------------------------------------------------------------------------------------ | :----------------------------------------------------------------------------------------- |
-| **Phone app**        | <img src="https://skillicons.dev/icons?i=kotlin,androidstudio,gradle" valign="middle" />                       | Kotlin, no dependencies. Foreground service, in-app ADB client (RSA + TLS), Wi-Fi bootstrap. |
+| **Phone app**        | <img src="https://skillicons.dev/icons?i=kotlin,androidstudio,gradle" valign="middle" />                       | Kotlin and Compose (Material 3). Foreground service, in-app ADB client (RSA + TLS), Wi-Fi bootstrap. |
 | **Mac app**          | <img src="https://skillicons.dev/icons?i=swift,apple" valign="middle" />                                       | Swift Package: SwiftUI menu bar, AppKit viewer, AVFoundation and AudioToolbox decoding.    |
 | **Connectivity**     | <img src="https://skillicons.dev/icons?i=rust" valign="middle" />                                              | [iroh](https://github.com/n0-computer/iroh) via `dumbpipe`: QUIC, hole punching, relay fallback. |
 | **Capture & input**  | <img src="https://raw.githubusercontent.com/Genymobile/scrcpy/master/app/data/icon.svg" width="40" valign="middle" /> | [scrcpy](https://github.com/Genymobile/scrcpy)'s server, bundled as-is, run by our shell-uid daemon. |

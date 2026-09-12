@@ -54,6 +54,8 @@ class TunnelService : Service() {
         private set
     var ble: BleLink? = null
         private set
+    var clipboard: ClipboardWatcher? = null
+        private set
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -126,6 +128,8 @@ class TunnelService : Service() {
         }
         policy = ReadyPolicy(this).also { it.start() }
         ble = BleLink(this).also { runCatching { it.start() }.onFailure { e -> TunnelState.log("Bluetooth: ${e.message}") } }
+        // Copying on the phone reaches the Mac through here (see ClipboardWatcher).
+        clipboard = ClipboardWatcher { ble }.also { it.start() }
         current = this
         worker = Thread({ runLoop() }, "dumbpipe").also { it.start() }
     }
@@ -195,6 +199,8 @@ class TunnelService : Service() {
         policy = null
         ble?.stop()
         ble = null
+        clipboard?.stop()
+        clipboard = null
         current = null
         wifiLock?.let { if (it.isHeld) it.release() }
         wifiLock = null

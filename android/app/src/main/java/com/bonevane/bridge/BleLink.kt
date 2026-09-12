@@ -257,6 +257,9 @@ class BleLink(private val context: Context) {
             // A normal app may write the clipboard in the background (reading it
             // is what Android forbids), so this direction needs no daemon.
             runCatching {
+                // Remember it first: the watcher will see this very change come
+                // back from the daemon, and must not send it to the Mac again.
+                TunnelService.current?.clipboard?.lastValue = message
                 context.getSystemService(android.content.ClipboardManager::class.java)
                     .setPrimaryClip(android.content.ClipData.newPlainText("Bridge", message))
                 TunnelState.log("Clipboard from the Mac over Bluetooth")

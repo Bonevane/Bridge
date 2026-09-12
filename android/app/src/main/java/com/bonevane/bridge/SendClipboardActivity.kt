@@ -57,6 +57,7 @@ class SendClipboardActivity : Activity() {
     private fun sendToMac(text: String): Boolean {
         val ble = TunnelService.current?.ble ?: return false
         if (!ble.connected) return false
+        TunnelService.current?.clipboard?.lastValue = text
         ble.send(BleLink.TYPE_CLIPBOARD, text)
         return true
     }

@@ -224,6 +224,16 @@ final class BridgeController: ObservableObject {
         let ticketURI = Self.ticketURI
 
         Task {
+            // The phone may be sitting in Bluetooth-only mode with its tunnel off.
+            // Ask it to start one rather than failing with "couldn't reach phone".
+            if bluetoothLinked && !phoneTunnelOn {
+                phase = .working("Waking the phone's tunnel…")
+                if await !wakePhoneTunnel() {
+                    fail("The phone didn't start its tunnel. Turn it on from the phone's screen.")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)   // let it reach a relay
+            }
             _ = await background { Shell.run(adb, ["start-server"]) }
 
             let state = await background { Shell.run(adb, ["-d", "get-state"], timeout: 10) }
@@ -303,6 +313,16 @@ final class BridgeController: ObservableObject {
         let port = localPort
 
         Task {
+            // The phone may be sitting in Bluetooth-only mode with its tunnel off.
+            // Ask it to start one rather than failing with "couldn't reach phone".
+            if bluetoothLinked && !phoneTunnelOn {
+                phase = .working("Waking the phone's tunnel…")
+                if await !wakePhoneTunnel() {
+                    fail("The phone didn't start its tunnel. Turn it on from the phone's screen.")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)   // let it reach a relay
+            }
             _ = await background { Shell.run(adb, ["start-server"]) }
             _ = await background { Shell.run(adb, ["disconnect", serial], timeout: 5) }
 
@@ -400,6 +420,28 @@ final class BridgeController: ObservableObject {
         onPhoneText: { [weak self] text in self?.phoneClipboardChanged(text) },
         macText: { NSPasteboard.general.string(forType: .string) },
         markSynced: { [weak self] text in self?.lastSyncedText = text })
+
+    /// Asks the phone (over Bluetooth) to start its tunnel, and waits for it to
+    /// say it has. Returns false if it never does.
+    private func wakePhoneTunnel() async -> Bool {
+        guard bluetoothLinked, !phoneTunnelOn else { return phoneTunnelOn }
+        appendLog("Asking the phone to start its tunnel…", source: "bluetooth")
+        bluetoothLink.setPhoneTunnel(true)
+        for _ in 0..<30 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if phoneTunnelOn { return true }
+        }
+        return phoneTunnelOn
+    }
+
+    /// Menu action: switch the phone's tunnel on or off from here.
+    func togglePhoneTunnel() {
+        guard bluetoothLinked else {
+            notice = "The phone isn't nearby, so it can't be reached over Bluetooth."
+            return
+        }
+        bluetoothLink.setPhoneTunnel(!phoneTunnelOn)
+    }
 
     // MARK: - What works right now
 

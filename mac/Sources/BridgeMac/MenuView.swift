@@ -23,6 +23,13 @@ struct MenuView: View {
             .padding(12)
         }
         .frame(width: 300)
+        // The panel's own rounded backdrop: SwiftUI's menu-bar window is square,
+        // so the shape is drawn here and the window made transparent behind it.
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.regularMaterial)
+        )
+        .background(RoundedPanelWindow())
         .onAppear { bridge.refreshPhoneStatus() }
     }
 
@@ -103,6 +110,14 @@ struct MenuView: View {
                 bridge.sendCommand("PAUSE 15", label: "Pausing the phone…")
             }
             .disabled(bridge.isBusy)
+
+            if bridge.bluetoothLinked {
+                MenuRow(bridge.phoneTunnelOn ? "Turn Phone Tunnel Off" : "Turn Phone Tunnel On",
+                        systemImage: bridge.phoneTunnelOn ? "globe.badge.chevron.backward" : "globe",
+                        help: "Switches the phone's internet tunnel over Bluetooth") {
+                    bridge.togglePhoneTunnel()
+                }
+            }
 
             MenuRow("Set Up Over USB…", systemImage: "cable.connector",
                     help: "Pair a phone that's plugged in") {

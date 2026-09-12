@@ -53,6 +53,8 @@ class BleLink(private val context: Context) {
         const val TYPE_PING: Byte = 3
         /** What the phone can currently do, so the Mac can say so plainly. */
         const val TYPE_STATUS: Byte = 4
+        /** The Mac asking for something, e.g. "tunnel on". */
+        const val TYPE_COMMAND: Byte = 5
 
         /** Conservative: the default ATT MTU is 23, of which 3 bytes are overhead. */
         private const val MIN_PAYLOAD = 20
@@ -265,6 +267,22 @@ class BleLink(private val context: Context) {
         if (more) return
         val message = inbox.toString()
         inbox.setLength(0)
+        if (type == TYPE_COMMAND) {
+            // The Mac can switch the tunnel on from across the room, so the phone
+            // can sit in the cheap Bluetooth-only mode until mirroring is wanted.
+            when (message.trim()) {
+                "tunnel on" -> {
+                    TunnelState.log("Mac asked for the tunnel over Bluetooth")
+                    TunnelService.setTunnel(context, true)
+                }
+                "tunnel off" -> {
+                    TunnelState.log("Mac turned the tunnel off over Bluetooth")
+                    TunnelService.setTunnel(context, false)
+                }
+                else -> TunnelState.log("Unknown Bluetooth command: $message")
+            }
+            return
+        }
         if (type == TYPE_CLIPBOARD) {
             // A normal app may write the clipboard in the background (reading it
             // is what Android forbids), so this direction needs no daemon.

@@ -44,6 +44,17 @@ class TunnelService : Service() {
         fun stop(ctx: Context) {
             ctx.startService(Intent(ctx, TunnelService::class.java).setAction(ACTION_STOP))
         }
+
+        /** Turns the internet tunnel on or off, leaving Bluetooth alone. */
+        fun setTunnel(ctx: Context, on: Boolean) {
+            ctx.startForegroundService(
+                Intent(ctx, TunnelService::class.java)
+                    .setAction(ACTION_TUNNEL)
+                    .putExtra(EXTRA_ON, on)
+            )
+        }
+
+        const val EXTRA_ON = "on"
     }
 
     @Volatile private var active = false
@@ -75,7 +86,10 @@ class TunnelService : Service() {
         Prefs.setWantRunning(this, true)
         if (!active) launch()
         if (intent?.action == ACTION_TUNNEL) {
-            val on = !TunnelState.tunnelOn
+            // No extra means "toggle" (the phone's own button); an extra means the
+            // Mac asked for a particular state.
+            val on = if (intent.hasExtra(EXTRA_ON)) intent.getBooleanExtra(EXTRA_ON, true)
+                     else !TunnelState.tunnelOn
             Prefs.setTunnelEnabled(this, on)
             if (on) startTunnel() else stopTunnel()
         }

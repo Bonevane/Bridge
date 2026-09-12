@@ -21,6 +21,7 @@ final class BluetoothLink: NSObject {
     private static let typeClipboard: UInt8 = 2
     private static let typePing: UInt8 = 3
     private static let typeStatus: UInt8 = 4
+    private static let typeCommand: UInt8 = 5
 
     private var central: CBCentralManager?
     private var phone: CBPeripheral?
@@ -102,6 +103,12 @@ final class BluetoothLink: NSObject {
     /// to *write* the clipboard in the background, so this needs no daemon.
     func sendClipboard(_ text: String) {
         send(type: Self.typeClipboard, text: text)
+    }
+
+    /// Asks the phone to switch its internet tunnel on or off. This is what lets
+    /// the phone idle in the free Bluetooth-only mode until mirroring is wanted.
+    func setPhoneTunnel(_ on: Bool) {
+        send(type: Self.typeCommand, text: on ? "tunnel on" : "tunnel off")
     }
 
     private func send(type: UInt8, text: String) {

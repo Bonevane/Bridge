@@ -76,3 +76,80 @@ struct GlassGroup<Content: View>: View {
         }
     }
 }
+
+/// Rounds the corners of the window a `MenuBarExtra(.window)` lives in.
+///
+/// SwiftUI gives that panel square corners, which looks wrong next to the
+/// system's own menus. There's no API for it, so this reaches the hosting
+/// NSWindow once the view is in a window and rounds it directly.
+struct RoundedPanelWindow: NSViewRepresentable {
+    var cornerRadius: CGFloat = 14
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        roundRepeatedly(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        roundRepeatedly(view)
+    }
+
+    private func round(_ window: NSWindow?) {
+        guard let window = window else { return }
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        // The square corners come from the panel's backdrop, an
+        // NSVisualEffectView that SwiftUI inserts and that ignores the content
+        // view's own rounding. Round every view in the hierarchy that draws a
+        // background, plus the chain above the content view.
+        if let root = window.contentView?.superview ?? window.contentView {
+            roundBackdrops(in: root)
+        }
+        // Whatever SwiftUI paints behind the panel is opaque and square. Clear it
+        // so the rounded background drawn in the view itself is what shows.
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        var view = window.contentView
+        while let current = view {
+            current.wantsLayer = true
+            current.layer?.cornerRadius = cornerRadius
+            current.layer?.cornerCurve = .continuous
+            current.layer?.masksToBounds = true
+            view = current.superview
+        }
+    }
+
+    private func roundBackdrops(in view: NSView) {
+        if let effect = view as? NSVisualEffectView {
+            effect.wantsLayer = true
+            effect.layer?.cornerRadius = cornerRadius
+            effect.layer?.cornerCurve = .continuous
+            effect.layer?.masksToBounds = true
+            // maskImage is what NSVisualEffectView actually honours for shape.
+            effect.maskImage = Self.roundedMask(radius: cornerRadius)
+        }
+        view.subviews.forEach { roundBackdrops(in: $0) }
+    }
+
+    /// A resizable rounded-rectangle mask, the documented way to shape a
+    /// visual-effect view.
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
+    }
+
+    /// The window is rebuilt each time the menu opens, so keep at it briefly.
+    private func roundRepeatedly(_ view: NSView) {
+        for delay in [0.0, 0.05, 0.2, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { round(view.window) }
+        }
+    }
+}

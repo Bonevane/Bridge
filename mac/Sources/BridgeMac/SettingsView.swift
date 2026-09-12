@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Bridge's settings, in the shape macOS uses for System Settings: a grouped
-/// `Form` of labelled sections, switches on the trailing edge, and an
-/// explanatory line under anything whose consequences aren't obvious.
+/// Bridge's settings, in the shape macOS uses: icon tabs across the top, and
+/// inside each one a grouped `Form` where anything with a consequence says what
+/// it is. The General tab opens with what's true right now, so the window is
+/// useful before you change a thing.
 struct SettingsView: View {
     @ObservedObject var bridge: BridgeController
 
@@ -11,14 +12,14 @@ struct SettingsView: View {
         TabView {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
-            displayTab
-                .tabItem { Label("Display", systemImage: "display") }
             phoneTab
                 .tabItem { Label("Phone", systemImage: "iphone") }
+            displayTab
+                .tabItem { Label("Mirroring", systemImage: "display") }
             pairingTab
                 .tabItem { Label("Pairing", systemImage: "link") }
         }
-        .frame(width: 460, height: 340)
+        .frame(width: 500, height: 430)
     }
 
     // MARK: - General
@@ -26,19 +27,31 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section {
-                Toggle("Open Bridge at login", isOn: $bridge.launchAtLogin)
+                StatusLine(icon: "dot.radiowaves.left.and.right", title: "Bluetooth",
+                           value: bridge.bluetoothLinked ? "Linked to your phone" : "Phone not in range",
+                           good: bridge.bluetoothLinked)
+                StatusLine(icon: "globe", title: "Phone's tunnel",
+                           value: bridge.phoneTunnelOn ? "On, reachable anywhere" : "Off, nearby only",
+                           good: bridge.phoneTunnelOn)
+                StatusLine(icon: "bolt.horizontal", title: "Between sessions",
+                           value: bridge.keepReady ? "Kept ready" : "USB debugging off",
+                           good: bridge.keepReady)
+            } header: {
+                Text("Right now")
             } footer: {
-                Text("Bridge lives in the menu bar and shows a Dock icon only while a phone window is open.")
+                Text(bridge.bluetoothLinked && !bridge.phoneTunnelOn
+                     ? "Mirroring needs the tunnel. Bridge turns it on over Bluetooth when you click Mirror Phone."
+                     : "Notifications and the clipboard use Bluetooth; mirroring uses the tunnel.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                LabeledContent("Phone", value: bridge.ticket.isEmpty ? "Not paired" : "Paired")
-                LabeledContent("Between sessions",
-                               value: bridge.keepReady ? "Kept ready" : "USB debugging off")
-            } header: {
-                Text("Status")
+                Toggle("Open Bridge at login", isOn: $bridge.launchAtLogin)
+            } footer: {
+                Text("Bridge lives in the menu bar, and shows a Dock icon only while a phone window is open.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -175,5 +188,29 @@ struct SettingsView: View {
     private var shortTicket: String {
         let t = bridge.ticket
         return t.count > 28 ? "\(t.prefix(14))…\(t.suffix(8))" : t
+    }
+}
+
+/// A read-only line with a tinted icon: state, not a control.
+private struct StatusLine: View {
+    let icon: String
+    let title: String
+    let value: String
+    let good: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill((good ? Color.green : Color.secondary).opacity(0.18))
+                    .frame(width: 24, height: 24)
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(good ? Color.green : Color.secondary)
+            }
+            Text(title)
+            Spacer()
+            Text(value).foregroundStyle(.secondary)
+        }
     }
 }

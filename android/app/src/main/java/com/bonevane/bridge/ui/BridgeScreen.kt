@@ -112,7 +112,15 @@ fun BridgeScreen(
         modifier = Modifier.nestedScroll(appBar.nestedScrollConnection),
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("Bridge", style = MaterialTheme.typography.titleLarge) },
+                title = {
+                    // A little air around the title: flush against the status bar
+                    // and the first card, it felt cramped.
+                    Text(
+                        "Bridge",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.padding(vertical = 10.dp),
+                    )
+                },
                 scrollBehavior = appBar,
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = Color.Transparent,
@@ -128,6 +136,7 @@ fun BridgeScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Spacer(Modifier.height(4.dp))
             HeroCard(running = running, ready = ready, status = status, onToggle = onToggleTunnel)
 
             TicketCard(ticket = ticket, onCopy = onCopyTicket, onShare = onShareTicket)

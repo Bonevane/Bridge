@@ -30,6 +30,8 @@ class TunnelService : Service() {
 
         const val ACTION_START = "com.bonevane.bridge.START"
         const val ACTION_STOP = "com.bonevane.bridge.STOP"
+        /** Turns the internet tunnel off but leaves Bluetooth running. */
+        const val ACTION_TUNNEL = "com.bonevane.bridge.TUNNEL"
 
         private const val CHANNEL_ID = "tunnel"
         private const val NOTIFICATION_ID = 1
@@ -45,6 +47,7 @@ class TunnelService : Service() {
     }
 
     @Volatile private var active = false
+    @Volatile private var tunnelActive = false
     @Volatile private var process: Process? = null
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -71,6 +74,11 @@ class TunnelService : Service() {
         goForeground()
         Prefs.setWantRunning(this, true)
         if (!active) launch()
+        if (intent?.action == ACTION_TUNNEL) {
+            val on = !TunnelState.tunnelOn
+            Prefs.setTunnelEnabled(this, on)
+            if (on) startTunnel() else stopTunnel()
+        }
         return START_STICKY
     }
 
@@ -110,18 +118,6 @@ class TunnelService : Service() {
     private fun launch() {
         active = true
         TunnelState.running = true
-        // Same idea as `termux-wake-lock`: keep the CPU awake while the screen is off.
-        wakeLock = getSystemService(PowerManager::class.java)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Bridge::tunnel")
-            .apply { setReferenceCounted(false); acquire() }
-        // Keep the Wi-Fi radio out of power-saving. Without this, an idle phone's
-        // radio sleeps between beacons and adds ~150 ms to every packet after any
-        // gap, which shows up as constant lag and stutter while mirroring.
-        val wifi = applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
-        val mode = if (Build.VERSION.SDK_INT >= 29)
-            android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-        else @Suppress("DEPRECATION") android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
-        wifiLock = wifi.createWifiLock(mode, "Bridge::wifi").apply { setReferenceCounted(false); acquire() }
         // Tunnel streams land on the proxy, which sorts ADB traffic from commands.
         proxy = ControlProxy(this).also { p ->
             runCatching { p.start() }.onFailure { TunnelState.log("Proxy failed: ${it.message}") }
@@ -131,14 +127,64 @@ class TunnelService : Service() {
         // Copying on the phone reaches the Mac through here (see ClipboardWatcher).
         clipboard = ClipboardWatcher { ble }.also { it.start() }
         current = this
+        // Bluetooth and the tunnel are independent: with the tunnel off, the
+        // phone still mirrors notifications and the clipboard to a nearby Mac,
+        // and stops paying for relay keepalives.
+        if (Prefs.tunnelEnabled(this)) startTunnel() else {
+            TunnelState.update("Bluetooth only. The tunnel is off.", ready = false)
+        }
+    }
+
+    @Synchronized private fun startTunnel() {
+        if (tunnelActive) return
+        tunnelActive = true
+        TunnelState.tunnelOn = true
+        // Same idea as `termux-wake-lock`: keep the CPU awake while the screen is
+        // off, so the tunnel stays answerable. Only needed while it runs.
+        wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Bridge::tunnel")
+            .apply { setReferenceCounted(false); acquire() }
         worker = Thread({ runLoop() }, "dumbpipe").also { it.start() }
+    }
+
+    @Synchronized private fun stopTunnel() {
+        tunnelActive = false
+        TunnelState.tunnelOn = false
+        process?.destroy()
+        process = null
+        worker?.interrupt()
+        worker = null
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        holdWifiAwake(false)
+        TunnelState.ticket = null
+        TunnelState.update("Bluetooth only. The tunnel is off.", ready = false)
+    }
+
+    /**
+     * Holds the Wi-Fi radio out of power-saving *only while a session is running*.
+     * It's what stops an idle radio adding ~150 ms to the first packet after a
+     * gap, but it's a high-power mode, so holding it all day would be wasteful.
+     */
+    @Synchronized fun holdWifiAwake(hold: Boolean) {
+        if (hold && wifiLock == null) {
+            val wifi = applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+            val mode = if (Build.VERSION.SDK_INT >= 29)
+                android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            else @Suppress("DEPRECATION") android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wifi.createWifiLock(mode, "Bridge::wifi")
+                .apply { setReferenceCounted(false); acquire() }
+        } else if (!hold) {
+            wifiLock?.let { if (it.isHeld) it.release() }
+            wifiLock = null
+        }
     }
 
     private fun runLoop() {
         // Android installs files from jniLibs here, with permission to execute.
         val binary = File(applicationInfo.nativeLibraryDir, "libdumbpipe.so")
 
-        while (active) {
+        while (tunnelActive) {
             if (!binary.exists()) {
                 TunnelState.update("dumbpipe is missing. Run scripts/fetch-dumbpipe.sh and rebuild.", ready = false)
                 return
@@ -173,10 +219,10 @@ class TunnelService : Service() {
                 }
                 TunnelState.log("dumbpipe exited with code ${p.waitFor()}")
             } catch (e: Exception) {
-                TunnelState.log("Error: ${e.message}")
+                if (tunnelActive) TunnelState.log("Error: ${e.message}")
             }
             process = null
-            if (!active) break
+            if (!tunnelActive) break
             TunnelState.update("Tunnel stopped. Restarting in 5 seconds...", ready = false)
             try {
                 Thread.sleep(5000)
@@ -189,7 +235,9 @@ class TunnelService : Service() {
 
     private fun shutdown() {
         active = false
+        tunnelActive = false
         TunnelState.running = false
+        TunnelState.tunnelOn = false
         process?.destroy()          // closes dumbpipe; the read loop then ends
         worker?.interrupt()
         worker = null

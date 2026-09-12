@@ -42,6 +42,14 @@ object Prefs {
     fun pausedUntil(ctx: Context): Long = prefs(ctx).getLong("pausedUntil", 0)
     fun setPausedUntil(ctx: Context, t: Long) = prefs(ctx).edit().putLong("pausedUntil", t).apply()
 
+    /**
+     * Whether the internet tunnel should run. Off means Bluetooth only: the Mac
+     * can't connect from afar, but notifications and clipboard still work nearby
+     * and the phone stops paying for relay keepalives.
+     */
+    fun tunnelEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean("tunnelEnabled", true)
+    fun setTunnelEnabled(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("tunnelEnabled", on).apply()
+
     /** Whether the user last left the tunnel on. */
     fun wantRunning(ctx: Context): Boolean = prefs(ctx).getBoolean("wantRunning", false)
     fun setWantRunning(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("wantRunning", on).apply()

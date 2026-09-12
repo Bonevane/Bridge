@@ -44,7 +44,10 @@ class MainActivity : ComponentActivity() {
             BridgeTheme {
                 BridgeScreen(
                     onToggleTunnel = {
-                        if (TunnelState.running) TunnelService.stop(this) else TunnelService.start(this)
+                        // Toggles the internet tunnel only; Bluetooth keeps running.
+                        startForegroundService(
+                            Intent(this, TunnelService::class.java).setAction(TunnelService.ACTION_TUNNEL)
+                        )
                     },
                     onCopyTicket = ::copyTicket,
                     onShareTicket = ::shareTicket,

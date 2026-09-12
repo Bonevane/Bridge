@@ -96,7 +96,7 @@ fun BridgeScreen(
     }
     tick.intValue   // read it so a listener callback recomposes this screen
 
-    val running = TunnelState.running
+    val running = TunnelState.tunnelOn
     val ready = TunnelState.ready
     val status = TunnelState.status
     val ticket = TunnelState.ticket ?: Prefs.ticket(context)
@@ -226,7 +226,7 @@ private fun HeroCard(running: Boolean, ready: Boolean, status: String, onToggle:
                 when {
                     ready -> "Ready"
                     running -> "Starting"
-                    else -> "Off"
+                    else -> "Nearby only"
                 },
                 style = MaterialTheme.typography.displaySmall,
             )
@@ -246,7 +246,7 @@ private fun HeroCard(running: Boolean, ready: Boolean, status: String, onToggle:
             ) {
                 Icon(if (running) Icons.Rounded.Stop else Icons.Rounded.PlayArrow, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (running) "Stop tunnel" else "Start tunnel", style = MaterialTheme.typography.titleMedium)
+                Text(if (running) "Turn tunnel off" else "Turn tunnel on", style = MaterialTheme.typography.titleMedium)
             }
         }
     }

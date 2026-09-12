@@ -66,9 +66,15 @@ class ControlProxy(private val ctx: Context) {
 
     /** Session streams go to the shell-uid daemon, which relays scrcpy-server's sockets. */
     private fun pipeToDaemon(client: Socket, head: ByteArray) {
-        TunnelState.openStreams.incrementAndGet()
+        // A session's worth of traffic is starting: keep the radio responsive
+        // while it lasts, and let it idle again afterwards.
+        if (TunnelState.openStreams.incrementAndGet() == 1) {
+            TunnelService.current?.holdWifiAwake(true)
+        }
         try { pipeToDaemonInner(client, head) } finally {
-            TunnelState.openStreams.decrementAndGet()
+            if (TunnelState.openStreams.decrementAndGet() == 0) {
+                TunnelService.current?.holdWifiAwake(false)
+            }
             TunnelState.macSeen()
         }
     }

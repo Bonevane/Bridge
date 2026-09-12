@@ -10,6 +10,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 object TunnelState {
     @Volatile var running = false
+    /** The internet tunnel specifically; Bluetooth runs independently of it. */
+    @Volatile var tunnelOn = false
     @Volatile var ready = false
     @Volatile var status = "Stopped"
     @Volatile var ticket: String? = null

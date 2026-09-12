@@ -82,7 +82,11 @@ object DaemonManager {
         }
 
         for (attempt in 1..20) {
-            probe(DAEMON_PORT)?.let { TunnelState.log("Daemon up: $it"); return }
+            probe(DAEMON_PORT)?.let {
+                TunnelState.log("Daemon up: $it")
+                TunnelService.current?.ble?.sendStatus()
+                return
+            }
             Thread.sleep(250)
         }
         error("daemon did not answer on $DAEMON_PORT")
@@ -108,6 +112,7 @@ object DaemonManager {
         }
         AdbToggle.set(ctx, false)
         TunnelState.log("Daemon stopped")
+        TunnelService.current?.ble?.sendStatus()
         return "stopped, USB debugging off"
     }
 

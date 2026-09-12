@@ -51,6 +51,8 @@ class BleLink(private val context: Context) {
         const val TYPE_CLIPBOARD: Byte = 2
         /** Proof the link is alive: the Mac reconnects if these stop arriving. */
         const val TYPE_PING: Byte = 3
+        /** What the phone can currently do, so the Mac can say so plainly. */
+        const val TYPE_STATUS: Byte = 4
 
         /** Conservative: the default ATT MTU is 23, of which 3 bytes are overhead. */
         private const val MIN_PAYLOAD = 20
@@ -142,9 +144,18 @@ class BleLink(private val context: Context) {
         Thread({
             while (beating) {
                 Thread.sleep(30_000)
-                if (subscribers.isNotEmpty()) send(TYPE_PING, "")
+                if (subscribers.isNotEmpty()) sendStatus()
             }
         }, "ble-heartbeat").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Tells the Mac what works right now. Doubles as the heartbeat, so the Mac's
+     * picture of the phone is never more than 30 s stale.
+     */
+    fun sendStatus() {
+        val daemon = DaemonManager.isDaemonAlive()
+        send(TYPE_STATUS, "daemon=${if (daemon) 1 else 0} tunnel=${if (TunnelState.tunnelOn) 1 else 0}")
     }
 
     // MARK: - Sending
@@ -218,6 +229,7 @@ class BleLink(private val context: Context) {
                     if (on) subscribers.add(device) else subscribers.remove(device)
                     connected = subscribers.isNotEmpty()
                     TunnelState.log("Bluetooth: Mac ${if (on) "connected" else "left"}")
+                    if (on) sendStatus()
                 }
                 if (responseNeeded) {
                     server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)

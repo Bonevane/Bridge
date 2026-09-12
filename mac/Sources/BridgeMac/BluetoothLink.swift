@@ -20,6 +20,7 @@ final class BluetoothLink: NSObject {
     private static let typeNotification: UInt8 = 1
     private static let typeClipboard: UInt8 = 2
     private static let typePing: UInt8 = 3
+    private static let typeStatus: UInt8 = 4
 
     private var central: CBCentralManager?
     private var phone: CBPeripheral?
@@ -33,6 +34,8 @@ final class BluetoothLink: NSObject {
     private let log: (String) -> Void
     private let onNotification: (String) -> Void
     private let onClipboard: (String) -> Void
+    /// What the phone says it can currently do: (daemon running, tunnel on).
+    var onStatus: ((Bool, Bool) -> Void)?
 
     /// True while the phone is connected and subscribed.
     private(set) var isLinked = false {
@@ -130,6 +133,12 @@ final class BluetoothLink: NSObject {
         case Self.typeNotification: onNotification(text)
         case Self.typeClipboard: onClipboard(text)
         case Self.typePing: break        // liveness only
+        case Self.typeStatus:
+            let fields = Dictionary(uniqueKeysWithValues: text.split(separator: " ").compactMap { field -> (String, String)? in
+                let parts = field.split(separator: "=", maxSplits: 1)
+                return parts.count == 2 ? (String(parts[0]), String(parts[1])) : nil
+            })
+            onStatus?(fields["daemon"] == "1", fields["tunnel"] == "1")
         default: break
         }
     }

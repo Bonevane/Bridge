@@ -76,6 +76,9 @@ final class BridgeController: ObservableObject {
     }
     /// True while the phone is linked over Bluetooth.
     @Published var bluetoothLinked = false
+    /// Reported by the phone over Bluetooth, so the Mac can say what works.
+    @Published var phoneDaemonAlive = false
+    @Published var phoneTunnelOn = false
 
     /// Keep mirroring notifications when the phone is out of Bluetooth range, by
     /// holding a tunnel open. Costs battery and data, so it's off by default.
@@ -398,6 +401,53 @@ final class BridgeController: ObservableObject {
         macText: { NSPasteboard.general.string(forType: .string) },
         markSynced: { [weak self] text in self?.lastSyncedText = text })
 
+    // MARK: - What works right now
+
+    enum Capability {
+        case working(String)        // green: works, with a short note
+        case limited(String)        // amber: works, but with a caveat
+        case off(String)            // grey: doesn't work, and why
+
+        var symbol: String {
+            switch self {
+            case .working: return "checkmark.circle.fill"
+            case .limited: return "exclamationmark.circle.fill"
+            case .off: return "circle.dotted"
+            }
+        }
+        var detail: String {
+            switch self {
+            case .working(let s), .limited(let s), .off(let s): return s
+            }
+        }
+    }
+
+    /// Mirroring needs the phone's tunnel: Bluetooth can't carry video.
+    var screenCapability: Capability {
+        if isConnected { return .working("Mirroring now") }
+        if ticket.trimmingCharacters(in: .whitespaces).isEmpty { return .off("Not paired yet") }
+        if bluetoothLinked && !phoneTunnelOn { return .off("Turn the tunnel on, on the phone") }
+        return .working("Ready to connect")
+    }
+
+    var notificationCapability: Capability {
+        if !mirrorNotifications { return .off("Switched off") }
+        if bluetoothLinked { return .working("Over Bluetooth") }
+        if notificationsAnywhere { return .limited("Phone is far: using the tunnel") }
+        return .off("Phone out of Bluetooth range")
+    }
+
+    var clipboardCapability: Capability {
+        if !syncClipboard { return .off("Switched off") }
+        if isConnected { return .working("Both ways, in this session") }
+        if bluetoothLinked {
+            return phoneDaemonAlive
+                ? .working("Both ways, over Bluetooth")
+                : .limited("Mac to phone only; use the phone's tile the other way")
+        }
+        return .off("Phone out of Bluetooth range")
+    }
+
     // MARK: - Settings sync with the phone
     //
     // Only one setting lives on both sides: "keep ready". The Mac pushes it
@@ -453,10 +503,17 @@ final class BridgeController: ObservableObject {
             bluetoothLinked = false
             return
         }
+        bluetoothLink.onStatus = { [weak self] daemon, tunnel in
+            Task { @MainActor in
+                self?.phoneDaemonAlive = daemon
+                self?.phoneTunnelOn = tunnel
+            }
+        }
         bluetoothLink.onLinkChange = { [weak self] linked in
             Task { @MainActor in
                 guard let self = self else { return }
                 self.bluetoothLinked = linked
+                if !linked { self.phoneDaemonAlive = false; self.phoneTunnelOn = false }
                 // Bluetooth covers both while it's in range, so the tunnel-based
                 // helpers should stand down, and the clipboard watcher should
                 // start (or stop) with the link.

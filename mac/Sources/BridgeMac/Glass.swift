@@ -12,7 +12,9 @@ extension View {
     @ViewBuilder
     func glassPanel(cornerRadius: CGFloat = 16, tint: Color? = nil) -> some View {
         if #available(macOS 26.0, *) {
-            let glass = tint.map { Glass.regular.tint($0) } ?? .regular
+            // A full-strength tint turns the panel into a solid slab of colour;
+            // glass is meant to be a hint of it, so the colour is heavily diluted.
+            let glass = tint.map { Glass.regular.tint($0.opacity(0.22)) } ?? .regular
             self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius))
         } else {
             self.background(

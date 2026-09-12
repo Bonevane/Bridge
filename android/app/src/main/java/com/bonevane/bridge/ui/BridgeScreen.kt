@@ -37,7 +37,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -104,17 +104,17 @@ fun BridgeScreen(
     var autostart by remember { mutableStateOf(Prefs.autostart(context)) }
     var showLog by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
-    // The large title shrinks into a normal app bar as the page scrolls, which is
-    // what makes the screen feel like part of the system rather than a web page.
-    val appBar = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    // A compact centred bar: the large collapsing one wasted most of the first
+    // screen on empty space before anything useful appeared.
+    val appBar = TopAppBarDefaults.pinnedScrollBehavior()
 
     Scaffold(
         modifier = Modifier.nestedScroll(appBar.nestedScrollConnection),
         topBar = {
-            LargeTopAppBar(
-                title = { Text("Bridge") },
+            CenterAlignedTopAppBar(
+                title = { Text("Bridge", style = MaterialTheme.typography.titleLarge) },
                 scrollBehavior = appBar,
-                colors = TopAppBarDefaults.largeTopAppBarColors(
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = Color.Transparent,
                     scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
                 ),

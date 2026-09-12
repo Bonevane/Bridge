@@ -145,6 +145,7 @@ class TunnelService : Service() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Bridge::tunnel")
             .apply { setReferenceCounted(false); acquire() }
         worker = Thread({ runLoop() }, "dumbpipe").also { it.start() }
+        ble?.sendStatus()
     }
 
     @Synchronized private fun stopTunnel() {
@@ -159,6 +160,7 @@ class TunnelService : Service() {
         holdWifiAwake(false)
         TunnelState.ticket = null
         TunnelState.update("Bluetooth only. The tunnel is off.", ready = false)
+        ble?.sendStatus()
     }
 
     /**

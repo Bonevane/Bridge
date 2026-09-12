@@ -12,6 +12,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         BridgeController.shared.updateBluetooth()
         BridgeController.shared.updateNotificationBridge()
         BridgeController.shared.updateBackgroundClipboard()
+
+        // Settings and About are ordinary windows that need a Dock icon while
+        // open. When the last one closes, go back to menu-bar only. Watching
+        // the windows themselves is the only reliable hook: SwiftUI hides the
+        // Settings window rather than destroying its view, so `onDisappear`
+        // doesn't fire, and the About panel isn't SwiftUI at all.
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                               object: nil, queue: .main) { [weak self] note in
+            let closing = note.object as? NSWindow
+            Task { @MainActor in self?.hideDockIconIfNothingOpen(except: closing) }
+        }
+    }
+
+    private func hideDockIconIfNothingOpen(except closing: NSWindow?) {
+        let stillOpen = NSApp.windows.contains { window in
+            window !== closing && window.isVisible
+                && !(window is NSPanel)                 // the menu-bar dropdown
+                && window.styleMask.contains(.titled)   // not helper windows
+        }
+        if !stillOpen { NSApp.setActivationPolicy(.accessory) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -31,10 +51,6 @@ struct BridgeApp: App {
         // real preferences toolbar: big icons above labels, like System Settings.
         Settings {
             SettingsView(bridge: bridge)
-                .onDisappear {
-                    // Back to menu-bar only, unless a phone window is still open.
-                    if !bridge.isConnected { NSApp.setActivationPolicy(.accessory) }
-                }
         }
     }
 }

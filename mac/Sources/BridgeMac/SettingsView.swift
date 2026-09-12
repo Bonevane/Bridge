@@ -92,6 +92,16 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Show the phone's notifications", isOn: $bridge.mirrorNotifications)
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text("Grant Bridge notification access on the phone first. This works even while USB debugging is off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Toggle("Sync the clipboard", isOn: $bridge.syncClipboard)
                 Toggle("Sync even with no window open", isOn: $bridge.backgroundClipboard)
                     .disabled(!bridge.syncClipboard)

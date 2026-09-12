@@ -66,9 +66,13 @@ class MainActivity : ComponentActivity() {
                     onAutostartChange = { Prefs.setAutostart(this, it) },
                     onBatteryExemption = ::askBatteryExemption,
                     onNewIdentity = ::newIdentity,
+                    onGrantNotificationAccess = {
+                        startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                    },
                     isIgnoringBatteryOptimisations = {
                         getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
                     },
+                    notificationAccess = { NotificationRelay.hasAccess(this) },
                 )
             }
         }

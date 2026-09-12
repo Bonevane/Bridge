@@ -6,6 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar only: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
+        // Resume the background helpers the user had switched on.
+        BridgeController.shared.updateNotificationBridge()
+        BridgeController.shared.updateBackgroundClipboard()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

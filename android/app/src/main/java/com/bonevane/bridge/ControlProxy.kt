@@ -16,6 +16,9 @@ import java.net.Socket
  *    debugging on); "STOP" ends a session (USB debugging off unless "keep ready"
  *    or on cellular); "LOCKDOWN" forces it off; "PAUSE <min>" / "RESUME";
  *    "MODE keep|lock" sets the keep-ready choice; "STATUS".
+ *
+ * Careful: streams are matched on their first four bytes, so no control command
+ * may begin with VIDE, AUDI, CTRL, CLIP, INST, PUSH or NOTI.
  *    Replies are one line: "OK …" or "ERR …".
  *
  * One ticket and one port carry everything, so the Mac's Connect button can
@@ -55,6 +58,7 @@ class ControlProxy(private val ctx: Context) {
             }
             when (String(head)) {
                 "VIDE", "AUDI", "CTRL", "CLIP", "INST", "PUSH" -> pipeToDaemon(it, head)   // daemon streams
+                "NOTI" -> notifications(it)
                 else -> control(it, head)
             }
         }
@@ -94,6 +98,38 @@ class ControlProxy(private val ctx: Context) {
         }
     }
 
+    /**
+     * Streams notifications to the Mac, one per line, until it disconnects.
+     * Needs no daemon: [NotificationRelay] is plain app code, so this works even
+     * with USB debugging off.
+     */
+    private fun notifications(client: Socket) {
+        val out = client.getOutputStream()
+        if (!NotificationRelay.hasAccess(ctx)) {
+            out.write("ERR notification access not granted on the phone\n".toByteArray()); out.flush(); return
+        }
+        out.write("OK\n".toByteArray()); out.flush()
+
+        // onNotificationPosted runs on the main thread, where Android forbids
+        // socket writes, so the callback only queues and this thread does the
+        // writing. The blank line every 30 s is a keepalive: writing is also how
+        // we notice the Mac has gone.
+        val queue = java.util.concurrent.LinkedBlockingQueue<String>(200)
+        val listener: (String) -> Unit = { queue.offer(it) }
+        NotificationRelay.subscribe(listener)
+        try {
+            while (true) {
+                val line = queue.poll(30, java.util.concurrent.TimeUnit.SECONDS)
+                out.write(((line ?: "") + "\n").toByteArray())
+                out.flush()
+            }
+        } catch (e: Exception) {
+            TunnelState.log("Notification stream ended: ${e.message}")
+        } finally {
+            NotificationRelay.unsubscribe(listener)
+        }
+    }
+
     private fun control(client: Socket, head: ByteArray) {
         val rest = client.getInputStream().bufferedReader().readLine() ?: ""
         val line = (String(head) + rest).trim()
@@ -120,7 +156,8 @@ class ControlProxy(private val ctx: Context) {
             "STATUS" -> {
                 val adb = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
                 val paused = TunnelService.current?.policy?.isPaused ?: false
-                reply("OK adb=$adb daemon=${DaemonManager.isDaemonAlive()} keep=${Prefs.keepReady(ctx)} paused=$paused")
+                reply("OK adb=$adb daemon=${DaemonManager.isDaemonAlive()} keep=${Prefs.keepReady(ctx)}" +
+                    " paused=$paused notif=${NotificationRelay.hasAccess(ctx)}")
             }
             else -> reply("ERR unknown command")
         }

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.PauseCircle
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -80,7 +81,9 @@ fun BridgeScreen(
     onAutostartChange: (Boolean) -> Unit,
     onBatteryExemption: () -> Unit,
     onNewIdentity: () -> Unit,
+    onGrantNotificationAccess: () -> Unit,
     isIgnoringBatteryOptimisations: () -> Boolean,
+    notificationAccess: () -> Boolean,
 ) {
     val context = LocalContext.current
     // TunnelState is a plain observable object shared with the service; this
@@ -160,6 +163,23 @@ fun BridgeScreen(
                     Icon(Icons.Rounded.Lock, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Turn USB debugging off now")
+                }
+            }
+
+            SectionCard(title = "Notifications") {
+                val granted = notificationAccess()
+                Text(
+                    if (granted) "Your notifications appear on the Mac while it's connected."
+                    else "Let Bridge read notifications to show them on your Mac. This works even when USB debugging is off.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!granted) {
+                    FilledTonalButton(onClick = onGrantNotificationAccess, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.Notifications, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Allow notification access")
+                    }
                 }
             }
 

@@ -51,6 +51,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- Mirrors notifications to the Mac. An ordinary listener service, so it
+             keeps working while USB debugging is off. The user grants access once. -->
+        <service
+            android:name=".NotificationService"
+            android:exported="true"
+            android:label="Bridge"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- Quick Settings tile: pause for banking apps. -->
         <service
             android:name=".PauseTile"

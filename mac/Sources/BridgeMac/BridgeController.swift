@@ -67,6 +67,14 @@ final class BridgeController: ObservableObject {
             updateBackgroundClipboard()
         }
     }
+    /// Show the phone's notifications on the Mac (works with USB debugging off).
+    @Published var mirrorNotifications: Bool {
+        didSet {
+            UserDefaults.standard.set(mirrorNotifications, forKey: "mirrorNotifications")
+            updateNotificationBridge()
+        }
+    }
+
     /// Start Bridge when you log in, so the menu-bar icon is always there.
     /// Backed by the system's login-items service, not a copied file.
     @Published var launchAtLogin: Bool {
@@ -115,6 +123,7 @@ final class BridgeController: ObservableObject {
         backgroundClipboard = defaults.bool(forKey: "backgroundClipboard")
         mutePhone = defaults.bool(forKey: "mutePhone")
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        mirrorNotifications = defaults.bool(forKey: "mirrorNotifications")
     }
 
     // MARK: - State helpers
@@ -411,6 +420,18 @@ final class BridgeController: ObservableObject {
     }
 
     @Published var phonePausedForBanking = false
+
+    private lazy var notificationBridge = NotificationBridge(
+        log: { [weak self] line in Task { @MainActor in self?.appendLog(line, source: "phone") } })
+
+    func updateNotificationBridge() {
+        let t = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mirrorNotifications, t.hasPrefix("endpoint") {
+            notificationBridge.start(ticket: t, port: localPort)
+        } else {
+            notificationBridge.stop()
+        }
+    }
 
     /// The background bridge runs only when enabled AND no window is mirroring.
     func updateBackgroundClipboard() {

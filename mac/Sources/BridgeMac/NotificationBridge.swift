@@ -12,6 +12,7 @@ final class NotificationBridge {
     private var stream: TCPStream?
     private var ownTunnel: Process?
     private var enabled = false
+    private var warnedAboutAccess = false
     private let log: (String) -> Void
 
     init(log: @escaping (String) -> Void) {
@@ -53,25 +54,35 @@ final class NotificationBridge {
                 ownTunnel = p; startedOwn = true
                 Thread.sleep(forTimeInterval: 3)
             }
-            listen(port: port)
+            let connected = listen(port: port)
             if startedOwn { ownTunnel?.terminate(); ownTunnel = nil }
-            if enabled { Thread.sleep(forTimeInterval: 10) }
+            // Back off when the phone isn't answering, so an unreachable phone
+            // doesn't mean spawning a tunnel every few seconds all day.
+            if enabled { Thread.sleep(forTimeInterval: connected ? 5 : 60) }
         }
     }
 
-    private func listen(port: Int) {
-        guard let s = try? TCPStream(port: port, timeout: 0) else { return }
+    /// Returns true if it actually got a stream, so the caller knows how long to wait.
+    @discardableResult
+    private func listen(port: Int) -> Bool {
+        guard let s = try? TCPStream(port: port, timeout: 0) else { return false }
         do {
             try s.write("NOTIF\n")
             let reply = try s.readLine()
             guard reply.hasPrefix("OK") else {
-                log(reply)          // e.g. access not granted on the phone
+                // Usually "notification access not granted on the phone". Keep
+                // retrying quietly: the user may grant it at any moment, and
+                // giving up here would mean it silently never starts.
+                if !warnedAboutAccess {
+                    log(reply)
+                    warnedAboutAccess = true
+                }
                 s.closeStream()
-                enabled = false     // don't spin: the user has to grant it first
-                return
+                return false
             }
-        } catch { s.closeStream(); return }
+        } catch { s.closeStream(); return false }
         stream = s
+        warnedAboutAccess = false
         log("Mirroring phone notifications.")
 
         while enabled {
@@ -83,9 +94,16 @@ final class NotificationBridge {
         }
         s.closeStream()
         stream = nil
+        return true
     }
 
     private func show(app: String, title: String, body: String) {
+        Self.post(app: app, title: title, body: body)
+    }
+
+    /// Posts one phone notification on the Mac. Shared by both transports
+    /// (Bluetooth when the phone is nearby, the tunnel when it isn't).
+    static func post(app: String, title: String, body: String) {
         let content = UNMutableNotificationContent()
         // The app name is the most useful thing to lead with; the phone's own
         // title goes in the subtitle so both are visible.
@@ -95,5 +113,10 @@ final class NotificationBridge {
         content.sound = nil
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    /// macOS only shows notifications once the user has allowed them.
+    static func requestPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 }

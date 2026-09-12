@@ -153,6 +153,23 @@ class ControlProxy(private val ctx: Context) {
                 Prefs.setKeepReady(ctx, keep)
                 reply("OK mode=${if (keep) "keep" else "lock"}")
             }
+            // Experiment: can the *app* (normal uid) touch the clipboard in the
+            // background? Android 10+ normally refuses. Names avoid the stream
+            // prefixes CLIP/PUSH/NOTI.
+            "CBGET" -> {
+                val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                val text = runCatching { cm.primaryClip?.getItemAt(0)?.coerceToText(ctx)?.toString() }
+                    .getOrElse { "EXCEPTION ${it.javaClass.simpleName}" }
+                reply("OK read=${text ?: "<null>"}")
+            }
+            "CBSET" -> {
+                val value = line.substringAfter(' ', "")
+                val ok = runCatching {
+                    ctx.getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("Bridge", value)); true
+                }.getOrElse { false }
+                reply("OK wrote=$ok")
+            }
             "STATUS" -> {
                 val adb = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
                 val paused = TunnelService.current?.policy?.isPaused ?: false

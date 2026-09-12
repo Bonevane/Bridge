@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu-bar only: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
         // Resume the background helpers the user had switched on.
+        NotificationBridge.requestPermission()
+        BridgeController.shared.updateBluetooth()
         BridgeController.shared.updateNotificationBridge()
         BridgeController.shared.updateBackgroundClipboard()
     }

@@ -52,6 +52,8 @@ class TunnelService : Service() {
     private var proxy: ControlProxy? = null
     var policy: ReadyPolicy? = null
         private set
+    var ble: BleLink? = null
+        private set
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -123,6 +125,7 @@ class TunnelService : Service() {
             runCatching { p.start() }.onFailure { TunnelState.log("Proxy failed: ${it.message}") }
         }
         policy = ReadyPolicy(this).also { it.start() }
+        ble = BleLink(this).also { runCatching { it.start() }.onFailure { e -> TunnelState.log("Bluetooth: ${e.message}") } }
         current = this
         worker = Thread({ runLoop() }, "dumbpipe").also { it.start() }
     }
@@ -190,6 +193,8 @@ class TunnelService : Service() {
         proxy = null
         policy?.stop()
         policy = null
+        ble?.stop()
+        ble = null
         current = null
         wifiLock?.let { if (it.isHeld) it.release() }
         wifiLock = null

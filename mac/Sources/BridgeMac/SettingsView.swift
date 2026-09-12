@@ -92,11 +92,24 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Use Bluetooth when the phone is nearby", isOn: $bridge.useBluetooth)
+                LabeledContent("Bluetooth", value: bridge.bluetoothLinked ? "Linked" : "Not in range")
+            } header: {
+                Text("Short-range link")
+            } footer: {
+                Text("Notifications and the clipboard travel over Bluetooth when the phone is within range, which costs almost nothing. Without it they need an open internet tunnel.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Toggle("Show the phone's notifications", isOn: $bridge.mirrorNotifications)
+                Toggle("Even when the phone is far away", isOn: $bridge.notificationsAnywhere)
+                    .disabled(!bridge.mirrorNotifications)
             } header: {
                 Text("Notifications")
             } footer: {
-                Text("Grant Bridge notification access on the phone first. This works even while USB debugging is off.")
+                Text("Works even while USB debugging is off, because it needs no privileged access on the phone. Grant Bridge notification access there first. Bridge keeps a connection open while this is on, which uses a little battery and data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

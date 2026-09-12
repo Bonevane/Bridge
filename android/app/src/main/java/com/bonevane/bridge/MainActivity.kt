@@ -31,9 +31,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         handleIntent(intent)
 
-        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-        }
+        // Notifications for the foreground service, Bluetooth for the short-range
+        // link to the Mac. Asked for together so there's one round of prompts.
+        val wanted = listOf(
+            Manifest.permission.POST_NOTIFICATIONS,
+            "android.permission.BLUETOOTH_ADVERTISE",
+            "android.permission.BLUETOOTH_CONNECT",
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (wanted.isNotEmpty()) requestPermissions(wanted.toTypedArray(), 1)
 
         setContent {
             BridgeTheme {
@@ -76,6 +81,13 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Bluetooth permission may have just been granted, here or in system
+        // settings. Starting again is harmless if the link is already up.
+        TunnelService.current?.ble?.let { runCatching { it.start() } }
     }
 
     override fun onNewIntent(intent: Intent) {

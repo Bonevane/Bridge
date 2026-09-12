@@ -50,7 +50,7 @@ final class BridgeController: ObservableObject {
     /// Sync the clipboard both ways while a session is open.
     @Published var syncClipboard: Bool {
         didSet { UserDefaults.standard.set(syncClipboard, forKey: "syncClipboard")
-                 if isConnected { syncClipboard ? startClipboardWatch() : stopClipboardWatch() } }
+                 syncClipboard ? startClipboardWatch() : stopClipboardWatch() }
     }
     /// Keep the clipboard synced even with no mirroring window.
     /// This only works while the phone's daemon is alive, so it implies "keep ready".
@@ -67,6 +67,25 @@ final class BridgeController: ObservableObject {
             updateBackgroundClipboard()
         }
     }
+    /// Prefer Bluetooth for notifications and clipboard when the phone is nearby.
+    @Published var useBluetooth: Bool {
+        didSet {
+            UserDefaults.standard.set(useBluetooth, forKey: "useBluetooth")
+            updateBluetooth()
+        }
+    }
+    /// True while the phone is linked over Bluetooth.
+    @Published var bluetoothLinked = false
+
+    /// Keep mirroring notifications when the phone is out of Bluetooth range, by
+    /// holding a tunnel open. Costs battery and data, so it's off by default.
+    @Published var notificationsAnywhere: Bool {
+        didSet {
+            UserDefaults.standard.set(notificationsAnywhere, forKey: "notificationsAnywhere")
+            updateNotificationBridge()
+        }
+    }
+
     /// Show the phone's notifications on the Mac (works with USB debugging off).
     @Published var mirrorNotifications: Bool {
         didSet {
@@ -124,6 +143,8 @@ final class BridgeController: ObservableObject {
         mutePhone = defaults.bool(forKey: "mutePhone")
         launchAtLogin = SMAppService.mainApp.status == .enabled
         mirrorNotifications = defaults.bool(forKey: "mirrorNotifications")
+        useBluetooth = defaults.object(forKey: "useBluetooth") as? Bool ?? true
+        notificationsAnywhere = defaults.bool(forKey: "notificationsAnywhere")
     }
 
     // MARK: - State helpers
@@ -359,7 +380,7 @@ final class BridgeController: ObservableObject {
             if turnScreenOff { session.send(ScrcpyProtocol.displayPower(on: false)) }
             self.session = session
             self.sessionWindow = window
-            if syncClipboard { startClipboardWatch() }
+            startClipboardWatch()
             // Show in the Dock and ⌘-Tab while the phone window is open.
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
@@ -421,12 +442,47 @@ final class BridgeController: ObservableObject {
 
     @Published var phonePausedForBanking = false
 
+    private lazy var bluetoothLink = BluetoothLink(
+        log: { [weak self] line in Task { @MainActor in self?.appendLog(line, source: "bluetooth") } },
+        onNotification: { [weak self] line in Task { @MainActor in self?.showPhoneNotification(line) } },
+        onClipboard: { [weak self] text in Task { @MainActor in self?.phoneClipboardChanged(text) } })
+
+    func updateBluetooth() {
+        guard useBluetooth else {
+            bluetoothLink.stop()
+            bluetoothLinked = false
+            return
+        }
+        bluetoothLink.onLinkChange = { [weak self] linked in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.bluetoothLinked = linked
+                // Bluetooth covers both while it's in range, so the tunnel-based
+                // helpers should stand down, and the clipboard watcher should
+                // start (or stop) with the link.
+                self.updateNotificationBridge()
+                self.updateBackgroundClipboard()
+                if linked { self.startClipboardWatch() } else if !self.isConnected { self.stopClipboardWatch() }
+            }
+        }
+        bluetoothLink.start()
+    }
+
+    /// One notification from the phone: "app\ttitle\ttext".
+    func showPhoneNotification(_ line: String) {
+        let parts = line.components(separatedBy: "\t")
+        guard parts.count >= 3, mirrorNotifications else { return }
+        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2])
+    }
+
     private lazy var notificationBridge = NotificationBridge(
         log: { [weak self] line in Task { @MainActor in self?.appendLog(line, source: "phone") } })
 
     func updateNotificationBridge() {
         let t = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
-        if mirrorNotifications, t.hasPrefix("endpoint") {
+        // Bluetooth is far cheaper, so only fall back to the tunnel when the
+        // phone is out of range and the user asked for notifications anywhere.
+        if mirrorNotifications, !bluetoothLinked, notificationsAnywhere, t.hasPrefix("endpoint") {
             notificationBridge.start(ticket: t, port: localPort)
         } else {
             notificationBridge.stop()
@@ -447,17 +503,25 @@ final class BridgeController: ObservableObject {
     private var lastChangeCount = 0
     private var lastSyncedText: String?   // to break the Mac<->phone echo loop
 
-    private func startClipboardWatch() {
+    /// Watches the Mac clipboard and pushes changes to the phone over whichever
+    /// transport is available: the session's control socket while mirroring,
+    /// otherwise Bluetooth. Runs whenever either of those exists.
+    func startClipboardWatch() {
         stopClipboardWatch()
+        guard syncClipboard, isConnected || bluetoothLinked else { return }
         lastChangeCount = NSPasteboard.general.changeCount
         clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self = self, let s = self.session else { return }
+            guard let self = self else { return }
             let pb = NSPasteboard.general
             guard pb.changeCount != self.lastChangeCount else { return }
             self.lastChangeCount = pb.changeCount
             guard let text = pb.string(forType: .string), text != self.lastSyncedText else { return }
             self.lastSyncedText = text
-            s.send(ScrcpyProtocol.clipboard(text))
+            if let session = self.session {
+                session.send(ScrcpyProtocol.clipboard(text))
+            } else if self.bluetoothLinked {
+                self.bluetoothLink.sendClipboard(text)
+            }
         }
     }
 
@@ -478,7 +542,6 @@ final class BridgeController: ObservableObject {
 
     func disconnect() {
         userStopped = true
-        stopClipboardWatch()
         let port = localPort
         session?.stop()
 

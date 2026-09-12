@@ -24,6 +24,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Bridge uses Bluetooth for the short-range link to your phone, so notifications and the clipboard don't need an internet connection.</string>
 </dict>
 </plist>
 PLIST

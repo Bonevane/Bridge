@@ -39,9 +39,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     /// The bridge mark as a template image, so the menu bar recolours it.
     /// Falls back to a symbol when run outside the bundle (e.g. `swift run`).
+    ///
+    /// `image(forResource:)` rather than `NSImage(contentsOf:)`: only the former
+    /// pairs `MenuBarIcon@2x.png` with the 1× file. Loading the file directly
+    /// gave Retina screens the 1× bitmap scaled up, which is why it was blurry.
     private static let markImage: NSImage = {
-        let image = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png")
-            .flatMap { NSImage(contentsOf: $0) }
+        let image = Bundle.main.image(forResource: "MenuBarIcon")
             ?? NSImage(systemSymbolName: "iphone", accessibilityDescription: "Bridge")!
         image.isTemplate = true
         image.accessibilityDescription = "Bridge"

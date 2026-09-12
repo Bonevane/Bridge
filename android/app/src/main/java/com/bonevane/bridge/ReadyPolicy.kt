@@ -97,8 +97,11 @@ class ReadyPolicy(private val ctx: Context) {
     private fun scheduleWatchdog() {
         main.postDelayed(object : Runnable {
             override fun run() {
-                // Revive anything that has quietly died.
+                // Revive anything that has quietly died. The helper is a plain
+                // shell process: Android can reap it at any time, and nothing
+                // else would ever bring it back while "keep ready" is on.
                 TunnelService.current?.clipboard?.start()
+                maybeStart("watchdog")
                 val macNearby = TunnelService.current?.ble?.connected == true
                 if (!Prefs.keepReady(ctx) && !isPaused && AdbToggle.isEnabled(ctx) && !macNearby &&
                     !TunnelState.macActive(IDLE_LOCKDOWN_MS) && DaemonManager.isDaemonAlive()) {

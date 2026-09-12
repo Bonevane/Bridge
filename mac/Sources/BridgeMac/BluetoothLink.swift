@@ -48,8 +48,8 @@ final class BluetoothLink: NSObject {
     private let log: (String) -> Void
     private let onNotification: (String) -> Void
     private let onClipboard: (String) -> Void
-    /// What the phone says it can currently do: (daemon running, tunnel on).
-    var onStatus: ((Bool, Bool) -> Void)?
+    /// What the phone says about itself: every field it reports, by name.
+    var onStatus: (([String: String]) -> Void)?
 
     /// True while the phone is connected and subscribed.
     private(set) var isLinked = false {
@@ -138,6 +138,11 @@ final class BluetoothLink: NSObject {
         send(type: Self.typeCommand, text: on ? "tunnel on" : "tunnel off")
     }
 
+    /// Pushes the "keep ready" choice to the phone. Works with no tunnel.
+    func setKeepReady(_ on: Bool) {
+        send(type: Self.typeCommand, text: on ? "keep on" : "keep off")
+    }
+
     /// Tells the phone the session is over, so it can turn USB debugging off.
     /// Bluetooth is the right channel for this: the tunnel is often exactly what
     /// has just died.
@@ -179,7 +184,7 @@ final class BluetoothLink: NSObject {
                 let parts = field.split(separator: "=", maxSplits: 1)
                 return parts.count == 2 ? (String(parts[0]), String(parts[1])) : nil
             })
-            onStatus?(fields["daemon"] == "1", fields["tunnel"] == "1")
+            onStatus?(fields)
         default: break
         }
     }

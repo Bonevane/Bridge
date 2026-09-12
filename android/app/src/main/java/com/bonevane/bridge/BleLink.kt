@@ -162,7 +162,15 @@ class BleLink(private val context: Context) {
         // and drops the clipboard to Mac-to-phone only.
         if (subscribers.isNotEmpty()) TunnelState.macSeen()
         val daemon = DaemonManager.isDaemonAlive()
-        send(TYPE_STATUS, "daemon=${if (daemon) 1 else 0} tunnel=${if (TunnelState.tunnelOn) 1 else 0}")
+        val paused = TunnelService.current?.policy?.isPaused == true
+        // The phone owns these settings; the Mac mirrors whatever it reports here.
+        send(
+            TYPE_STATUS,
+            "daemon=${if (daemon) 1 else 0}" +
+                " tunnel=${if (TunnelState.tunnelOn) 1 else 0}" +
+                " keep=${if (Prefs.keepReady(context)) 1 else 0}" +
+                " paused=${if (paused) 1 else 0}"
+        )
     }
 
     // MARK: - Sending
@@ -283,6 +291,13 @@ class BleLink(private val context: Context) {
                 "tunnel off" -> {
                     TunnelState.log("Mac turned the tunnel off over Bluetooth")
                     TunnelService.setTunnel(context, false)
+                }
+                "keep on", "keep off" -> {
+                    val on = message.trim() == "keep on"
+                    Prefs.setKeepReady(context, on)
+                    TunnelState.log("Mac set \"keep ready\" to $on over Bluetooth")
+                    if (on) TunnelService.current?.policy?.maybeStart("Mac asked to keep ready")
+                    sendStatus()
                 }
                 "session over" -> {
                     // The Mac finished mirroring. Same as the tunnel's STOP, but

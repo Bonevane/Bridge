@@ -361,8 +361,6 @@ final class BridgeController: ObservableObject {
                 return
             }
             appendLog(startReply, source: "phone")
-            let mode = keepReady ? "MODE keep" : "MODE lock"
-            _ = await background { Control.send(mode, port: port, timeout: 10) }
             guard startReply.hasPrefix("OK") else {
                 stopProcesses()
                 fail("Phone: \(startReply)")
@@ -554,10 +552,17 @@ final class BridgeController: ObservableObject {
 
     /// Sends the current mode to the phone, but only over a tunnel that already
     /// exists: changing a switch should never start dialling the phone.
-    private var adoptingFromPhone = false
+    var adoptingFromPhone = false
 
     private func pushMode() {
-        guard !adoptingFromPhone, TCPStream.portOpen(localPort) else { return }
+        guard !adoptingFromPhone else { return }
+        // Bluetooth first: the tunnel is off most of the time now, and this
+        // setting used to sit unsent because of that.
+        if bluetoothLinked {
+            bluetoothLink.setKeepReady(keepReady)
+            return
+        }
+        guard TCPStream.portOpen(localPort) else { return }
         let mode = keepReady ? "MODE keep" : "MODE lock"
         let port = localPort
         Task { _ = await background { Control.send(mode, port: port, timeout: 8) } }
@@ -603,12 +608,25 @@ final class BridgeController: ObservableObject {
         bluetoothLink.onStateChange = { [weak self] state in
             Task { @MainActor in self?.bluetoothState = state }
         }
-        bluetoothLink.onStatus = { [weak self] daemon, tunnel in
+        bluetoothLink.onStatus = { [weak self] fields in
             Task { @MainActor in
                 guard let self = self else { return }
                 let wasOn = self.phoneTunnelOn
+                let daemon = fields["daemon"] == "1"
+                let tunnel = fields["tunnel"] == "1"
                 self.phoneDaemonAlive = daemon
                 self.phoneTunnelOn = tunnel
+                if let paused = fields["paused"] { self.phonePausedForBanking = paused == "1" }
+                // The phone owns "keep ready": mirror it rather than pushing the
+                // Mac's copy back, which used to overwrite it on every connect.
+                if let keep = fields["keep"] {
+                    let value = keep == "1"
+                    if value != self.keepReady {
+                        self.adoptingFromPhone = true
+                        self.keepReady = value
+                        self.adoptingFromPhone = false
+                    }
+                }
                 // Mirroring rides the tunnel, so if the phone drops it the
                 // session is already dead: the video socket would otherwise just
                 // stall, leaving a frozen window until a read finally times out.

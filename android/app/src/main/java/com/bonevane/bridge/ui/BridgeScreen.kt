@@ -60,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.bonevane.bridge.Access
+import com.bonevane.bridge.NotificationFilter
 import com.bonevane.bridge.Prefs
 import com.bonevane.bridge.TunnelService
 import com.bonevane.bridge.TunnelState
@@ -190,6 +191,8 @@ fun BridgeScreen(
                     AccessRow(item = item, onGrant = { onGrantAccess(item) })
                 }
             }
+
+            NotificationsCard(tick = tick.intValue)
 
             SectionCard(title = "Settings") {
                 SwitchRow(
@@ -357,6 +360,53 @@ private fun AboutFooter(version: String, onOpen: (String) -> Unit) {
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable { onOpen("https://bonevane.vercel.app") },
             )
+        }
+    }
+}
+
+/**
+ * Which notifications reach the Mac. The per-app list grows as apps post
+ * notifications; the "open on your Mac" tag comes from the Mac over Bluetooth.
+ * `tick` is read so the card recomposes when the Mac's report changes.
+ */
+@Composable
+private fun NotificationsCard(tick: Int) {
+    val context = LocalContext.current
+    var skipSilent by remember { mutableStateOf(Prefs.skipSilent(context)) }
+    var skipOpen by remember { mutableStateOf(Prefs.skipOpenOnMac(context)) }
+    val apps = remember(tick) { Prefs.seenApps(context).toList().sortedBy { it.second.lowercase() } }
+    val openOnMac = NotificationFilter.openOnMac
+
+    SectionCard(title = "Notifications on the Mac") {
+        SwitchRow(
+            label = "Skip silent notifications",
+            checked = skipSilent,
+            onCheckedChange = { skipSilent = it; Prefs.setSkipSilent(context, it) },
+        )
+        SwitchRow(
+            label = "Skip apps that are open on the Mac",
+            checked = skipOpen,
+            onCheckedChange = { skipOpen = it; Prefs.setSkipOpenOnMac(context, it) },
+        )
+        Text(
+            if (apps.isEmpty()) "Apps appear here once they've sent a notification."
+            else "Apps that have sent notifications. Switch off any you don't want on the Mac.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        apps.forEach { (pkg, label) ->
+            var on by remember(pkg) { mutableStateOf(Prefs.appMirrored(context, pkg)) }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text(label, style = MaterialTheme.typography.bodyLarge)
+                    if (pkg in openOnMac) Text(
+                        if (skipOpen) "Open on your Mac · not mirrored right now" else "Open on your Mac",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Switch(checked = on, onCheckedChange = { on = it; Prefs.setAppMirrored(context, pkg, it) })
+            }
         }
     }
 }

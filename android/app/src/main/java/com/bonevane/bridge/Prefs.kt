@@ -58,4 +58,36 @@ object Prefs {
     /** Whether the user last left the tunnel on. */
     fun wantRunning(ctx: Context): Boolean = prefs(ctx).getBoolean("wantRunning", false)
     fun setWantRunning(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("wantRunning", on).apply()
+
+    // MARK: notification filters
+
+    /** Drop notifications Android itself showed silently (no sound, no peek). */
+    fun skipSilent(ctx: Context): Boolean = prefs(ctx).getBoolean("skipSilent", true)
+    fun setSkipSilent(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("skipSilent", on).apply()
+
+    /** Drop notifications from apps whose Mac twin is open (it shows its own). */
+    fun skipOpenOnMac(ctx: Context): Boolean = prefs(ctx).getBoolean("skipOpenOnMac", true)
+    fun setSkipOpenOnMac(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("skipOpenOnMac", on).apply()
+
+    /** Per-app switch; apps are on until switched off. */
+    fun appMirrored(ctx: Context, pkg: String): Boolean = pkg !in mutedApps(ctx)
+    fun setAppMirrored(ctx: Context, pkg: String, on: Boolean) {
+        val set = mutedApps(ctx).toMutableSet()
+        if (on) set.remove(pkg) else set.add(pkg)
+        prefs(ctx).edit().putStringSet("mutedApps", set).apply()
+    }
+    private fun mutedApps(ctx: Context): Set<String> = prefs(ctx).getStringSet("mutedApps", emptySet()) ?: emptySet()
+
+    /**
+     * Apps that have posted a notification since Bridge got access, so the
+     * screen can offer a switch for each. Stored as "package\tlabel".
+     */
+    fun seenApps(ctx: Context): Map<String, String> =
+        (prefs(ctx).getStringSet("seenApps", emptySet()) ?: emptySet())
+            .mapNotNull { it.split('\t', limit = 2).takeIf { p -> p.size == 2 }?.let { p -> p[0] to p[1] } }
+            .toMap()
+    fun rememberApp(ctx: Context, pkg: String, label: String) {
+        val set = (prefs(ctx).getStringSet("seenApps", emptySet()) ?: emptySet()).toMutableSet()
+        if (set.add("$pkg\t$label")) prefs(ctx).edit().putStringSet("seenApps", set).apply()
+    }
 }

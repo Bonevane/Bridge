@@ -32,19 +32,25 @@ class NotificationService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return          // never mirror our own
         val n = sbn.notification ?: return
-        if (n.flags and Notification.FLAG_ONGOING_EVENT != 0) return   // skip players, downloads
-
-        val extras = n.extras
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val text = (extras.getCharSequence(Notification.EXTRA_TEXT)
-            ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
-        if (title.isBlank() && text.isBlank()) return
 
         val app = runCatching {
             packageManager.getApplicationLabel(
                 packageManager.getApplicationInfo(sbn.packageName, 0)
             ).toString()
         }.getOrDefault(sbn.packageName)
+        // Remembered even when skipped, so the user can find it in the list.
+        Prefs.rememberApp(this, sbn.packageName, app)
+
+        NotificationFilter.reasonToSkip(this, this, sbn)?.let { reason ->
+            TunnelState.log("Not mirrored ($reason): $app")
+            return
+        }
+
+        val extras = n.extras
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val text = (extras.getCharSequence(Notification.EXTRA_TEXT)
+            ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
+        if (title.isBlank() && text.isBlank()) return
 
         NotificationRelay.post(app, title, text)
     }

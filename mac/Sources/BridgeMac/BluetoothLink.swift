@@ -147,6 +147,12 @@ final class BluetoothLink: NSObject {
         send(type: Self.typeCommand, text: on ? "tunnel on" : "tunnel off")
     }
 
+    /// Tells the phone which apps with an Android twin are open here, as
+    /// Android package names, so it can hold back duplicate notifications.
+    func reportOpenTwins(_ packages: Set<String>) {
+        send(type: Self.typeCommand, text: "macapps " + packages.sorted().joined(separator: " "))
+    }
+
     /// Asks the phone to report its state now, rather than waiting for the
     /// next 30-second heartbeat.
     func requestStatus() {

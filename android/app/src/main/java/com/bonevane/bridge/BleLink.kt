@@ -323,8 +323,15 @@ class BleLink(private val context: Context) {
                     sendStatus()
                 }
                 // "keep on at=<millis>" carries a timestamp, so it can't match exactly.
-                else -> if (message.startsWith("keep ")) keepReady(message)
-                        else TunnelState.log("Unknown Bluetooth command: $message")
+                else -> when {
+                    message.startsWith("keep ") -> keepReady(message)
+                    // "macapps com.whatsapp org.telegram.messenger": the Android
+                    // packages whose Mac twin is open, so their notifications
+                    // would only be duplicates. Empty list = none open.
+                    message.startsWith("macapps") ->
+                        NotificationFilter.setOpenOnMac(message.removePrefix("macapps").trim().split(' ').filter { it.isNotEmpty() })
+                    else -> TunnelState.log("Unknown Bluetooth command: $message")
+                }
             }
             return
         }

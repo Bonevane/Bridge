@@ -619,6 +619,11 @@ final class BridgeController: ObservableObject {
 
     @Published var phonePausedForBanking = false
 
+    /// Watches which twin apps are open and tells the phone over Bluetooth.
+    private lazy var twins = MacTwins { [weak self] packages in
+        self?.bluetoothLink.reportOpenTwins(packages)
+    }
+
     private lazy var bluetoothLink = BluetoothLink(
         log: { [weak self] line in Task { @MainActor in self?.appendLog(line, source: "bluetooth") } },
         onNotification: { [weak self] line in Task { @MainActor in self?.showPhoneNotification(line) } },
@@ -631,7 +636,12 @@ final class BridgeController: ObservableObject {
             return
         }
         bluetoothLink.onStateChange = { [weak self] state in
-            Task { @MainActor in self?.bluetoothState = state }
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.bluetoothState = state
+                // A fresh link: the phone has no idea what's open here yet.
+                if state == .linked { self.twins.report(force: true) }
+            }
         }
         bluetoothLink.onStatus = { [weak self] fields in
             Task { @MainActor in

@@ -50,7 +50,7 @@ object TunnelState {
     fun addListener(l: () -> Unit) { listeners.add(l) }
     fun removeListener(l: () -> Unit) { listeners.remove(l) }
 
-    private fun notifyListeners() {
+    fun notifyListeners() {
         main.post { listeners.forEach { it() } }
     }
 }

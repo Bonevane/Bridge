@@ -287,8 +287,21 @@ final class BridgeController: ObservableObject {
             }
             if !grant.ok { appendLog(grant.output, source: "adb") }
 
+            // Start the phone's helper over the cable. This is the one way to
+            // do it without Wi-Fi, so it's what makes "plug in and set up"
+            // the right advice when the helper has died on cellular (a reboot,
+            // an app update). Same command DaemonManager uses over wireless.
+            phase = .working("Starting the phone's helper over USB…")
+            let spawn = await background {
+                Shell.run(adb, ["-d", "shell",
+                    "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
+                    "(CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
+                    "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
+            }
+            if !spawn.ok { appendLog(spawn.output, source: "adb") }
+
             phase = .idle
-            notice = "Set up. You can unplug the phone and click Connect."
+            notice = "Set up, and the helper is running. You can unplug the phone and click Mirror Phone."
         }
     }
 

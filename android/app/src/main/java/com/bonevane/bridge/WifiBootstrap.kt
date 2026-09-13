@@ -28,6 +28,13 @@ object WifiBootstrap {
     private const val SERVICE_TYPE = "_adb-tls-connect._tcp"
 
     fun <T> withAdb(ctx: Context, block: (AdbClient) -> T): T {
+        // Android only offers wireless debugging on Wi-Fi, so say so up front
+        // rather than after a 25 s search that can't succeed. The message names
+        // the two real ways forward; the Mac shows it verbatim.
+        if (!wifiConnected(ctx)) {
+            error("the phone's helper needs restarting, which needs Wi-Fi or a cable. " +
+                  "Either turn Wi-Fi on for a moment, or plug the phone in and use Set Up Over USB.")
+        }
         Settings.Global.putInt(ctx.contentResolver, "adb_wifi_enabled", 1)
         try {
             val port = discoverPort(ctx, timeoutSec = 25)
@@ -39,6 +46,13 @@ object WifiBootstrap {
             }
         } finally {
             Settings.Global.putInt(ctx.contentResolver, "adb_wifi_enabled", 0)
+        }
+    }
+
+    private fun wifiConnected(ctx: Context): Boolean {
+        val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
+        return cm.allNetworks.any { n ->
+            cm.getNetworkCapabilities(n)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
         }
     }
 

@@ -287,21 +287,27 @@ final class BridgeController: ObservableObject {
             }
             if !grant.ok { appendLog(grant.output, source: "adb") }
 
-            // Start the phone's helper over the cable. This is the one way to
-            // do it without Wi-Fi, so it's what makes "plug in and set up"
-            // the right advice when the helper has died on cellular (a reboot,
-            // an app update). Same command DaemonManager uses over wireless.
-            phase = .working("Starting the phone's helper over USB…")
-            let spawn = await background {
-                Shell.run(adb, ["-d", "shell",
-                    "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
-                    "(CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
-                    "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
+            // With "keep ready" on, start the phone's helper over the cable: the
+            // one way to do it without Wi-Fi, which is what makes "plug in and
+            // set up" the answer when the helper has died on cellular (a
+            // reboot, an app update). With it off, the phone is meant to be
+            // locked down between sessions, so leaving a helper running here
+            // would quietly break that rule; the helper starts at Mirror time.
+            if keepReady {
+                phase = .working("Starting the phone's helper over USB…")
+                let spawn = await background {
+                    Shell.run(adb, ["-d", "shell",
+                        "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
+                        "(CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
+                        "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
+                }
+                if !spawn.ok { appendLog(spawn.output, source: "adb") }
+                phase = .idle
+                notice = "Set up, and the helper is running. You can unplug the phone and click Mirror Phone."
+            } else {
+                phase = .idle
+                notice = "Set up. The helper starts when you mirror (that needs Wi-Fi), or turn on \"Keep ready\" to start it now over the cable."
             }
-            if !spawn.ok { appendLog(spawn.output, source: "adb") }
-
-            phase = .idle
-            notice = "Set up, and the helper is running. You can unplug the phone and click Mirror Phone."
         }
     }
 

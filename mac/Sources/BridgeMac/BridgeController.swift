@@ -294,6 +294,35 @@ final class BridgeController: ObservableObject {
 
     // MARK: - Connect
 
+    /// A `dumbpipe connect-tcp` process for the current ticket. Before making
+    /// one, any dumbpipe left holding the local port is killed: if Bridge is
+    /// force-quit its children outlive it, and the next tunnel then fails with
+    /// "Address already in use" until someone finds the orphan by hand.
+    private func makeTunnelProcess(dumbpipe: String) -> Process {
+        for pid in Self.reapStaleTunnel(port: localPort) {
+            appendLog("Stopped a leftover tunnel (pid \(pid)) that was holding port \(localPort).", source: "tunnel")
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: dumbpipe)
+        p.arguments = ["connect-tcp", "--addr", serial, ticket.trimmingCharacters(in: .whitespacesAndNewlines)]
+        p.environment = Shell.environment
+        streamOutput(of: p, source: "tunnel")
+        return p
+    }
+
+    /// Kills any dumbpipe listening on `port` and returns their pids.
+    nonisolated static func reapStaleTunnel(port: Int) -> [Int32] {
+        let listeners = Shell.run("/usr/sbin/lsof", ["-tiTCP:\(port)", "-sTCP:LISTEN"], timeout: 5).output
+        var killed: [Int32] = []
+        for pid in listeners.split(whereSeparator: \.isNewline).compactMap({ Int32($0.trimmingCharacters(in: .whitespaces)) }) {
+            let command = Shell.run("/bin/ps", ["-o", "comm=", "-p", "\(pid)"], timeout: 5).output
+            guard command.contains("dumbpipe") else { continue }   // never kill someone else's server
+            kill(pid, SIGTERM)
+            killed.append(pid)
+        }
+        return killed
+    }
+
     func connect() {
         guard !isBusy, !isConnected else { return }
 
@@ -330,11 +359,7 @@ final class BridgeController: ObservableObject {
             _ = await background { Shell.run(adb, ["disconnect", serial], timeout: 5) }
 
             // Step 1: the tunnel (what terminal window 1 did).
-            let tunnelProcess = Process()
-            tunnelProcess.executableURL = URL(fileURLWithPath: dumbpipe)
-            tunnelProcess.arguments = ["connect-tcp", "--addr", serial, currentTicket]
-            tunnelProcess.environment = Shell.environment
-            streamOutput(of: tunnelProcess, source: "tunnel")
+            let tunnelProcess = makeTunnelProcess(dumbpipe: dumbpipe)
             tunnelProcess.terminationHandler = { process in
                 Task { @MainActor in BridgeController.shared.processEnded(process) }
             }
@@ -777,11 +802,7 @@ final class BridgeController: ObservableObject {
             } else {
                 var temp: Process?
                 if !tunnelAlive, let dumbpipe = dumbpipe, currentTicket.hasPrefix("endpoint") {
-                    let p = Process()
-                    p.executableURL = URL(fileURLWithPath: dumbpipe)
-                    p.arguments = ["connect-tcp", "--addr", serial, currentTicket]
-                    p.environment = Shell.environment
-                    streamOutput(of: p, source: "tunnel")
+                    let p = makeTunnelProcess(dumbpipe: dumbpipe)
                     try? p.run()
                     temp = p
                 }
@@ -830,11 +851,7 @@ final class BridgeController: ObservableObject {
         }
         phase = .working(label)
         Task {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: dumbpipe)
-            p.arguments = ["connect-tcp", "--addr", serial, currentTicket]
-            p.environment = Shell.environment
-            streamOutput(of: p, source: "tunnel")
+            let p = makeTunnelProcess(dumbpipe: dumbpipe)
             do { try p.run() } catch { fail("Couldn't start dumbpipe"); return }
             var reply: String?
             for _ in 0..<15 {

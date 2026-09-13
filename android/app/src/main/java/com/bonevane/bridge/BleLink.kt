@@ -68,6 +68,8 @@ class BleLink(private val context: Context) {
     /** Chunks waiting to go out; BLE only allows one notification in flight. */
     private val outbox = ArrayDeque<ByteArray>()
     private val sending = AtomicBoolean(false)
+    /** When `sending` was last set, so a lost onNotificationSent can't wedge the queue for good. */
+    @Volatile private var sendingSince = 0L
 
     /** Reassembly buffer for messages coming from the Mac. */
     private val inbox = StringBuilder()
@@ -218,7 +220,17 @@ class BleLink(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun pump() {
+        // The stack promises onNotificationSent for every notify, but if the
+        // Mac drops in between it never arrives. Without this guard `sending`
+        // stayed true forever, and every later message (heartbeats included)
+        // was queued and never sent: the Mac saw a link that never spoke,
+        // dropped it after 90 s, reconnected, and looped like that all night.
+        if (sending.get() && System.currentTimeMillis() - sendingSince > 3_000) {
+            TunnelState.log("BLE: send acknowledgement never came; resetting")
+            sending.set(false)
+        }
         if (!sending.compareAndSet(false, true)) return
+        sendingSince = System.currentTimeMillis()
         val chunk = synchronized(outbox) { outbox.poll() }
         val characteristic = tx
         if (chunk == null || characteristic == null) { sending.set(false); return }
@@ -252,6 +264,9 @@ class BleLink(private val context: Context) {
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     subscribers.remove(device)
                     connected = subscribers.isNotEmpty()
+                    // Anything queued was for a Mac that's gone; start clean.
+                    synchronized(outbox) { outbox.clear() }
+                    sending.set(false)
                     TunnelState.log("Bluetooth: a Mac disconnected")
                 }
             }

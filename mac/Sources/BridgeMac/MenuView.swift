@@ -165,12 +165,23 @@ struct MenuView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: 140)
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(bridge.log.joined(separator: "\n"), forType: .string)
+                HStack {
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(bridge.log.joined(separator: "\n"), forType: .string)
+                    }
+                    .glassButton()
+                    .controlSize(.small)
+                    // The panel is too small to read a long log in; hand the
+                    // whole thing to TextEdit instead.
+                    Button("Open Full Log") {
+                        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Bridge.log")
+                        try? bridge.log.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+                        NSWorkspace.shared.open(url)
+                    }
+                    .glassButton()
+                    .controlSize(.small)
                 }
-                .glassButton()
-                .controlSize(.small)
             }
             .padding(.top, 6)
         } label: {

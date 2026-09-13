@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar only: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
+        _ = sigterm
         statusItem = StatusItemController(bridge: BridgeController.shared)
         // Resume the background helpers the user had switched on.
         NotificationBridge.requestPermission()
@@ -37,6 +38,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         BridgeController.shared.stopProcessesNow()
     }
+
+    /// A `kill`/`pkill` sends SIGTERM, which skips `applicationWillTerminate`,
+    /// and the tunnel child then outlives us and keeps port 7555 for days.
+    /// Route the signal through a normal quit so the children go too.
+    private lazy var sigterm: DispatchSourceSignal = {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler {
+            BridgeController.shared.stopProcessesNow()
+            NSApp.terminate(nil)
+        }
+        source.resume()
+        return source
+    }()
 
     private var statusItem: StatusItemController?
 }

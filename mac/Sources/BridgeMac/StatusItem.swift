@@ -107,6 +107,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         credits.append(NSAttributedString(string: " · ", attributes: [.font: body,
                                                                      .foregroundColor: NSColor.secondaryLabelColor]))
         credits.append(link("bonevane.vercel.app", to: "https://bonevane.vercel.app", font: body))
+        credits.append(NSAttributedString(
+            string: "\n\nBuilt on scrcpy (Apache-2.0), dumbpipe and iroh (MIT/Apache-2.0), and code from Shizuku (Apache-2.0). See NOTICE.",
+            attributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.tertiaryLabelColor]))
         credits.setAlignment(.center, range: NSRange(location: 0, length: credits.length))
 
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])

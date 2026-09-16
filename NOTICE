@@ -4,3 +4,12 @@ Bridge includes code adapted from:
   Copyright Rikka and contributors. The ADB client in
   android/app/src/main/java/com/bonevane/bridge/AdbClient.kt is adapted
   from manager/src/main/java/moe/shizuku/manager/adb/.
+
+- scrcpy (https://github.com/Genymobile/scrcpy), Apache License 2.0
+  Copyright Romain Vimont and contributors. The phone runs an unmodified
+  scrcpy-server (fetched by android/scripts/fetch-scrcpy-server.sh) for
+  capture and input; the Mac speaks its stream protocol.
+
+- dumbpipe and iroh (https://github.com/n0-computer), MIT or Apache License 2.0
+  Copyright n0, inc. The phone bundles an unmodified dumbpipe binary
+  (android/scripts/fetch-dumbpipe.sh) for the tunnel.

@@ -33,9 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func hideDockIconIfNothingOpen(except closing: NSWindow?) {
         let stillOpen = NSApp.windows.contains { window in
-            window !== closing && window.isVisible
-                && !(window is NSPanel)                 // the menu-bar dropdown
-                && window.styleMask.contains(.titled)   // not helper windows
+            // Titled and visible: Settings, About (which is an NSPanel, so
+            // don't exclude panels), a phone window. The menu-bar dropdown is
+            // borderless and so falls out on its own.
+            window !== closing && window.isVisible && window.styleMask.contains(.titled)
         }
         if !stillOpen && NSApp.activationPolicy() == .regular { NSApp.setActivationPolicy(.accessory) }
     }

@@ -142,12 +142,12 @@ struct SettingsView: View {
 
             Section {
                 Toggle("Show the phone's notifications", isOn: $bridge.mirrorNotifications)
-                Toggle("Even when the phone is far away", isOn: $bridge.notificationsAnywhere)
+                Toggle("Also over the internet, when the phone is far away", isOn: $bridge.notificationsAnywhere)
                     .disabled(!bridge.mirrorNotifications)
             } header: {
                 Text("Notifications")
             } footer: {
-                Text("Works even while USB debugging is off, because it needs no privileged access on the phone. Grant Bridge notification access there first. Bridge keeps a connection open while this is on, which uses a little battery and data.")
+                Text("The first option is free: notifications come over Bluetooth while the phone is nearby, with no internet connection and no USB debugging. The second keeps a tunnel open so they also arrive when the phone is elsewhere; that costs the phone a little battery and data all the time.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -156,12 +156,12 @@ struct SettingsView: View {
 
             Section {
                 Toggle("Sync the clipboard", isOn: $bridge.syncClipboard)
-                Toggle("Sync even with no window open", isOn: $bridge.backgroundClipboard)
+                Toggle("Also with no phone window open", isOn: $bridge.backgroundClipboard)
                     .disabled(!bridge.syncClipboard)
             } header: {
                 Text("Clipboard")
             } footer: {
-                Text("Copying on either device makes the text available on the other. Syncing with no window open holds a connection to the phone all the time, which costs battery and data, and needs the phone kept ready.")
+                Text("The first option is free: while a phone window is open the clipboard rides the mirroring session, and while the phone is nearby it goes over Bluetooth. The second keeps the phone's helper running and a channel open at all times, so it also works with no window and no Bluetooth; that costs battery and data, and turns on \"keep ready\".")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

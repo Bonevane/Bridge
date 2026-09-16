@@ -59,6 +59,13 @@ object Prefs {
     fun wantRunning(ctx: Context): Boolean = prefs(ctx).getBoolean("wantRunning", false)
     fun setWantRunning(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("wantRunning", on).apply()
 
+    /** Post the status notification on a minimum-importance channel: no icon in the status bar. */
+    fun quietStatus(ctx: Context): Boolean = prefs(ctx).getBoolean("quietStatus", false)
+    fun setQuietStatus(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("quietStatus", on).apply()
+
+    /** Whether the user has ever gone through setup (a ticket exists and the Mac granted the permission). */
+    fun setupDone(ctx: Context): Boolean = ticket(ctx) != null && AdbToggle.isGranted(ctx)
+
     // MARK: notification filters
 
     /** Drop notifications Android itself showed silently (no sound, no peek). */

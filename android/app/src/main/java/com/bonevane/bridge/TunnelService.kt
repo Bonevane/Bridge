@@ -34,6 +34,8 @@ class TunnelService : Service() {
         const val ACTION_TUNNEL = "com.bonevane.bridge.TUNNEL"
 
         private const val CHANNEL_ID = "tunnel"
+        /** Same notification, but on a channel Android shows without a status-bar icon. */
+        private const val QUIET_CHANNEL_ID = "tunnel_quiet"
         private const val NOTIFICATION_ID = 1
         private val TICKET_REGEX = Regex("endpoint[a-z0-9]+")
 
@@ -104,11 +106,20 @@ class TunnelService : Service() {
         super.onDestroy()
     }
 
+    /** Re-posts the status notification, e.g. after the quiet setting changed. */
+    fun refreshNotification() = goForeground()
+
     private fun goForeground() {
         val nm = getSystemService(NotificationManager::class.java)
+        // A channel's importance is fixed once created, so quiet is a second
+        // channel rather than a change to the first.
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Tunnel", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "Status", NotificationManager.IMPORTANCE_LOW)
         )
+        nm.createNotificationChannel(
+            NotificationChannel(QUIET_CHANNEL_ID, "Status (quiet)", NotificationManager.IMPORTANCE_MIN)
+        )
+        val channel = if (Prefs.quietStatus(this)) QUIET_CHANNEL_ID else CHANNEL_ID
         val openApp = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
@@ -116,7 +127,7 @@ class TunnelService : Service() {
             this, 1, Intent(this, TunnelService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = Notification.Builder(this, CHANNEL_ID)
+        val notification = Notification.Builder(this, channel)
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle("Bridge is on")
             .setContentText("Your Mac can connect to this phone")

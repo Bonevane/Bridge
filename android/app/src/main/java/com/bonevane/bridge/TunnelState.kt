@@ -15,6 +15,9 @@ object TunnelState {
     @Volatile var ready = false
     @Volatile var status = "Stopped"
     @Volatile var ticket: String? = null
+    /** A Mac is subscribed over Bluetooth right now. */
+    @Volatile var macLinked = false
+        set(value) { if (field != value) { field = value; notifyListeners() } }
 
     /** When the Mac last said anything, and how many streams it has open now. */
     @Volatile var lastMacContact = 0L

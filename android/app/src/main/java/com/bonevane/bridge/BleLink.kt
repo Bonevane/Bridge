@@ -75,7 +75,7 @@ class BleLink(private val context: Context) {
     private val inbox = StringBuilder()
 
     @Volatile var connected = false
-        private set
+        private set(value) { field = value; TunnelState.macLinked = value }
     @Volatile private var beating = false
 
     private val notificationListener: (String) -> Unit = { line ->

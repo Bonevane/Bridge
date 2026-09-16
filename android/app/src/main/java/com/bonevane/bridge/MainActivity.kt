@@ -18,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.bonevane.bridge.ui.BridgeScreen
 import com.bonevane.bridge.ui.BridgeTheme
+import com.bonevane.bridge.ui.Mode
 
 /**
  * The one screen of the app. The layout lives in [BridgeScreen] (Compose,
@@ -48,12 +49,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             BridgeTheme {
                 BridgeScreen(
-                    onToggleTunnel = {
-                        // Toggles the internet tunnel only; Bluetooth keeps running.
-                        startForegroundService(
-                            Intent(this, TunnelService::class.java).setAction(TunnelService.ACTION_TUNNEL)
-                        )
-                    },
+                    onModeChange = ::setMode,
                     onCopyTicket = ::copyTicket,
                     onShareTicket = ::shareTicket,
                     onGetReady = {
@@ -77,6 +73,10 @@ class MainActivity : ComponentActivity() {
                         if (on) TunnelService.current?.policy?.maybeStart("setting turned on")
                     },
                     onAutostartChange = { Prefs.setAutostart(this, it) },
+                    onQuietStatusChange = { on ->
+                        Prefs.setQuietStatus(this, on)
+                        TunnelService.current?.refreshNotification()
+                    },
                     onBatteryExemption = ::askBatteryExemption,
                     onNewIdentity = ::newIdentity,
                     onGrantAccess = ::grantAccess,
@@ -104,6 +104,20 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
+    }
+
+    /**
+     * Off / Nearby / Anywhere. Off stops the service outright (no Bluetooth, no
+     * tunnel). Nearby runs the service with the tunnel off; Anywhere adds the
+     * tunnel. The tunnel preference is set *before* the service starts so it
+     * doesn't briefly come up in the previous mode.
+     */
+    private fun setMode(mode: Mode) {
+        when (mode) {
+            Mode.OFF -> TunnelService.stop(this)
+            Mode.NEARBY -> { Prefs.setTunnelEnabled(this, false); TunnelService.setTunnel(this, false) }
+            Mode.ANYWHERE -> { Prefs.setTunnelEnabled(this, true); TunnelService.setTunnel(this, true) }
+        }
     }
 
     /** The Mac's "Set up over USB" button opens the app with ACTION_START. */

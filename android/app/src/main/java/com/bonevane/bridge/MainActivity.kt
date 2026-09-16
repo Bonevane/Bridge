@@ -51,7 +51,6 @@ class MainActivity : ComponentActivity() {
                 BridgeScreen(
                     onModeChange = ::setMode,
                     onCopyTicket = ::copyTicket,
-                    onShareTicket = ::shareTicket,
                     onGetReady = {
                         Thread {
                             runCatching { DaemonManager.start(this) }
@@ -154,12 +153,6 @@ class MainActivity : ComponentActivity() {
         getSystemService(ClipboardManager::class.java)
             .setPrimaryClip(ClipData.newPlainText("Bridge ticket", ticket))
         Toast.makeText(this, "Ticket copied", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun shareTicket() {
-        val ticket = currentTicket() ?: return
-        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, ticket)
-        startActivity(Intent.createChooser(send, "Send ticket to your Mac"))
     }
 
     private fun askBatteryExemption() {

@@ -35,7 +35,6 @@ import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RestartAlt
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -97,7 +96,6 @@ enum class Mode { OFF, NEARBY, ANYWHERE }
 fun BridgeScreen(
     onModeChange: (Mode) -> Unit,
     onCopyTicket: () -> Unit,
-    onShareTicket: () -> Unit,
     onGetReady: () -> Unit,
     onPause: () -> Unit,
     onLockDown: () -> Unit,
@@ -208,18 +206,17 @@ fun BridgeScreen(
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilledTonalButton(onClick = onCopyTicket, enabled = ticket != null, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Copy")
-                            }
-                            FilledTonalButton(onClick = onShareTicket, enabled = ticket != null, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Rounded.Share, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Share")
-                            }
+                        FilledTonalButton(onClick = onCopyTicket, enabled = ticket != null, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Copy")
                         }
+                        Text(
+                            "This is a key to your phone, not an address. Don't share it: paste it only into Bridge " +
+                                "on your own Mac. Set Up Over USB does this for you.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

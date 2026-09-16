@@ -207,10 +207,34 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            Section("Paste a ticket") {
-                TextField("endpoint…", text: $bridge.ticket)
-                    .font(.system(.body, design: .monospaced))
+            Section {
+                HStack {
+                    TextField("endpoint…", text: $bridge.ticket)
+                        .font(.system(.body, design: .monospaced))
+                        .disabled(bridge.isBusy || bridge.isConnected)
+                    Button("Paste") {
+                        if let s = NSPasteboard.general.string(forType: .string)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) {
+                            bridge.ticket = s
+                        }
+                    }
                     .disabled(bridge.isBusy || bridge.isConnected)
+                }
+                if !bridge.ticket.isEmpty {
+                    let ok = bridge.ticket.hasPrefix("endpoint")
+                    StatusLine(icon: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                               title: "Ticket",
+                               value: ok ? "Looks right" : "Should start with \"endpoint\"",
+                               good: ok)
+                }
+            } header: {
+                Text("Pair without a cable")
+            } footer: {
+                Text("On the phone, tap Copy under Ticket and get it to this Mac privately (AirDrop, Notes, a message to yourself). Then click Paste. Never post the ticket anywhere: it's a key, not an address.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .formStyle(.grouped)

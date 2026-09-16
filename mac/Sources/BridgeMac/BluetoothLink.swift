@@ -1,5 +1,6 @@
 import AppKit
 import CoreBluetooth
+import CryptoKit
 import Foundation
 
 /// The short-range link to the phone.
@@ -35,6 +36,8 @@ final class BluetoothLink: NSObject {
     private static let typePing: UInt8 = 3
     private static let typeStatus: UInt8 = 4
     private static let typeCommand: UInt8 = 5
+    /// The pairing handshake (see BleLink.kt). Nothing is trusted before it.
+    private static let typeAuth: UInt8 = 6
 
     private var central: CBCentralManager?
     private var phone: CBPeripheral?
@@ -44,6 +47,10 @@ final class BluetoothLink: NSObject {
     private var watchdog: Timer?
     /// When the phone last said anything. Its heartbeat arrives every 30 s.
     private var lastHeard = Date.distantPast
+    /// Our half of the handshake: the nonce the phone must sign back.
+    private var ourNonce: String?
+    /// Set once the phone has proved it knows the pairing secret.
+    private var verified = false
 
     private let log: (String) -> Void
     private let onNotification: (String) -> Void
@@ -125,7 +132,11 @@ final class BluetoothLink: NSObject {
             isLinked = false
         }
         guard !isLinked else { return }
+        // A connection that's mid-handshake is not stale: give it the tick
+        // after this one before treating it as dead. Without this the watchdog
+        // tore down every link between "subscribed" and "verified".
         if let stale = phone {
+            if stale.state == .connected, Date().timeIntervalSince(lastHeard) < 20 { return }
             central.cancelPeripheralConnection(stale)
             self.phone = nil
             rx = nil
@@ -187,6 +198,48 @@ final class BluetoothLink: NSObject {
         }
     }
 
+    /// "challenge <nonce>": answer with our HMAC and a nonce of our own.
+    /// "ok <hmac>": the phone signed our nonce; now, and only now, it's ours.
+    private func handshake(_ text: String) {
+        let words = text.split(separator: " ").map(String.init)
+        let secret = Keychain.get("pairSecret") ?? ""
+        guard words.count == 2, !secret.isEmpty else {
+            log("Bluetooth: can't answer the phone's challenge (no pairing secret; set up over USB)")
+            return
+        }
+        switch words[0] {
+        case "challenge":
+            let nonce = Self.nonce()
+            ourNonce = nonce
+            send(type: Self.typeCommand, text: "auth \(Self.hmac(secret, words[1])) \(nonce)")
+        case "ok":
+            guard let nonce = ourNonce, Self.hmac(secret, nonce) == words[1] else {
+                log("Bluetooth: the phone failed our challenge; dropping it")
+                if let phone = phone { central?.cancelPeripheralConnection(phone) }
+                return
+            }
+            ourNonce = nil
+            verified = true
+            isLinked = true
+            state = .linked
+            UserDefaults.standard.set(phone?.identifier.uuidString, forKey: "phonePeripheral")
+            lastHeard = Date()
+            log("Bluetooth: linked to the phone (verified)")
+        default:
+            break
+        }
+    }
+
+    private static func hmac(_ secret: String, _ message: String) -> String {
+        let key = SymmetricKey(data: Data(secret.utf8))
+        return HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func nonce() -> String {
+        (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+    }
+
     /// Reassembles a chunked message from the phone.
     private func receive(_ data: Data) {
         lastHeard = Date()
@@ -197,6 +250,11 @@ final class BluetoothLink: NSObject {
         guard !more else { return }
         let text = String(decoding: inbox, as: UTF8.self)
         inbox.removeAll(keepingCapacity: true)
+        if type == Self.typeAuth {
+            handshake(text)
+            return
+        }
+        guard verified else { return }          // nothing from an unverified phone counts
         switch type {
         case Self.typeNotification: onNotification(text)
         case Self.typeClipboard: onClipboard(text)
@@ -242,6 +300,12 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ manager: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        // Once a phone has passed the handshake, only that one is worth
+        // connecting to; anyone can advertise our service UUID.
+        if let known = UserDefaults.standard.string(forKey: "phonePeripheral"),
+           known != peripheral.identifier.uuidString {
+            return
+        }
         manager.stopScan()
         phone = peripheral
         peripheral.delegate = self
@@ -255,6 +319,7 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ manager: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
                         error: Error?) {
         isLinked = false
+        verified = false
         rx = nil
         log("Bluetooth: phone out of range")
         if wanted {
@@ -289,11 +354,14 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             log("Bluetooth: \(error.localizedDescription)")
             return
         }
-        isLinked = characteristic.isNotifying
-        state = isLinked ? .linked : .searching
-        if isLinked {
+        // Subscribed is not yet linked: the phone now challenges us, and we it.
+        verified = false
+        if characteristic.isNotifying {
             lastHeard = Date()
-            log("Bluetooth: linked to the phone")
+            log("Bluetooth: subscribed; waiting for the phone's challenge")
+        } else {
+            isLinked = false
+            state = .searching
         }
     }
 

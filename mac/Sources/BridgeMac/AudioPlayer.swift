@@ -63,7 +63,8 @@ final class AudioPlayer {
 
     /// ES_Descriptor { DecoderConfigDescriptor { DecoderSpecificInfo = asc }, SLConfig }.
     private func esds(_ asc: [UInt8]) -> [UInt8] {
-        func tag(_ t: UInt8, _ body: [UInt8]) -> [UInt8] { [t, 0x80, 0x80, 0x80, UInt8(body.count)] + body }
+        // Sizes here are a handful of bytes; the 4-byte varint form covers 127 at most per byte.
+        func tag(_ t: UInt8, _ body: [UInt8]) -> [UInt8] { [t, 0x80, 0x80, 0x80, UInt8(min(body.count, 127))] + body }
         let dsi = tag(0x05, asc)
         let dcd = tag(0x04, [0x40, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] + dsi)   // AAC, audio stream
         return tag(0x03, [0, 0, 0] + dcd + tag(0x06, [0x02]))
@@ -78,7 +79,8 @@ final class AudioPlayer {
         // converter's callback hands AudioToolbox a pointer into it.
         let raw = UnsafeMutableRawPointer.allocate(byteCount: packet.count, alignment: 16)
         defer { raw.deallocate() }
-        packet.withUnsafeBytes { raw.copyMemory(from: $0.baseAddress!, byteCount: packet.count) }
+        guard !packet.isEmpty else { return nil }
+        packet.withUnsafeBytes { if let base = $0.baseAddress { raw.copyMemory(from: base, byteCount: packet.count) } }
         var feed = Feed(data: raw, size: UInt32(packet.count))
         let status = withUnsafeMutablePointer(to: &feed) { feedPtr in
             AudioConverterFillComplexBuffer(converter, { _, packetCount, buffers, descriptions, userData in

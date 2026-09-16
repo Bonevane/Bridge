@@ -150,8 +150,10 @@ class MainActivity : ComponentActivity() {
 
     private fun copyTicket() {
         val ticket = currentTicket() ?: return
+        // Ticket and pairing secret together: the Mac needs both, and the
+        // copy-paste route is the only one that doesn't go over the cable.
         getSystemService(ClipboardManager::class.java)
-            .setPrimaryClip(ClipData.newPlainText("Bridge ticket", ticket))
+            .setPrimaryClip(ClipData.newPlainText("Bridge ticket", "$ticket ${Prefs.pairSecret(this)}"))
         Toast.makeText(this, "Ticket copied", Toast.LENGTH_SHORT).show()
     }
 

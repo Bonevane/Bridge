@@ -53,11 +53,25 @@ object Daemon {
         val pid = android.os.Process.myPid()
         log("started uid=$uid pid=$pid")
 
+        // Handed over by whoever spawned us (the app, or the Mac over USB). Any
+        // app on the phone can reach this loopback port, so without this the
+        // shell uid would be a gift to whoever asked first.
+        val secret = System.getenv("BRIDGE_SECRET")?.takeIf { it.isNotBlank() }
+            ?: run { log("refusing to start without BRIDGE_SECRET"); System.exit(2); return }
+
         val server = ServerSocket(PORT, 4, InetAddress.getByName("127.0.0.1"))
         while (true) {
             val s = server.accept()
             Thread {
                 runCatching {
+                    s.soTimeout = 3000
+                    val auth = readLine(s.getInputStream())
+                    val presented = auth?.takeIf { it.startsWith("AUTH ") }?.substring(5)?.trim().orEmpty()
+                    if (!java.security.MessageDigest.isEqual(secret.toByteArray(), presented.toByteArray())) {
+                        s.getOutputStream().write("ERR unauthorized\n".toByteArray())
+                        log("refused a connection: bad or missing secret")
+                        return@runCatching
+                    }
                     val up = (System.currentTimeMillis() - started) / 1000
                     val apk = System.getenv("CLASSPATH") ?: "?"
                     s.getOutputStream().write("bridge-daemon uid=$uid pid=$pid up=${up}s apk=$apk\n".toByteArray())
@@ -157,7 +171,7 @@ object Daemon {
         val rawName = args.substringAfter(' ', "").trim()
         // Keep the name a plain file name: never let it escape the folder.
         val name = File(rawName).name.ifEmpty { "bridge-file" }
-        if (size <= 0) { reply(s, "ERR size"); return }
+        if (size <= 0 || size > MAX_PUSH) { reply(s, "ERR size"); return }
         val target = File("/sdcard/Download", name)
         runCatching {
             target.outputStream().use { out ->
@@ -181,8 +195,11 @@ object Daemon {
         reply(s, "OK saved to Download/$name")
     }
 
+    private const val MAX_APK = 200L * 1024 * 1024
+    private const val MAX_PUSH = 4L * 1024 * 1024 * 1024
+
     private fun install(s: Socket, size: Long) {
-        if (size <= 0) { reply(s, "ERR size"); return }
+        if (size <= 0 || size > MAX_APK) { reply(s, "ERR size"); return }
         val apk = File("/data/local/tmp/bridge-update.apk")
         apk.outputStream().use { out ->
             val buf = ByteArray(64 * 1024)
@@ -199,7 +216,11 @@ object Daemon {
         // one relaying this answer to the Mac, so a later reply would never arrive.
         // The app restarts itself through MY_PACKAGE_REPLACED (see BootReceiver).
         reply(s, "OK received ${apk.length()} bytes, installing")
-        val p = ProcessBuilder("pm", "install", "-r", apk.absolutePath).redirectErrorStream(true).start()
+        // --pkg: pm refuses anything that isn't Bridge, and Android itself
+        // refuses a Bridge APK with a different signature. So this can only
+        // ever update Bridge with a real Bridge build, never install something else.
+        val p = ProcessBuilder("pm", "install", "-r", "--pkg", "com.bonevane.bridge", apk.absolutePath)
+            .redirectErrorStream(true).start()
         val output = p.inputStream.bufferedReader().readText().trim()
         val code = p.waitFor()
         apk.delete()

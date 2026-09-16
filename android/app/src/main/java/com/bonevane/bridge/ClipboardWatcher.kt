@@ -72,7 +72,8 @@ class ClipboardWatcher(private val ble: () -> BleLink?) {
         val input = DataInputStream(s.getInputStream())
         val output = s.getOutputStream()
 
-        readLine(input)                       // the daemon's hello
+        output.write((Pairing.authLine(AppContext.value) + "\n").toByteArray()); output.flush()
+        if (readLine(input).startsWith("bridge-daemon").not()) { s.close(); return }   // the daemon's hello
         output.write("CLIP\n".toByteArray()); output.flush()
         if (readLine(input) != "OK") { s.close(); return }
         TunnelState.log("Watching the clipboard for changes")

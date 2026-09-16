@@ -46,9 +46,18 @@ class ControlProxy(private val ctx: Context) {
     fun stop() { runCatching { server?.close() }; server = null }
 
     private fun handle(client: Socket) {
-        TunnelState.macSeen()
         client.use {
             val input = it.getInputStream()
+            // Every stream opens with "AUTH <secret>\n". Without it, whoever
+            // reached this port (any app on the phone, any process on the Mac
+            // that found dumbpipe's local port) is a stranger and gets nothing.
+            val auth = readLine(input, 200)?.takeIf { it.startsWith("AUTH ") }?.substring(5)
+            if (!Pairing.matches(ctx, auth)) {
+                runCatching { it.getOutputStream().write("ERR unauthorized\n".toByteArray()) }
+                TunnelState.log("Refused a stream: wrong or missing pairing secret")
+                return
+            }
+            TunnelState.macSeen()
             val head = ByteArray(4)
             var n = 0
             while (n < 4) {
@@ -83,7 +92,11 @@ class ControlProxy(private val ctx: Context) {
         val daemon = runCatching { Socket("127.0.0.1", DaemonManager.DAEMON_PORT) }
             .getOrElse { TunnelState.log("session stream refused: daemon not running"); return }
         daemon.use {
-            it.getInputStream().bufferedReader().let { r -> r.readLine() }  // skip hello line
+            it.getOutputStream().write((Pairing.authLine(ctx) + "\n").toByteArray())
+            it.getOutputStream().flush()
+            if (readLine(it.getInputStream(), 200)?.startsWith("bridge-daemon") != true) {
+                TunnelState.log("session stream refused: the helper rejected the pairing secret"); return
+            }
             it.getOutputStream().write(head)
             val t = Thread { pump(it.getInputStream(), client.getOutputStream()); runCatching { client.shutdownOutput() } }
             t.start()
@@ -91,6 +104,18 @@ class ControlProxy(private val ctx: Context) {
             runCatching { it.shutdownOutput() }
             t.join()
         }
+    }
+
+    /** One line, without pulling a byte past the newline (the rest is binary). */
+    private fun readLine(input: InputStream, max: Int): String? {
+        val sb = StringBuilder()
+        while (sb.length < max) {
+            val c = input.read()
+            if (c < 0) return null
+            if (c == '\n'.code) return sb.toString()
+            sb.append(c.toChar())
+        }
+        return null
     }
 
     private fun pump(from: InputStream, to: OutputStream) {

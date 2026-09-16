@@ -6,7 +6,16 @@ import Foundation
 final class TCPStream {
     private var fd: Int32 = -1
 
-    init(port: Int, timeout: TimeInterval = 30) throws {
+    /// Connects and sends the pairing line the phone expects first on every
+    /// stream, so nothing else on this Mac can use the tunnel just by finding
+    /// its local port.
+    convenience init(port: Int, timeout: TimeInterval = 30) throws {
+        try self.init(port: port, timeout: timeout, raw: false)
+        let secret = Keychain.get("pairSecret") ?? ""
+        try write("AUTH \(secret)\n")
+    }
+
+    init(port: Int, timeout: TimeInterval, raw: Bool) throws {
         fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw StreamError.failed("socket()") }
         var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
@@ -35,7 +44,7 @@ final class TCPStream {
 
     /// True if something is already listening on 127.0.0.1:<port>.
     static func portOpen(_ port: Int) -> Bool {
-        guard let s = try? TCPStream(port: port, timeout: 1) else { return false }
+        guard let s = try? TCPStream(port: port, timeout: 1, raw: true) else { return false }
         s.closeStream(); return true
     }
 
@@ -50,7 +59,11 @@ final class TCPStream {
 
     func write(_ text: String) throws { try write(Array(text.utf8)) }
 
+    /// Nothing legitimate on these streams is bigger than a video frame.
+    static let maxRead = 64 * 1024 * 1024
+
     func readExactly(_ count: Int) throws -> [UInt8] {
+        guard count >= 0, count <= Self.maxRead else { throw StreamError.failed("absurd length \(count)") }
         var out = [UInt8](repeating: 0, count: count)
         var offset = 0
         while offset < count {

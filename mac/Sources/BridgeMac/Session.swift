@@ -137,7 +137,9 @@ final class Session {
     func pushFile(_ url: URL, completion: @escaping (String) -> Void) {
         let port = self.port
         Thread {
-            let name = url.lastPathComponent
+            // One command per line: keep line breaks and other control
+            // characters out of the name.
+            let name = String(url.lastPathComponent.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 })
             guard let data = try? Data(contentsOf: url) else {
                 completion("Couldn't read \(name)"); return
             }

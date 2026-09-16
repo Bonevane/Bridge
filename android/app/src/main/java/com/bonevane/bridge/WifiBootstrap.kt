@@ -49,6 +49,13 @@ object WifiBootstrap {
         }
     }
 
+    private fun localAddresses(): Set<String> = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().toList()
+            .flatMap { it.inetAddresses.toList() }
+            .map { it.hostAddress?.substringBefore('%') ?: "" }
+            .toSet()
+    }.getOrDefault(emptySet())
+
     private fun wifiConnected(ctx: Context): Boolean {
         val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
         return cm.allNetworks.any { n ->
@@ -66,6 +73,16 @@ object WifiBootstrap {
                 @Suppress("DEPRECATION")
                 nsd.resolveService(info, object : NsdManager.ResolveListener {
                     override fun onServiceResolved(resolved: NsdServiceInfo) {
+                        // Only this phone's own adbd counts: a rogue advert on the
+                        // Wi-Fi could otherwise steer the port (we connect to
+                        // loopback regardless, so it could only make us fail,
+                        // but there's no reason to let it).
+                        val local = localAddresses()
+                        val host = resolved.host?.hostAddress
+                        if (host != null && host !in local) {
+                            TunnelState.log("Ignored a wireless-debugging advert from $host")
+                            return
+                        }
                         port = resolved.port; done.countDown()
                     }
                     override fun onResolveFailed(info: NsdServiceInfo, code: Int) {

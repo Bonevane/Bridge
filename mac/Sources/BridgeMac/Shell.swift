@@ -62,7 +62,10 @@ enum Shell {
     static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 20) -> CommandResult {
         let logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("bridge-\(UUID().uuidString).log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        // Command output can include the ticket (Set Up Over USB), so the file
+        // is readable by this user only.
+        FileManager.default.createFile(atPath: logURL.path, contents: nil,
+                                       attributes: [.posixPermissions: 0o600])
         defer { try? FileManager.default.removeItem(at: logURL) }
 
         guard let handle = try? FileHandle(forWritingTo: logURL) else {

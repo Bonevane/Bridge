@@ -31,8 +31,22 @@ final class BridgeController: ObservableObject {
     @Published var showOptions = false
     @Published var showLog = false
 
+    /// The phone's address. A pasted "endpoint… <secret>" pair is split here,
+    /// so the Paste button and the USB flow end up in the same place.
     @Published var ticket: String {
-        didSet { UserDefaults.standard.set(ticket, forKey: "ticket") }
+        didSet {
+            let words = ticket.split(separator: " ").map(String.init)
+            if words.count == 2, words[0].hasPrefix("endpoint"), words[1].count == 64 {
+                pairSecret = words[1]
+                ticket = words[0]
+                return
+            }
+            Keychain.set("ticket", ticket)
+        }
+    }
+    /// Proves this Mac to the phone. See Keychain.swift.
+    @Published var pairSecret: String {
+        didSet { Keychain.set("pairSecret", pairSecret) }
     }
     @Published var bitrateMbps: Int {
         didSet { UserDefaults.standard.set(bitrateMbps, forKey: "bitrateMbps") }
@@ -148,7 +162,13 @@ final class BridgeController: ObservableObject {
 
     private init() {
         let defaults = UserDefaults.standard
-        ticket = defaults.string(forKey: "ticket") ?? ""
+        // Older builds kept the ticket in UserDefaults; move it once, then forget it there.
+        if let old = defaults.string(forKey: "ticket"), !old.isEmpty, Keychain.get("ticket") == nil {
+            Keychain.set("ticket", old)
+            defaults.removeObject(forKey: "ticket")
+        }
+        ticket = Keychain.get("ticket") ?? ""
+        pairSecret = Keychain.get("pairSecret") ?? ""
         bitrateMbps = defaults.object(forKey: "bitrateMbps") as? Int ?? 4
         maxSize = defaults.object(forKey: "maxSize") as? Int ?? 1280
         turnScreenOff = defaults.bool(forKey: "turnScreenOff")
@@ -177,7 +197,10 @@ final class BridgeController: ObservableObject {
     }
 
     func appendLog(_ text: String, source: String? = nil) {
-        for line in text.split(whereSeparator: \.isNewline) where !line.isEmpty {
+        for raw in text.split(whereSeparator: \.isNewline) where !raw.isEmpty {
+            // dumbpipe prints this Mac's own iroh key on start; the log is
+            // copyable and goes to a file, so keep the key out of it.
+            let line = raw.hasPrefix("using secret key") ? Substring("using secret key (redacted)") : raw
             log.append(source.map { "[\($0)] \(line)" } ?? String(line))
         }
         if log.count > 400 {
@@ -264,6 +287,9 @@ final class BridgeController: ObservableObject {
                 }
                 if query.output.contains("ready=1"), let t = Self.extractTicket(from: query.output) {
                     found = t
+                    if let range = query.output.range(of: "secret=[0-9a-f]{64}", options: .regularExpression) {
+                        pairSecret = String(query.output[range].dropFirst(7))
+                    }
                     break
                 }
                 if query.output.contains("Unknown authority") || query.output.contains("Could not find provider") {
@@ -277,7 +303,8 @@ final class BridgeController: ObservableObject {
                 return
             }
             ticket = newTicket
-            appendLog("Got ticket from phone.")
+            appendLog(pairSecret.isEmpty ? "Got ticket from phone (no pairing secret: old phone app?)."
+                                         : "Got ticket and pairing secret from phone.")
 
             // Lets the phone app switch USB debugging on/off by itself (see AdbToggle.kt).
             let package = BridgeController.phonePackage
@@ -295,10 +322,11 @@ final class BridgeController: ObservableObject {
             // would quietly break that rule; the helper starts at Mirror time.
             if keepReady {
                 phase = .working("Starting the phone's helper over USB…")
+                let secret = pairSecret
                 let spawn = await background {
                     Shell.run(adb, ["-d", "shell",
                         "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
-                        "(CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
+                        "(BRIDGE_SECRET=\(secret) CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
                         "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
                 }
                 if !spawn.ok { appendLog(spawn.output, source: "adb") }

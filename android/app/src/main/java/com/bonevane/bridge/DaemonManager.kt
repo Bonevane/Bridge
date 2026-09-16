@@ -19,18 +19,25 @@ import java.net.Socket
 object DaemonManager {
     const val DAEMON_PORT = 5577
 
-    fun isDaemonAlive(): Boolean = probe(DAEMON_PORT) != null
+    /** Liveness only: a listening port is enough, no secret needed to ask. */
+    fun isDaemonAlive(): Boolean = portOpen(DAEMON_PORT)
 
     private fun portOpen(port: Int): Boolean = runCatching {
         Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }; true
     }.getOrDefault(false)
 
-    /** Returns the daemon's hello line ("bridge-daemon uid=2000 pid=… up=…s") or null. */
+    /**
+     * Returns the daemon's hello line ("bridge-daemon uid=2000 pid=… up=…s") or
+     * null. The hello only comes after the pairing secret, so a stranger who
+     * finds the port learns nothing, not even that it's Bridge.
+     */
     fun probe(port: Int, timeoutMs: Int = 500): String? = runCatching {
         Socket().use { s ->
             s.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
             s.soTimeout = timeoutMs
-            s.getInputStream().bufferedReader().readLine()
+            s.getOutputStream().write((Pairing.authLine(AppContext.value) + "\n").toByteArray())
+            s.getOutputStream().flush()
+            s.getInputStream().bufferedReader().readLine()?.takeIf { it.startsWith("bridge-daemon") }
         }
     }.getOrNull()
 
@@ -42,14 +49,21 @@ object DaemonManager {
             val apk = hello.substringAfter("apk=", "")
             if (apk == ctx.applicationInfo.sourceDir) { TunnelState.log("Daemon already running"); return }
             TunnelState.log("Daemon is from an older install; restarting it")
-            runCatching {
+            fun quit(withAuth: Boolean) = runCatching {
                 Socket("127.0.0.1", DAEMON_PORT).use { s ->
+                    s.soTimeout = 2000
+                    val lead = if (withAuth) Pairing.authLine(ctx) + "\n" else ""
+                    s.getOutputStream().write((lead + "QUIT\n").toByteArray()); s.getOutputStream().flush()
                     s.getInputStream().bufferedReader().readLine()
-                    s.getOutputStream().write("QUIT\n".toByteArray()); s.getOutputStream().flush()
                     s.getInputStream().read()
                 }
             }
+            quit(withAuth = true)
             Thread.sleep(500)
+            // A daemon from before pairing secrets existed treats the AUTH line
+            // as an unknown command and hangs up before reading QUIT; it only
+            // understands a bare QUIT.
+            if (portOpen(DAEMON_PORT)) { quit(withAuth = false); Thread.sleep(500) }
         }
 
         if (!AdbToggle.isGranted(ctx)) {
@@ -76,7 +90,9 @@ object DaemonManager {
             // The legacy `shell:` service gives us a PTY that adbd hangs up when the
             // shell exits, so the daemon must be in its own session (setsid), not
             // attached to the PTY (</dev/null), and the shell waits 1 s for that.
-            val cmd = "(CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
+            // The secret rides in the environment, which only the daemon's own
+            // uid can read; the command line would be visible more widely.
+            val cmd = "(BRIDGE_SECRET=${Prefs.pairSecret(ctx)} CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
                 "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"
             it.shell(cmd)
         }

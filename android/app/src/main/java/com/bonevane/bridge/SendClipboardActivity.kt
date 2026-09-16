@@ -22,7 +22,19 @@ import android.widget.Toast
  */
 class SendClipboardActivity : Activity() {
 
+    companion object {
+        /**
+         * The tile proves it's the tile with a one-shot token, so another app
+         * can't launch this activity to push your clipboard to the Mac behind
+         * your back. (It would only reach *your* Mac, but it's still not theirs
+         * to trigger.)
+         */
+        @Volatile var tileToken: String? = null
+        const val EXTRA_TILE_TOKEN = "tile"
+    }
+
     private var handled = false
+    private var allowed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,13 +42,18 @@ class SendClipboardActivity : Activity() {
         if (intent?.action == Intent.ACTION_SEND) {
             val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
             finishAfter(text)
+            return
         }
+        val token = tileToken
+        tileToken = null
+        allowed = token != null && intent?.getStringExtra(EXTRA_TILE_TOKEN) == token
+        if (!allowed) finish()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // Only once we actually hold focus is the clipboard readable.
-        if (!hasFocus || handled) return
+        if (!hasFocus || handled || !allowed) return
         val clip = getSystemService(ClipboardManager::class.java).primaryClip
         val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
         finishAfter(text)
@@ -82,7 +99,10 @@ class ClipboardTile : android.service.quicksettings.TileService() {
     }
 
     override fun onClick() {
+        val token = Pairing.nonce()
+        SendClipboardActivity.tileToken = token
         val intent = Intent(this, SendClipboardActivity::class.java)
+            .putExtra(SendClipboardActivity.EXTRA_TILE_TOKEN, token)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         if (android.os.Build.VERSION.SDK_INT >= 34) {
             startActivityAndCollapse(

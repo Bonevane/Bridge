@@ -24,7 +24,8 @@ enum Control {
         }
         guard connected == 0 else { return nil }
 
-        let payload = Array((command + "\n").utf8)
+        let secret = Keychain.get("pairSecret") ?? ""
+        let payload = Array(("AUTH \(secret)\n" + command + "\n").utf8)
         guard payload.withUnsafeBufferPointer({ write(fd, $0.baseAddress, $0.count) }) == payload.count else { return nil }
 
         var reply = [UInt8]()

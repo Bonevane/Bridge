@@ -20,8 +20,25 @@ object Prefs {
         return hex
     }
 
+    /**
+     * The pairing secret: proves a Mac is one of yours. Every tunnel stream,
+     * every connection to the helper, and the Bluetooth link must present it,
+     * so a stranger who can reach a port (another app on this phone, another
+     * process on the Mac, a nearby Bluetooth device) still gets nothing. The
+     * Mac learns it over USB, or as the second word of a copied ticket.
+     */
+    fun pairSecret(ctx: Context): String {
+        val p = prefs(ctx)
+        p.getString("pairSecret", null)?.let { return it }
+        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val hex = bytes.joinToString("") { "%02x".format(it) }
+        p.edit().putString("pairSecret", hex).apply()
+        return hex
+    }
+
     fun resetIdentity(ctx: Context) {
-        prefs(ctx).edit().remove("secret").remove("ticket").apply()
+        // A new identity means new keys all round: the old secret went with the old ticket.
+        prefs(ctx).edit().remove("secret").remove("ticket").remove("pairSecret").apply()
     }
 
     fun ticket(ctx: Context): String? = prefs(ctx).getString("ticket", null)

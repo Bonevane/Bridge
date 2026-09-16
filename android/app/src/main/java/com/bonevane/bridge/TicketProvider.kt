@@ -16,7 +16,13 @@ import android.os.Binder
  */
 class TicketProvider : ContentProvider() {
 
-    override fun onCreate(): Boolean = true
+    override fun onCreate(): Boolean {
+        // Providers are created before anything else in the process, so this is
+        // the earliest place to keep an application context for the objects
+        // that have none of their own (DaemonManager, the daemon probes).
+        context?.let { AppContext.value = it.applicationContext }
+        return true
+    }
 
     override fun query(
         uri: Uri,
@@ -31,8 +37,9 @@ class TicketProvider : ContentProvider() {
         }
         val ctx = context ?: throw IllegalStateException("No context")
         val ticket = TunnelState.ticket ?: Prefs.ticket(ctx) ?: ""
-        return MatrixCursor(arrayOf("ticket", "ready", "status")).apply {
-            addRow(arrayOf<Any>(ticket, if (TunnelState.ready) 1 else 0, TunnelState.status))
+        // The pairing secret travels the same shell-only road as the ticket.
+        return MatrixCursor(arrayOf("ticket", "ready", "status", "secret")).apply {
+            addRow(arrayOf<Any>(ticket, if (TunnelState.ready) 1 else 0, TunnelState.status, Prefs.pairSecret(ctx)))
         }
     }
 

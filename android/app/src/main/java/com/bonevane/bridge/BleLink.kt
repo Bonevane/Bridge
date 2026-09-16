@@ -55,6 +55,14 @@ class BleLink(private val context: Context) {
         const val TYPE_STATUS: Byte = 4
         /** The Mac asking for something, e.g. "tunnel on". */
         const val TYPE_COMMAND: Byte = 5
+        /**
+         * The pairing handshake: "challenge <nonce>" from the phone, then
+         * "ok <hmac>" once the Mac has answered. Nothing else is sent, and no
+         * command is obeyed, until this has completed. Bonding proves the
+         * other device is *a* device you've paired with; this proves it is
+         * *your Mac*, the one that knows the pairing secret.
+         */
+        const val TYPE_AUTH: Byte = 6
 
         /** Conservative: the default ATT MTU is 23, of which 3 bytes are overhead. */
         private const val MIN_PAYLOAD = 20
@@ -76,6 +84,9 @@ class BleLink(private val context: Context) {
 
     @Volatile var connected = false
         private set(value) { field = value; TunnelState.macLinked = value }
+    /** True once the subscribed Mac has answered the challenge. */
+    @Volatile private var verified = false
+    private var pendingNonce: String? = null
     @Volatile private var beating = false
 
     private val notificationListener: (String) -> Unit = { line ->
@@ -105,7 +116,10 @@ class BleLink(private val context: Context) {
             addDescriptor(
                 BluetoothGattDescriptor(
                     CCCD,
-                    BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
+                    // Subscribing needs an encrypted (bonded) link, so a
+                    // passer-by can't sign up for your notifications.
+                    BluetoothGattDescriptor.PERMISSION_READ_ENCRYPTED or
+                        BluetoothGattDescriptor.PERMISSION_WRITE_ENCRYPTED,
                 )
             )
         }
@@ -203,6 +217,7 @@ class BleLink(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun send(type: Byte, text: String) {
         if (subscribers.isEmpty()) return
+        if (!verified && type != TYPE_AUTH) return      // strangers hear only the challenge
         val bytes = text.toByteArray()
         val room = mtuPayload - 2      // type + "more" flag
         synchronized(outbox) {
@@ -263,7 +278,8 @@ class BleLink(private val context: Context) {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     subscribers.remove(device)
-                    connected = subscribers.isNotEmpty()
+                    verified = false
+                    connected = false
                     // Anything queued was for a Mac that's gone; start clean.
                     synchronized(outbox) { outbox.clear() }
                     sending.set(false)
@@ -278,10 +294,30 @@ class BleLink(private val context: Context) {
                 // The Mac subscribing (or unsubscribing) to notifications.
                 if (descriptor.uuid == CCCD) {
                     val on = value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    // Encryption on the descriptor is enforced by the stack; the
+                    // bond is checked here as well, because an encrypted-but-
+                    // unbonded link is possible with some pairing modes.
+                    if (on && device.bondState != BluetoothDevice.BOND_BONDED) {
+                        TunnelState.log("Bluetooth: refused an unpaired device")
+                        if (responseNeeded) server?.sendResponse(device, requestId,
+                            BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION, 0, null)
+                        return
+                    }
                     if (on) subscribers.add(device) else subscribers.remove(device)
-                    connected = subscribers.isNotEmpty()
-                    TunnelState.log("Bluetooth: Mac ${if (on) "connected" else "left"}")
-                    if (on) { TunnelState.macSeen(); sendStatus() }
+                    verified = false
+                    connected = false
+                    if (responseNeeded) {
+                        server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    }
+                    if (on) {
+                        TunnelState.log("Bluetooth: a paired device subscribed; challenging it")
+                        val nonce = Pairing.nonce()
+                        pendingNonce = nonce
+                        send(TYPE_AUTH, "challenge $nonce")
+                    } else {
+                        TunnelState.log("Bluetooth: Mac left")
+                    }
+                    return
                 }
                 if (responseNeeded) {
                     server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
@@ -317,6 +353,26 @@ class BleLink(private val context: Context) {
         if (more) return
         val message = inbox.toString()
         inbox.setLength(0)
+        if (!verified) {
+            // Only the answer to our challenge gets through: "auth <hmac> <their nonce>".
+            val words = message.trim().split(' ')
+            val nonce = pendingNonce
+            if (type == TYPE_COMMAND && words.size == 3 && words[0] == "auth" && nonce != null &&
+                Pairing.hmacMatches(Prefs.pairSecret(context), nonce, words[1])
+            ) {
+                pendingNonce = null
+                verified = true
+                connected = true
+                TunnelState.log("Bluetooth: Mac verified")
+                // Prove ourselves back, then the usual first status report.
+                send(TYPE_AUTH, "ok " + Pairing.hmac(Prefs.pairSecret(context), words[2]))
+                TunnelState.macSeen()
+                sendStatus()
+            } else {
+                TunnelState.log("Bluetooth: ignored a message from an unverified device")
+            }
+            return
+        }
         if (type == TYPE_COMMAND) {
             // The Mac can switch the tunnel on from across the room, so the phone
             // can sit in the cheap Bluetooth-only mode until mirroring is wanted.

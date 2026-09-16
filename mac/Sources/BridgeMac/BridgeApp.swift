@@ -22,7 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
                                                object: nil, queue: .main) { [weak self] note in
             let closing = note.object as? NSWindow
-            Task { @MainActor in self?.hideDockIconIfNothingOpen(except: closing) }
+            // A beat later, not now: the menu that opened About closes first,
+            // and checking at that instant found nothing open and hid the
+            // About panel the moment it appeared.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self?.hideDockIconIfNothingOpen(except: closing)
+            }
         }
     }
 
@@ -32,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 && !(window is NSPanel)                 // the menu-bar dropdown
                 && window.styleMask.contains(.titled)   // not helper windows
         }
-        if !stillOpen { NSApp.setActivationPolicy(.accessory) }
+        if !stillOpen && NSApp.activationPolicy() == .regular { NSApp.setActivationPolicy(.accessory) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

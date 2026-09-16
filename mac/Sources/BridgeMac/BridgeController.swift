@@ -196,12 +196,17 @@ final class BridgeController: ObservableObject {
         return false
     }
 
+    private static let logClock: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
+
     func appendLog(_ text: String, source: String? = nil) {
         for raw in text.split(whereSeparator: \.isNewline) where !raw.isEmpty {
             // dumbpipe prints this Mac's own iroh key on start; the log is
             // copyable and goes to a file, so keep the key out of it.
             let line = raw.hasPrefix("using secret key") ? Substring("using secret key (redacted)") : raw
-            log.append(source.map { "[\($0)] \(line)" } ?? String(line))
+            let stamp = Self.logClock.string(from: Date())
+            log.append(stamp + " " + (source.map { "[\($0)] \(line)" } ?? String(line)))
         }
         if log.count > 400 {
             log.removeFirst(log.count - 400)
@@ -314,28 +319,58 @@ final class BridgeController: ObservableObject {
             }
             if !grant.ok { appendLog(grant.output, source: "adb") }
 
-            // With "keep ready" on, start the phone's helper over the cable: the
-            // one way to do it without Wi-Fi, which is what makes "plug in and
-            // set up" the answer when the helper has died on cellular (a
-            // reboot, an app update). With it off, the phone is meant to be
-            // locked down between sessions, so leaving a helper running here
-            // would quietly break that rule; the helper starts at Mirror time.
-            if keepReady {
-                phase = .working("Starting the phone's helper over USB…")
-                let secret = pairSecret
-                let spawn = await background {
-                    Shell.run(adb, ["-d", "shell",
-                        "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
-                        "(BRIDGE_SECRET=\(secret) CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
-                        "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
-                }
-                if !spawn.ok { appendLog(spawn.output, source: "adb") }
-                phase = .idle
-                notice = "Set up, and the helper is running. You can unplug the phone and click Mirror Phone."
-            } else {
-                phase = .idle
-                notice = "Set up. The helper starts when you mirror (that needs Wi-Fi), or turn on \"Keep ready\" to start it now over the cable."
+            // Get adbd to trust the phone app's own ADB key. Every later
+            // helper restart goes through wireless debugging with that key,
+            // and adbd rejects unknown keys (CERTIFICATE_UNKNOWN) without
+            // ever asking. So, once: put adbd on TCP for a moment (cable only,
+            // never on the network afterwards), have the app connect to itself
+            // so the "Allow USB debugging?" dialog appears for its key, then
+            // straight back to USB-only.
+            let keyKnown = await background {
+                Shell.run(adb, ["-d", "shell", "content", "query", "--uri", ticketURI], timeout: 10).output.contains("keyOk=1")
             }
+            if !keyKnown {
+                phase = .working("On the phone: tap \"Always allow\" for USB debugging…")
+                _ = await background { Shell.run(adb, ["-d", "tcpip", "5555"], timeout: 15) }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)     // adbd restarts
+                _ = await background {
+                    Shell.run(adb, ["-d", "shell", "am", "start", "-n", activity, "-a", "com.bonevane.bridge.AUTHORIZE"], timeout: 10)
+                }
+                var accepted = false
+                for _ in 0..<60 {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    let q = await background {
+                        Shell.run(adb, ["-d", "shell", "content", "query", "--uri", ticketURI], timeout: 10).output
+                    }
+                    if q.contains("keyOk=1") { accepted = true; break }
+                }
+                _ = await background { Shell.run(adb, ["-d", "usb"], timeout: 15) }     // back to USB-only
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                if accepted {
+                    appendLog("The phone trusts its own key now; later restarts of the helper will work.")
+                } else {
+                    fail("The phone didn't accept the key. Run Set Up Over USB again and tap \"Always allow\" when the phone asks.")
+                    return
+                }
+            }
+
+            // Start the helper over the cable so the first Mirror works right
+            // away. It's the one way to start it without Wi-Fi. With "keep
+            // ready" off the phone locks down again after the session, as
+            // the setting promises.
+            phase = .working("Starting the phone's helper over USB…")
+            let secret = pairSecret
+            let spawn = await background {
+                Shell.run(adb, ["-d", "shell",
+                    "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
+                    "(BRIDGE_SECRET=\(secret) CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
+                    "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
+            }
+            if !spawn.ok { appendLog(spawn.output, source: "adb") }
+            phase = .idle
+            notice = keepReady
+                ? "Set up, and the helper is running. You can unplug the phone and click Mirror Phone."
+                : "Set up. Unplug and click Mirror Phone. After each session the phone locks down again; turn on \"Keep ready\" to skip that."
         }
     }
 

@@ -67,12 +67,13 @@ class AdbClient(private val host: String, private val port: Int, private val key
     private lateinit var input: DataInputStream
     private lateinit var output: DataOutputStream
 
-    fun connect(timeoutMs: Int = 5000) {
+    /** [waitForUserMs]: how long to sit on the "Allow USB debugging?" dialog. */
+    fun connect(timeoutMs: Int = 5000, waitForUserMs: Int = 30_000) {
         // Not `Socket().apply { … }`: inside apply, `port` would mean Socket.port (0).
         socket = Socket()
         socket.tcpNoDelay = true
         socket.connect(InetSocketAddress(host, port), timeoutMs)
-        socket.soTimeout = 30_000
+        socket.soTimeout = waitForUserMs
         input = DataInputStream(socket.getInputStream())
         output = DataOutputStream(socket.getOutputStream())
 

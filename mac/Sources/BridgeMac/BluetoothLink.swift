@@ -321,7 +321,9 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         isLinked = false
         verified = false
         rx = nil
-        log("Bluetooth: phone out of range")
+        // The reason matters: "out of range" is a guess. CoreBluetooth gives a
+        // code (6 = timeout, 7 = peer closed, 13 = we closed it).
+        log("Bluetooth: disconnected" + (error.map { " (\(($0 as NSError).code): \($0.localizedDescription))" } ?? " (by this Mac)"))
         if wanted {
             state = .searching
             manager.scanForPeripherals(withServices: [Self.service])

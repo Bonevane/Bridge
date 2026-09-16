@@ -27,6 +27,10 @@ import com.bonevane.bridge.ui.Mode
  */
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val ACTION_AUTHORIZE = "com.bonevane.bridge.AUTHORIZE"
+    }
+
     /// Permission state is read once per screen; granting happens in a system
     /// screen, so it has to be re-read when we come back or the list lies.
     private var accessState by mutableStateOf<List<Access>>(emptyList())
@@ -124,6 +128,27 @@ class MainActivity : ComponentActivity() {
         if (intent?.action == TunnelService.ACTION_START || Prefs.wantRunning(this)) {
             TunnelService.start(this)
         }
+        if (intent?.action == ACTION_AUTHORIZE) authorizeKey()
+    }
+
+    /**
+     * Gets Bridge's own ADB key trusted by adbd. The Mac, over the cable, has
+     * put adbd in TCP mode for a moment; connecting to it from here with the
+     * legacy (non-TLS) protocol makes adbd show "Allow USB debugging?" for
+     * this key. Once the user ticks it, every later wireless bootstrap works.
+     */
+    private fun authorizeKey() {
+        Thread {
+            TunnelState.log("Asking adbd to trust Bridge's key: tap Allow on the phone")
+            runCatching {
+                AdbClient("127.0.0.1", 5555, AdbKey.load(this)).use { it.connect(waitForUserMs = 120_000) }
+            }.onSuccess {
+                Prefs.setAdbKeyAuthorized(this, true)
+                TunnelState.log("adbd trusts Bridge's key now")
+            }.onFailure {
+                TunnelState.log("Key not accepted: ${it.message}")
+            }
+        }.start()
     }
 
     /// Asks for one permission: a runtime prompt where that applies, otherwise

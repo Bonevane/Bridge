@@ -429,8 +429,9 @@ private fun GettingStarted(accessItems: List<Access>, ticket: String?, onGrantAc
             StepRow(
                 number = 2, done = ticket != null,
                 title = "Plug into your Mac once",
-                body = "Open Bridge on the Mac and click Set Up Over USB. It reads the ticket and grants " +
-                    "the one permission Android won't let you tap.",
+                body = "Open Bridge on the Mac and click Set Up Over USB. The phone will ask twice: " +
+                    "\"Allow USB debugging?\" (tick Always allow, then Allow) and a Bluetooth pairing request (Pair). " +
+                    "Both are needed.",
                 onClick = null,
             )
         }

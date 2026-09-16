@@ -46,7 +46,8 @@ data class Access(
 
         private fun notificationAccess(ctx: Context) = Access(
             name = "Notification access",
-            why = "Lets your notifications appear on the Mac. Works even with USB debugging off.",
+            why = "Lets your notifications appear on the Mac. If the switch is greyed out (Android 13+ does this " +
+                "for apps installed outside Play): open Bridge's App info, tap ⋮ top right → Allow restricted settings, then come back.",
             granted = NotificationRelay.hasAccess(ctx),
             intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
         )
@@ -83,16 +84,16 @@ data class Access(
          */
         private fun secureSettings(ctx: Context) = Access(
             name = "Change developer settings",
-            why = "Granted over USB during setup. Lets Bridge switch USB debugging on for a session and off afterwards.",
+            why = "Set Up Over USB grants this; you can't tap it. Lets Bridge switch USB debugging on for a session and off afterwards.",
             granted = AdbToggle.isGranted(ctx),
             intent = null,
         )
 
         private fun developerOptions(ctx: Context) = Access(
-            name = "Wireless debugging",
-            why = "Needed for a second when Bridge starts its helper. Android only offers it on Wi-Fi.",
-            granted = Settings.Global.getInt(ctx.contentResolver, "adb_wifi_enabled", 0) == 1 ||
-                AdbToggle.isEnabled(ctx),
+            name = "USB debugging",
+            why = "Settings → About phone → tap Build number 7 times, then System → Developer options → USB debugging. " +
+                "Developer options must stay on; Bridge switches USB debugging itself on and off after that.",
+            granted = AdbToggle.isEnabled(ctx),
             intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
         )
 

@@ -36,6 +36,14 @@ object Prefs {
         return hex
     }
 
+    /**
+     * Whether adbd on this phone trusts Bridge's own ADB key. Until it does,
+     * the wireless-debugging bootstrap fails with CERTIFICATE_UNKNOWN, so Set
+     * Up Over USB gets the key accepted first (see MainActivity.authorizeKey).
+     */
+    fun adbKeyAuthorized(ctx: Context): Boolean = prefs(ctx).getBoolean("adbKeyOk", false)
+    fun setAdbKeyAuthorized(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("adbKeyOk", on).apply()
+
     fun resetIdentity(ctx: Context) {
         // A new identity means new keys all round: the old secret went with the old ticket.
         prefs(ctx).edit().remove("secret").remove("ticket").remove("pairSecret").apply()

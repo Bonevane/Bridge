@@ -91,8 +91,12 @@ We port-scanned the phone during a session to make sure of this.
 | **Idle (default)**        | USB debugging off. Nothing from Bridge but the outbound tunnel. Banking apps see a normal phone.           |
 | **Bootstrap (~1 s)**      | Wireless debugging on a random port, only on Wi-Fi networks you approved, gated by adbd's key check.       |
 | **During a session**      | No ADB listener on any interface. adbd is USB-only; the daemon and proxy bind to loopback.                 |
-| **Over the internet**     | Only someone holding the ticket. End-to-end encrypted QUIC; relays forward ciphertext.                     |
-| **Known gap**             | Other apps on the phone can reach the loopback ports. A shared secret between app and daemon is planned.   |
+| **Over the internet**     | Only someone holding the ticket *and* the pairing secret. End-to-end encrypted QUIC; relays forward ciphertext. |
+| **On the phone itself**   | Other apps can reach the loopback ports, but every connection must open with the pairing secret or is refused. |
+| **Over Bluetooth**        | Bonded devices only, and the link is verified with an HMAC challenge in both directions before anything is sent. |
+| **On the Mac**            | Ticket and secret live in the Keychain, not a plist. Another local process that finds the tunnel port has no secret and gets `ERR unauthorized`. |
+
+**The pairing secret** is 32 random bytes the phone generates once. The Mac learns it over USB (Set Up Over USB) or as the second word of a copied ticket. "New identity" on the phone rotates it along with the ticket. A phone updated from a build without it needs one Set Up Over USB.
 
 <br>
 
@@ -121,6 +125,16 @@ Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binar
 
 ## <img src="https://api.iconify.design/lucide/rocket.svg?color=%234F9CF9" width="24" height="24"> Getting Started
 
+### Install a release
+
+1. **Phone:** download `app-release.apk` from [Releases](https://github.com/Bonevane/Bridge/releases) and open it (allow installs from your browser when asked). Requires Android 11+ and an arm64 phone, i.e. anything from the last several years.
+2. **Mac:** download `Bridge-<version>.zip`, unzip, move `Bridge.app` to Applications. It isn't notarized (that needs a paid Apple developer account), so the first launch is **right-click → Open → Open**; after that it opens normally. Everything it needs is inside the bundle.
+3. **Pair, once:** on the phone, enable Developer options → USB debugging. Plug in, click **Set Up Over USB** in Bridge's menu on the Mac, accept "Allow USB debugging" on the phone with *Always allow*. Unplug. **Mirror Phone.** The first time on each Wi-Fi network Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
+
+macOS will ask for Bluetooth and Notifications the first time; both are needed for the short-range link.
+
+### Build from source
+
 ```bash
 brew install dumbpipe && brew install --cask android-platform-tools
 ```
@@ -136,8 +150,9 @@ echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
 ```bash
 cd mac && ./make-app.sh && open build/Bridge.app
 ```
+`make-app.sh` bundles `dumbpipe` and `adb` from Homebrew and signs ad-hoc; pass `SIGN_ID="<certificate name>"` to sign with a certificate from Keychain Access so macOS keeps the app's permissions between builds. `./release.sh` produces the zip.
 
-Then, once: enable USB debugging, plug in, **Set up over USB** in the menu, accept "Allow USB debugging" for `bridge@phone` with *Always allow*. Unplug. **Connect.** The first time on each Wi-Fi network, Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
+Then pair as in step 3 above.
 
 Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N notifications · ⌘P power · ⌘O screen off · right-click back.
 

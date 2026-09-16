@@ -59,7 +59,12 @@ object Daemon {
         val secret = System.getenv("BRIDGE_SECRET")?.takeIf { it.isNotBlank() }
             ?: run { log("refusing to start without BRIDGE_SECRET"); System.exit(2); return }
 
-        val server = ServerSocket(PORT, 4, InetAddress.getByName("127.0.0.1"))
+        // reuseAddress: a successor spawned by install() binds this port a
+        // second after its predecessor exits, before the kernel has let go.
+        val server = ServerSocket().apply {
+            reuseAddress = true
+            bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT), 4)
+        }
         while (true) {
             val s = server.accept()
             Thread {
@@ -226,10 +231,25 @@ object Daemon {
         apk.delete()
         log(if (code == 0) "install ok: $output" else "install failed: $output")
         if (code == 0) {
-            // This process still runs the *old* code from an install directory that
-            // no longer exists, so retire it: the next START spawns a fresh daemon
-            // from the new APK. (The app itself comes back via MY_PACKAGE_REPLACED.)
-            log("exiting so the next START runs the new code")
+            // This process still runs the *old* code from an install directory
+            // that no longer exists. Spawn a successor from the new APK before
+            // leaving: we are already shell, so no adb bootstrap is needed, and
+            // without this an update on cellular left the phone with no helper
+            // until it next saw Wi-Fi or a cable. Same detached-launch recipe
+            // as DaemonManager; the secret is passed on unchanged.
+            val newApk = runCatching {
+                ProcessBuilder("pm", "path", "com.bonevane.bridge").start()
+                    .inputStream.bufferedReader().readLine()?.substringAfter("package:")?.trim()
+            }.getOrNull()
+            val secret = System.getenv("BRIDGE_SECRET").orEmpty()
+            if (!newApk.isNullOrEmpty()) {
+                log("starting the new helper from $newApk")
+                val cmd = "(BRIDGE_SECRET=$secret CLASSPATH=$newApk exec setsid app_process / " +
+                    "com.bonevane.bridge.Daemon </dev/null >/data/local/tmp/bridge-daemon.out 2>&1) &"
+                // A moment for the port to free up: the successor binds 5577 too.
+                runCatching { ProcessBuilder("sh", "-c", "sleep 1; $cmd").start() }
+            }
+            log("exiting; the new helper takes over")
             System.exit(0)
         }
     }

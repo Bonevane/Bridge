@@ -6,6 +6,10 @@ cd "$(dirname "$0")"
 # One version string for both bundle keys, so About shows "Version 0.1"
 # rather than "Version 0.1 (1)". Override: VERSION=0.2 ./make-app.sh
 VERSION="${VERSION:-0.1}"
+# Signing identity. Ad-hoc ("-") works but macOS forgets the app's permissions
+# (Bluetooth, notifications) on every rebuild; a certificate, even a self-signed
+# one from Keychain Access, keeps them. Override: SIGN_ID="Bridge Dev" ./make-app.sh
+SIGN_ID="${SIGN_ID:--}"
 
 swift build -c release
 
@@ -14,6 +18,26 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/BridgeMac "$APP/Contents/MacOS/Bridge"
 cp Bridge.icns MenuBarIcon.png MenuBarIcon@2x.png "$APP/Contents/Resources/"   # regenerate with ../assets/make-icons.sh
+
+# Bundle the two command-line tools so a downloaded Bridge works with nothing
+# else installed: dumbpipe (the tunnel) and adb (Set Up Over USB only). Both
+# are Apache-2.0/MIT; see ../NOTICE. Taken from Homebrew if present, otherwise
+# from ./vendor (put the binaries there by hand on a machine without Homebrew).
+bundle_tool() {
+    local name="$1"; shift
+    for candidate in "$@" "vendor/$name"; do
+        if [ -x "$candidate" ]; then
+            cp "$(readlink -f "$candidate")" "$APP/Contents/MacOS/$name"
+            echo "bundled $name from $candidate"
+            return
+        fi
+    done
+    echo "warning: $name not found; the app will look for it on the system instead" >&2
+}
+bundle_tool dumbpipe /opt/homebrew/bin/dumbpipe /usr/local/bin/dumbpipe
+bundle_tool adb /opt/homebrew/share/android-commandlinetools/platform-tools/adb \
+                /usr/local/share/android-commandlinetools/platform-tools/adb \
+                "$HOME/Library/Android/sdk/platform-tools/adb"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -37,5 +61,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
-echo "Built $APP. Open it with: open $APP"
+# Sign the bundled tools first (nested code must be signed before the bundle),
+# then the app. --deep is deprecated but the CLT toolchain has nothing better
+# for a plain script; the explicit inner signs are what actually matter.
+for tool in "$APP"/Contents/MacOS/dumbpipe "$APP"/Contents/MacOS/adb; do
+    [ -f "$tool" ] && codesign --force --sign "$SIGN_ID" "$tool"
+done
+codesign --force --sign "$SIGN_ID" "$APP"
+echo "Built $APP (version $VERSION, signed by ${SIGN_ID}). Open it with: open $APP"

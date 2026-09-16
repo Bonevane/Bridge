@@ -15,6 +15,9 @@ enum Shell {
     /// Homebrew or an SDK has to be looked for by hand.
     static let searchPaths: [String] = {
         var dirs = [
+            // The copies shipped inside Bridge.app come first, so a download
+            // works on a Mac with nothing else installed.
+            Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS").path,
             "/opt/homebrew/bin",
             "/usr/local/bin",
             // Homebrew's android-commandlinetools puts adb here, not in bin.

@@ -4,7 +4,7 @@
 # ditto (not zip) keeps the code signature and resource forks intact.
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="${VERSION:-0.1}"
+VERSION="${VERSION:-0.1.0}"
 export VERSION SIGN_ID="${SIGN_ID:--}"
 ./make-app.sh
 rm -f "build/Bridge-$VERSION.zip"

@@ -27,7 +27,7 @@ android {
         minSdk = 30
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1"
+        versionName = "0.1.0"
         // The bundled dumbpipe binary is arm64 only (every modern phone, including your Pixel).
         ndk { abiFilters += "arm64-v8a" }
     }

@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 # One version string for both bundle keys, so About shows "Version 0.1"
 # rather than "Version 0.1 (1)". Override: VERSION=0.2 ./make-app.sh
-VERSION="${VERSION:-0.1}"
+VERSION="${VERSION:-0.1.0}"
 # Signing identity. Ad-hoc ("-") works but macOS forgets the app's permissions
 # (Bluetooth, notifications) on every rebuild; a certificate, even a self-signed
 # one from Keychain Access, keeps them. Override: SIGN_ID="Bridge Dev" ./make-app.sh

@@ -222,7 +222,6 @@ final class BluetoothLink: NSObject {
             verified = true
             isLinked = true
             state = .linked
-            UserDefaults.standard.set(phone?.identifier.uuidString, forKey: "phonePeripheral")
             lastHeard = Date()
             log("Bluetooth: linked to the phone (verified)")
         default:
@@ -300,12 +299,12 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ manager: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        // Once a phone has passed the handshake, only that one is worth
-        // connecting to; anyone can advertise our service UUID.
-        if let known = UserDefaults.standard.string(forKey: "phonePeripheral"),
-           known != peripheral.identifier.uuidString {
-            return
-        }
+        // Anyone can advertise our service UUID, but the handshake is what
+        // decides; a wrong phone is dropped in a second. Pinning the last
+        // verified identifier here was a mistake: after the bond is forgotten
+        // and remade, the phone gets a new identifier, and the Mac then
+        // ignored the real phone forever. So: connect to whoever advertises,
+        // and let the challenge sort it out.
         manager.stopScan()
         phone = peripheral
         peripheral.delegate = self

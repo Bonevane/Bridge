@@ -14,7 +14,10 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
@@ -112,7 +115,53 @@ class BleLink(private val context: Context) {
 
     // MARK: - Lifecycle
 
+    /**
+     * Toggling Bluetooth on the phone tears the GATT server down underneath
+     * us (every later call throws DeadObjectException) and nothing brought it
+     * back: the link was simply gone until the app restarted. So: watch the
+     * adapter, drop everything when it goes off, rebuild when it's on again.
+     */
+    private var adapterWatcher: BroadcastReceiver? = null
+
+    private fun watchAdapter() {
+        if (adapterWatcher != null) return
+        adapterWatcher = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                when (intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1)) {
+                    android.bluetooth.BluetoothAdapter.STATE_OFF -> {
+                        TunnelState.log("Bluetooth: turned off; link closed")
+                        teardown()
+                    }
+                    android.bluetooth.BluetoothAdapter.STATE_ON -> {
+                        TunnelState.log("Bluetooth: back on; advertising again")
+                        runCatching { start() }.onFailure { TunnelState.log("Bluetooth: restart failed: ${it.message}") }
+                    }
+                }
+            }
+        }
+        context.registerReceiver(adapterWatcher, IntentFilter(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED))
+    }
+
+    /** Forgets the (dead) server so start() can make a new one. Keeps the adapter watcher. */
+    private fun teardown() {
+        beating = false
+        NotificationRelay.unsubscribe(notificationListener)
+        runCatching { stopAdvertising() }
+        runCatching { server?.close() }
+        server = null
+        tx = null
+        txPlain = null
+        subscribers.clear()
+        synchronized(outbox) { outbox.clear() }
+        sending.set(false)
+        verified = false
+        connected = false
+        crypto = null
+        runCatching { paramGatt?.close() }; paramGatt = null
+    }
+
     fun start() {
+        watchAdapter()
         if (server != null) return          // already advertising
         if (!hasPermissions()) {
             TunnelState.log("Bluetooth: permissions not granted yet")
@@ -173,13 +222,9 @@ class BleLink(private val context: Context) {
     }
 
     fun stop() {
-        beating = false
-        NotificationRelay.unsubscribe(notificationListener)
-        runCatching { stopAdvertising() }
-        runCatching { server?.close() }
-        server = null
-        subscribers.clear()
-        connected = false
+        teardown()
+        adapterWatcher?.let { runCatching { context.unregisterReceiver(it) } }
+        adapterWatcher = null
     }
 
     /**

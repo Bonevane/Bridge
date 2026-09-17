@@ -21,21 +21,21 @@
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/telescope.svg?color=%234F9CF9" width="24" height="24"> The Problem
+## <img src="https://api.iconify.design/lucide/telescope.svg?color=%234F9CF9" width="20" height="20">&nbsp; The Problem
 Remote-controlling a phone you own is strangely hard. The tools exist, but each one attempts to solve a single problem.
 
 <table width="100%">
   <tr>
     <td width="33%" valign="top">
-      <h3 align="center"><img src="https://api.iconify.design/lucide/cable.svg?color=%234F9CF9" width="20" height="20"></h3>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/cable.svg?color=%234F9CF9" width="18" height="18">&nbsp; Tethered to ADB</h3>
       <p align="center">scrcpy is excellent, but it needs a cable or the same Wi-Fi, and a port that changes on every reboot.</p>
     </td>
     <td width="33%" valign="top">
-      <h3 align="center"><img src="https://api.iconify.design/lucide/lock.svg?color=%234F9CF9" width="20" height="20"></h3>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/lock.svg?color=%234F9CF9" width="18" height="18">&nbsp; Blind on the lock screen</h3>
       <p align="center">Normal screen mirroring apps can't show the lock screen. Android 14+ stops capture the moment the phone locks, so you can't unlock it from afar.</p>
     </td>
     <td width="33%" valign="top">
-      <h3 align="center"><img src="https://api.iconify.design/lucide/landmark.svg?color=%234F9CF9" width="20" height="20"></h3>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/landmark.svg?color=%234F9CF9" width="18" height="18">&nbsp; Blocked by banking apps</h3>
       <p align="center">Banking apps refuse to run while USB debugging is on. "Just leave adb enabled" is not an option on a real phone.</p>
     </td>
   </tr>
@@ -43,7 +43,7 @@ Remote-controlling a phone you own is strangely hard. The tools exist, but each 
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/cpu.svg?color=%234F9CF9" width="24" height="24"> The Solution
+## <img src="https://api.iconify.design/lucide/cpu.svg?color=%234F9CF9" width="20" height="20">&nbsp; The Solution
 Bridge treats it as a **connectivity and privilege problem**, not a screen-sharing problem. Each phone has a permanent key; the Mac dials that key over [iroh](https://iroh.computer) (direct when possible, encrypted relay when not). The phone grants itself shell privileges through a one-second wireless-debugging window on localhost, runs scrcpy's capture code, and forwards the streams to a native Mac viewer.
 
 ### How it works
@@ -61,7 +61,7 @@ Bridge treats it as a **connectivity and privilege problem**, not a screen-shari
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/shield-check.svg?color=%234F9CF9" width="24" height="24"> Security Model
+## <img src="https://api.iconify.design/lucide/shield-check.svg?color=%234F9CF9" width="20" height="20">&nbsp; Security Model
 
 | **When**                  | **What's reachable**                                                                                       |
 | :------------------------ | :--------------------------------------------------------------------------------------------------------- |
@@ -77,7 +77,7 @@ Bridge treats it as a **connectivity and privilege problem**, not a screen-shari
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/layers.svg?color=%234F9CF9" width="24" height="24"> Tech Stack
+## <img src="https://api.iconify.design/lucide/layers.svg?color=%234F9CF9" width="20" height="20">&nbsp; Tech Stack
 Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binaries doing the heavy lifting. No networking or protocol libraries: the ADB client, the scrcpy protocol and the H.264/AAC handling are all written here.
 
 | **Component**        | **Technology**                                                                                                | **Description**                                                                            |
@@ -90,17 +90,17 @@ Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binar
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/images.svg?color=%234F9CF9" width="24" height="24"> Visuals
+## <img src="https://api.iconify.design/lucide/images.svg?color=%234F9CF9" width="20" height="20">&nbsp; Visuals
 
-| Mac menu | Phone window |
+| Phone app | Phone window |
 | :---: | :---: |
-| <img src="assets/screenshot-menu.png" width="100%"/> | <img src="assets/screenshot-window.png" width="100%" /> |
-| **Phone app** | **Quick Settings tile** |
-| <img src="assets/screenshot-phone.png" width="100%" /> | <img src="assets/screenshot-tile.png" width="100%" /> |
+| <img src="assets/screenshot-phone.png" width="100%" /> | <img src="assets/screenshot-window.png" width="100%" /> |
+| **Mac menu** | **Quick Settings tile** |
+| <img src="assets/screenshot-menu.png" width="100%" /> | <img src="assets/screenshot-tile.png" width="100%" /> |
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/rocket.svg?color=%234F9CF9" width="24" height="24"> Getting Started
+## <img src="https://api.iconify.design/lucide/rocket.svg?color=%234F9CF9" width="20" height="20">&nbsp; Getting Started
 
 ### Install a release
 
@@ -137,7 +137,7 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/map.svg?color=%234F9CF9" width="24" height="24"> Roadmap
+## <img src="https://api.iconify.design/lucide/map.svg?color=%234F9CF9" width="20" height="20">&nbsp; Roadmap
 - [x] **Tunnel:** iroh connection with a permanent identity; works on cellular and through VPNs
 - [x] **Remote wake:** phone turns USB debugging on and starts its own privileged daemon on request
 - [x] **Reboot without cable:** Wi-Fi bootstrap via mDNS + TLS, no pairing
@@ -159,7 +159,7 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/heart-handshake.svg?color=%234F9CF9" width="24" height="24"> Acknowledgements
+## <img src="https://api.iconify.design/lucide/heart-handshake.svg?color=%234F9CF9" width="20" height="20">&nbsp; Acknowledgements
 - [scrcpy](https://github.com/Genymobile/scrcpy): the server does the real work on the phone
 - [iroh](https://github.com/n0-computer/iroh) and [dumbpipe](https://github.com/n0-computer/dumbpipe): connectivity that just works
 - [Shizuku](https://github.com/RikkaApps/Shizuku): the in-app ADB client is adapted from theirs
@@ -169,6 +169,11 @@ See `NOTICE` for licenses.
 
 <br>
 
-<p align="center">
-  <sub>Built with <img src="https://api.iconify.design/lucide/heart.svg?color=%234F9CF9" width="12" height="12"> for a phone that's never where you are.</sub>
-</p>
+<div align="center">
+
+[![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat&logo=github&logoColor=white)](https://github.com/bonevane)
+[![Portfolio](https://img.shields.io/badge/Portfolio-4285F4?style=flat&logo=googlechrome&logoColor=white)](https://bonevane.vercel.app)
+[![Email](https://img.shields.io/badge/Email-34A853?style=flat&logo=gmail&logoColor=white)](mailto:rahmad.atomic44@gmail.com)
+[![Twitter](https://img.shields.io/badge/Twitter-000000?style=flat&logo=x&logoColor=white)](https://x.com/Bonevane_YT)
+
+</div>

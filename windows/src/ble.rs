@@ -285,25 +285,65 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         },
     ))?;
 
-    // Subscribing is the first encrypted operation; a few retries cover the
-    // seconds it takes the link to come back up encrypted after bonding.
-    let mut status = GattCommunicationStatus::Unreachable;
-    for attempt in 1..=6 {
-        status = tx
-            .WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue::Notify)?
-            .get()?;
-        if status == GattCommunicationStatus::Success {
-            break;
+    // Bring the encryption up before the subscribe: a read of the encrypted
+    // characteristic makes Windows start it (it won't for a descriptor write
+    // on some stacks, which then fails as "write not permitted").
+    for attempt in 1..=5 {
+        let r = rx.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?.get()?;
+        let st = r.Status()?;
+        crate::log!("bluetooth", "encrypted read {attempt}/5: {st:?} (connection {:?})", device.ConnectionStatus()?);
+        if st == GattCommunicationStatus::Success || st == GattCommunicationStatus::ProtocolError {
+            break; // ProtocolError here = encrypted but the phone forbids reads: fine, the link is up
         }
-        crate::log!("bluetooth", "subscribe {attempt}/6: {status:?} (connection {:?})", device.ConnectionStatus()?);
         std::thread::sleep(Duration::from_millis(2000));
     }
-    if status != GattCommunicationStatus::Success {
-        bail!("subscribe failed: {:?}", status);
+
+    // Subscribe. The high-level helper first; if it errors, write the CCCD
+    // descriptor (0x2902) by hand, which more stacks accept.
+    let mut subscribed = false;
+    for attempt in 1..=6 {
+        let status = match tx.WriteClientCharacteristicConfigurationDescriptorAsync(
+            GattClientCharacteristicConfigurationDescriptorValue::Notify,
+        ) {
+            Ok(op) => op.get().map(|s| format!("{s:?}")).unwrap_or_else(|e| format!("error {e}")),
+            Err(e) => format!("error {e}"),
+        };
+        if status == format!("{:?}", GattCommunicationStatus::Success) {
+            subscribed = true;
+            break;
+        }
+        crate::log!("bluetooth", "subscribe {attempt}/6 via helper: {status}; trying the descriptor directly");
+        if let Ok(direct) = subscribe_direct(&tx) {
+            if direct {
+                subscribed = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2000));
+    }
+    if !subscribed {
+        bail!("subscribe failed");
     }
     link.lock().unwrap().device = Some(device);
     crate::log!("bluetooth", "subscribed; waiting for the phone's challenge");
     Ok(())
+}
+
+/// Writes the Client Characteristic Configuration descriptor (0x2902) by hand.
+fn subscribe_direct(tx: &GattCharacteristic) -> Result<bool> {
+    let cccd = GUID::from_u128(0x00002902_0000_1000_8000_00805f9b34fb);
+    let r = tx.GetDescriptorsForUuidWithCacheModeAsync(cccd, BluetoothCacheMode::Uncached)?.get()?;
+    if r.Status()? != GattCommunicationStatus::Success || r.Descriptors()?.Size()? == 0 {
+        crate::log!("bluetooth", "no CCCD descriptor visible ({:?})", r.Status()?);
+        return Ok(false);
+    }
+    let d = r.Descriptors()?.GetAt(0)?;
+    let writer = DataWriter::new()?;
+    writer.WriteBytes(&[1, 0])?; // notifications on
+    let result = d.WriteValueWithResultAsync(&writer.DetachBuffer()?)?.get()?;
+    let st = result.Status()?;
+    crate::log!("bluetooth", "direct CCCD write: {st:?} (protocol error {:?})", result.ProtocolError().ok().and_then(|p| p.Value().ok()));
+    Ok(st == GattCommunicationStatus::Success)
 }
 
 /// The Bridge service, with a few retries: the first query on a fresh link

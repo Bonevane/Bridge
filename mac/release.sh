@@ -4,7 +4,7 @@
 #   VERSION=0.1.0 SIGN_ID="Bridge Dev" ./release.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.1.1}"
 export VERSION SIGN_ID="${SIGN_ID:--}"
 ./make-app.sh
 codesign --verify --deep --strict build/Bridge.app && echo "signature ok"

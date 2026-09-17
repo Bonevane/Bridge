@@ -136,6 +136,14 @@ impl Stream {
     pub fn close(&self) {
         let _ = self.inner.shutdown(Shutdown::Both);
     }
+
+    /// A second handle on the same socket, so one thread can read device
+    /// messages while another writes control messages.
+    pub fn try_clone_for_read(&self) -> Result<Stream> {
+        let inner = self.inner.try_clone()?;
+        inner.set_read_timeout(None)?;
+        Ok(Stream { inner })
+    }
 }
 
 /// One-line command → one-line reply ("OK …" / "ERR …").

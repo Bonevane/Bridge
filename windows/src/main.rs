@@ -13,18 +13,23 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio;
 mod ble;
 mod clipboard;
 mod log;
 mod notify;
 mod protocol;
+mod scrcpy;
+mod session;
 mod settings;
 mod store;
 mod tunnel;
 mod twins;
+mod video;
 
 use ble::Event;
 use protocol::Kind;
+use session::SessionEvent;
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -51,6 +56,13 @@ struct App {
     phone_tunnel_on: bool,
     phone_paused: bool,
     tunnel: Option<tunnel::Tunnel>,
+    session: Option<std::sync::Arc<session::Session>>,
+    session_events: Option<mpsc::Receiver<SessionEvent>>,
+    mirror_window: Option<MirrorWindow>,
+    /// The video size the window's input callbacks scale coordinates against.
+    mirror_size: Option<Rc<RefCell<(u16, u16)>>>,
+    /// Last text we synced with the phone over the session, to stop ping-pong.
+    last_synced: Option<String>,
     mirroring: bool,
     /// Which Connect this is. A result from an earlier, cancelled attempt is ignored.
     attempt: u32,
@@ -78,6 +90,11 @@ impl App {
             phone_tunnel_on: false,
             phone_paused: false,
             tunnel: None,
+            session: None,
+            session_events: None,
+            mirror_window: None,
+            mirror_size: None,
+            last_synced: None,
             mirroring: false,
             attempt: 0,
             connecting: false,
@@ -353,6 +370,120 @@ impl App {
         });
     }
 
+    /// The video/audio/control streams and the window they show in.
+    fn open_session(&mut self) -> anyhow::Result<()> {
+        let st = &self.settings;
+        let mut options = format!("max_size={} video_bit_rate={}000000", st.max_size, st.bitrate_mbps);
+        if st.turn_screen_off {
+            options.push_str(" power_off_on_close=false");
+        }
+        // "playback" capture takes the audio away from the speaker (Android 13+);
+        // audio_dup gives it back, i.e. the phone keeps playing too.
+        options.push_str(if st.mute_phone { " audio_source=playback" } else { " audio_source=playback audio_dup=true" });
+
+        let (tx, rx) = mpsc::channel();
+        let tx_close = tx.clone();
+        let session = session::Session::start(&self.creds.secret, &options, tx)?;
+        if st.turn_screen_off {
+            session.send(&scrcpy::display_power(false));
+        }
+
+        let window = MirrorWindow::new()?;
+        // Input → scrcpy control messages. The window reports image-pixel
+        // coordinates; the phone wants them relative to the video size it sent.
+        let s = Rc::new(RefCell::new(None::<std::sync::Arc<session::Session>>));
+        let session = std::sync::Arc::new(session);
+        *s.borrow_mut() = Some(session.clone());
+        let size = Rc::new(RefCell::new((0u16, 0u16)));
+        let (s1, z1) = (s.clone(), size.clone());
+        window.on_pointer(move |x, y, kind, button| {
+            let Some(sess) = s1.borrow().clone() else { return };
+            let (w, h) = *z1.borrow();
+            if w == 0 { return; }
+            let p = scrcpy::Position { x, y, width: w, height: h };
+            let msg = match (kind, button) {
+                (0, 1) => scrcpy::back(true),
+                (1, 1) => scrcpy::back(false),
+                (0, _) => scrcpy::touch(scrcpy::ACTION_DOWN, p, true),
+                (1, _) => scrcpy::touch(scrcpy::ACTION_UP, p, false),
+                (2, _) => scrcpy::touch(scrcpy::ACTION_MOVE, p, true),
+                _ => scrcpy::hover(p),
+            };
+            sess.send(&msg);
+        });
+        let (s2, z2) = (s.clone(), size.clone());
+        window.on_scroll(move |x, y, dx, dy| {
+            let Some(sess) = s2.borrow().clone() else { return };
+            let (w, h) = *z2.borrow();
+            if w == 0 { return; }
+            sess.send(&scrcpy::scroll(scrcpy::Position { x, y, width: w, height: h }, dx / 20.0, dy / 20.0));
+        });
+        let s3 = s.clone();
+        window.on_key(move |text, mods, down| {
+            let Some(sess) = s3.borrow().clone() else { return };
+            let text = text.to_string();
+            let ctrl = mods & 1 != 0;
+            let shift = mods & 2 != 0;
+            let alt = mods & 4 != 0;
+            use scrcpy::android_key as k;
+            // Ctrl+letter shortcuts, the Mac's ⌘ ones.
+            if ctrl {
+                let target = match text.as_str() {
+                    "b" => Some(k::BACK), "h" => Some(k::HOME), "r" => Some(k::APP_SWITCH), "p" => Some(k::POWER),
+                    _ => None,
+                };
+                if let Some(code) = target {
+                    sess.send(&scrcpy::key(down, code, 0));
+                    return;
+                }
+                if text == "n" && down { sess.send(&scrcpy::simple(scrcpy::EXPAND_NOTIFICATION_PANEL)); return; }
+                if text == "o" && down { sess.send(&scrcpy::display_power(false)); return; }
+            }
+            // Special keys arrive as private-use characters in Slint's key text.
+            let special = match text.chars().next() {
+                Some('\u{F700}') => Some(k::DPAD_UP), Some('\u{F701}') => Some(k::DPAD_DOWN),
+                Some('\u{F702}') => Some(k::DPAD_LEFT), Some('\u{F703}') => Some(k::DPAD_RIGHT),
+                Some('\n') | Some('\r') => Some(k::ENTER), Some('\u{8}') => Some(k::DEL), Some('\u{7F}') => Some(k::FORWARD_DEL),
+                Some('\u{1B}') => Some(k::ESCAPE), Some('\t') => Some(k::TAB),
+                Some('\u{F729}') => Some(k::MOVE_HOME), Some('\u{F72B}') => Some(k::MOVE_END),
+                Some('\u{F72C}') => Some(k::PAGE_UP), Some('\u{F72D}') => Some(k::PAGE_DOWN),
+                _ => None,
+            };
+            let meta = (if shift { k::META_SHIFT } else { 0 }) | (if ctrl { k::META_CTRL } else { 0 }) | (if alt { k::META_ALT } else { 0 });
+            if let Some(code) = special {
+                sess.send(&scrcpy::key(down, code, meta));
+                return;
+            }
+            let mut chars = text.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                if let Some(code) = k::for_char(c) {
+                    // Letters and digits as keycodes so shortcuts and the PIN pad work.
+                    let m = meta | if c.is_ascii_uppercase() { k::META_SHIFT } else { 0 };
+                    sess.send(&scrcpy::key(down, code, m));
+                    return;
+                }
+                if down && !c.is_control() && !ctrl && !alt {
+                    sess.send(&scrcpy::text(&text));
+                }
+            } else if down && !text.is_empty() && !ctrl && !alt {
+                sess.send(&scrcpy::text(&text));
+            }
+        });
+        // Closing the window ends the session, via the same path a dead stream takes.
+        let closer = tx_close.clone();
+        window.window().on_close_requested(move || {
+            let _ = closer.send(SessionEvent::Ended("window closed".into()));
+            slint::CloseRequestResponse::HideWindow
+        });
+        let _ = window.show();
+        self.session_events = Some(rx);
+        self.session = Some(session);
+        self.mirror_window = Some(window);
+        self.mirror_size = Some(size);
+        self.last_synced = None;
+        Ok(())
+    }
+
     fn fail(&mut self, message: String) {
         self.connecting = false;
         let ui = self.window.global::<AppState>();
@@ -372,6 +503,14 @@ impl App {
         let was_mirroring = self.mirroring || self.connecting;   // a cancelled connect may have STARTed the helper
         self.mirroring = false;
         self.connecting = false;
+        if let Some(sess) = self.session.take() {
+            sess.stop();
+        }
+        self.session_events = None;
+        if let Some(w) = self.mirror_window.take() {
+            let _ = w.hide();
+        }
+        self.mirror_size = None;
         self.attempt += 1;                                         // orphans any in-flight START
         self.window.global::<AppState>().set_busy(false);
         let tunnel = self.tunnel.take();
@@ -413,9 +552,17 @@ impl App {
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
         }
-        if self.linked && self.settings.sync_clipboard {
+        self.poll_session();
+        if self.settings.sync_clipboard && (self.linked || self.mirroring) {
             if let Some(text) = self.clipboard.poll() {
-                if let Some(b) = &self.ble {
+                if self.last_synced.as_deref() == Some(text.as_str()) {
+                    // our own write coming back
+                } else if let Some(sess) = &self.session {
+                    // In a session the clipboard rides scrcpy's control socket: free.
+                    self.last_synced = Some(text.clone());
+                    sess.send(&scrcpy::clipboard(&text));
+                    self.log("clipboard", "sent to the phone (session)");
+                } else if let Some(b) = &self.ble {
                     match b.send(Kind::Clipboard, &text) {
                         Ok(()) => self.log("clipboard", "sent to the phone"),
                         Err(e) => self.log("clipboard", &format!("couldn't send: {e:#}")),
@@ -453,6 +600,55 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Frames, size changes, clipboard and the end of the stream.
+    fn poll_session(&mut self) {
+        let Some(rx) = self.session_events.as_ref() else { return };
+        let mut newest_frame = None;
+        let mut ended = None;
+        let mut others = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            match e {
+                SessionEvent::Frame(f) => newest_frame = Some(f), // drop older frames if we're behind
+                SessionEvent::Ended(why) => { ended = Some(why); break; }
+                other => others.push(other),
+            }
+        }
+        for e in others {
+            match e {
+                SessionEvent::Size(w, h) => {
+                    if let Some(cell) = &self.mirror_size {
+                        *cell.borrow_mut() = (w as u16, h as u16);
+                    }
+                    if let Some(win) = &self.mirror_window {
+                        win.set_video_width(w as f32);
+                        win.set_video_height(h as f32);
+                    }
+                }
+                SessionEvent::Clipboard(text) => {
+                    if self.settings.sync_clipboard && self.last_synced.as_deref() != Some(text.as_str()) {
+                        self.last_synced = Some(text.clone());
+                        self.clipboard.set(&text);
+                        self.log("clipboard", "from the phone (session)");
+                    }
+                }
+                SessionEvent::Log(line) => self.log("video", &line),
+                _ => {}
+            }
+        }
+        if let Some(f) = newest_frame {
+            if let Some(win) = &self.mirror_window {
+                let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(f.width, f.height);
+                buf.make_mut_bytes().copy_from_slice(&f.rgba);
+                win.set_frame(slint::Image::from_rgba8(buf));
+            }
+        }
+        if let Some(why) = ended {
+            self.log("", &format!("mirroring ended: {why}"));
+            self.disconnect();
+            self.refresh();
         }
     }
 
@@ -511,8 +707,14 @@ impl App {
                 self.window.global::<AppState>().set_busy(false);
                 match result {
                     Ok(reply) => {
-                        self.mirroring = true;
                         self.log("phone", &reply);
+                        if let Err(e) = self.open_session() {
+                            self.log("", &format!("couldn't start mirroring: {e:#}"));
+                            self.disconnect();
+                            self.fail(format!("{e:#}"));
+                            return;
+                        }
+                        self.mirroring = true;
                     }
                     Err(e) => {
                         self.log("", &format!("couldn't connect: {e}"));

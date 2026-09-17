@@ -338,3 +338,67 @@ export component SettingsWindow inherits Window {
         }
     }
 }
+
+
+// The phone's screen. Fills the window, keeps its aspect; every pointer and
+// key event goes to the phone as a scrcpy control message (see scrcpy.rs).
+export component MirrorWindow inherits Window {
+    title: "Phone";
+    background: black;
+    in-out property <image> frame;
+    in-out property <length> video-width: 360px;
+    in-out property <length> video-height: 780px;
+    preferred-width: video-width;
+    preferred-height: video-height;
+
+    // (x, y) in image pixels; kind: 0 down · 1 up · 2 move · 3 hover; button 0 left · 1 right
+    callback pointer(int, int, int, int);
+    callback scroll(int, int, float, float);
+    // text, modifiers: bit 0 ctrl · bit 1 shift · bit 2 alt; down
+    callback key(string, int, bool);
+
+    // The image is letterboxed inside the window; map window coordinates to pixels.
+    property <float> scale: min(root.width / root.video-width, root.height / root.video-height);
+    property <length> shown-w: root.video-width * scale;
+    property <length> shown-h: root.video-height * scale;
+    property <length> off-x: (root.width - shown-w) / 2;
+    property <length> off-y: (root.height - shown-h) / 2;
+    pure function px(x: length) -> int { return (x - off-x) / scale / 1px; }
+    pure function py(y: length) -> int { return (y - off-y) / scale / 1px; }
+
+    Image {
+        source: root.frame;
+        image-fit: contain;
+        width: 100%;
+        height: 100%;
+        image-rendering: smooth;
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            root.key(event.text, (event.modifiers.control ? 1 : 0) + (event.modifiers.shift ? 2 : 0) + (event.modifiers.alt ? 4 : 0), true);
+            accept
+        }
+        key-released(event) => {
+            root.key(event.text, (event.modifiers.control ? 1 : 0) + (event.modifiers.shift ? 2 : 0) + (event.modifiers.alt ? 4 : 0), false);
+            accept
+        }
+        TouchArea {
+            mouse-cursor: default;
+            pointer-event(e) => {
+                focus.focus();
+                if (e.kind == PointerEventKind.down) {
+                    root.pointer(px(self.mouse-x), py(self.mouse-y), 0, e.button == PointerEventButton.right ? 1 : 0);
+                } else if (e.kind == PointerEventKind.up) {
+                    root.pointer(px(self.mouse-x), py(self.mouse-y), 1, e.button == PointerEventButton.right ? 1 : 0);
+                } else if (e.kind == PointerEventKind.move) {
+                    root.pointer(px(self.mouse-x), py(self.mouse-y), self.pressed ? 2 : 3, 0);
+                }
+            }
+            scroll-event(e) => {
+                root.scroll(px(self.mouse-x), py(self.mouse-y), e.delta-x / 1px, e.delta-y / 1px);
+                accept
+            }
+        }
+    }
+}

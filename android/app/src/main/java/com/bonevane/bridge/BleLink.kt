@@ -419,6 +419,7 @@ class BleLink(private val context: Context) {
                     // over Bluetooth, which still works when the tunnel is the
                     // very thing that just died.
                     TunnelState.log("Mac ended the session (Bluetooth): ${DaemonManager.stop(context)}")
+                    TunnelService.settleTunnelAfterSession(context)
                     sendStatus()
                 }
                 // "keep on at=<millis>" carries a timestamp, so it can't match exactly.

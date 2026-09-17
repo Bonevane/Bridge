@@ -171,7 +171,12 @@ class ControlProxy(private val ctx: Context) {
             "START" -> runCatching { DaemonManager.start(ctx) }
                 .onSuccess { reply("OK daemon running") }
                 .onFailure { reply("ERR ${it.message}") }
-            "STOP" -> reply("OK " + DaemonManager.stop(ctx))
+            "STOP" -> {
+                reply("OK " + DaemonManager.stop(ctx))
+                // The reply just went over the tunnel; give it a moment to
+                // leave before the tunnel itself is switched off.
+                Thread { Thread.sleep(1500); TunnelService.settleTunnelAfterSession(ctx) }.start()
+            }
             "LOCKDOWN" -> reply("OK " + DaemonManager.stop(ctx, force = true))
             "PAUSE" -> {
                 val minutes = line.substringAfter(' ', "15").trim().toIntOrNull() ?: 15

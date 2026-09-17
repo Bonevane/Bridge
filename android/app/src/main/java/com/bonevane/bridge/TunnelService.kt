@@ -53,6 +53,18 @@ class TunnelService : Service() {
          * for a session (or to mint the ticket) without changing the mode the
          * user chose, so the phone lands back in Nearby afterwards.
          */
+        /**
+         * After a session: the tunnel only ran for it (setup, or the Mac woke
+         * it), so if the chosen mode is Nearby, switch it off again. The phone
+         * decides this, not the Mac: the Mac can't always tell who turned it on.
+         */
+        fun settleTunnelAfterSession(ctx: Context) {
+            if (!Prefs.tunnelEnabled(ctx) && TunnelState.tunnelOn) {
+                TunnelState.log("Session over: back to Nearby")
+                setTunnel(ctx, false, remember = false)
+            }
+        }
+
         fun setTunnel(ctx: Context, on: Boolean, remember: Boolean = true) {
             ctx.startForegroundService(
                 Intent(ctx, TunnelService::class.java)

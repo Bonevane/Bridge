@@ -184,5 +184,5 @@ See `NOTICE` for licenses.
 </div>
 
 <p align="center">
-  <sub>Made with <img src="https://api.iconify.design/lucide/heart.svg?color=%234F9CF9" width="12" height="12"> by Bonevane</sub>
+  <sub>Made with &nbsp;<img src="https://api.iconify.design/lucide/heart.svg?color=%234F9CF9" width="14" height="14" align="absmiddle">&nbsp; by Bonevane</sub>
 </p>

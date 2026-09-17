@@ -57,6 +57,11 @@ pub enum Event {
 struct Link {
     device: Option<BluetoothLEDevice>,
     rx: Option<GattCharacteristic>,
+    /// Kept alive on purpose: releasing the TX characteristic (or its
+    /// service) drops the ValueChanged subscription with it, and the phone's
+    /// notifications then arrive at nothing.
+    tx: Option<GattCharacteristic>,
+    service: Option<GattDeviceService>,
     inbox: Inbox,
     handshake: Handshake,
     verified: bool,
@@ -83,6 +88,8 @@ impl Ble {
             link: Arc::new(Mutex::new(Link {
                 device: None,
                 rx: None,
+                tx: None,
+                service: None,
                 inbox: Inbox::default(),
                 handshake: Handshake::new(secret),
                 verified: false,
@@ -172,6 +179,8 @@ impl Ble {
         let mut l = self.link.lock().unwrap();
         l.verified = false;
         l.rx = None;
+        l.tx = None;
+        l.service = None;
         l.device = None; // dropping the device object lets WinRT close the link
     }
 
@@ -247,6 +256,8 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     {
         let mut l = link.lock().unwrap();
         l.rx = Some(rx.clone());
+        l.tx = Some(tx.clone());
+        l.service = Some(service.clone());
         l.handshake = Handshake::new(secret);
         l.verified = false;
         l.crypto = None;
@@ -281,6 +292,8 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
                     if l.device.is_some() {
                         l.verified = false;
                         l.rx = None;
+                        l.tx = None;
+                        l.service = None;
                         l.device = None;
                         l.crypto = None;
                         crate::log!("bluetooth", "disconnected");
@@ -377,6 +390,9 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
     let mut l = link.lock().unwrap();
     l.last_heard = Instant::now();
     let Some((kind, raw)) = l.inbox.push_bytes(bytes) else { return };
+    if !l.verified {
+        crate::log!("bluetooth", "message from the phone: {kind:?}, {} bytes", raw.len());
+    }
 
     if kind == Kind::Auth {
         let text = String::from_utf8_lossy(&raw).into_owned();
@@ -398,6 +414,8 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
                 crate::log!("bluetooth", "the phone failed our challenge; dropping it");
                 l.device = None;
                 l.rx = None;
+                l.tx = None;
+                l.service = None;
             }
             Step::Ignore => {}
         }

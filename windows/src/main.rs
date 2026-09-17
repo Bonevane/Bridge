@@ -52,6 +52,9 @@ struct App {
     phone_paused: bool,
     tunnel: Option<tunnel::Tunnel>,
     mirroring: bool,
+    /// Which Connect this is. A result from an earlier, cancelled attempt is ignored.
+    attempt: u32,
+    connecting: bool,
     last_twins: Option<BTreeSet<String>>,
     last_tick: Instant,
     rescan_at: Option<Instant>,
@@ -76,6 +79,8 @@ impl App {
             phone_paused: false,
             tunnel: None,
             mirroring: false,
+            attempt: 0,
+            connecting: false,
             last_twins: None,
             last_tick: Instant::now(),
             rescan_at: None,
@@ -108,6 +113,8 @@ impl App {
 
         let (title, detail, tint) = if !self.creds.is_paired() {
             ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
+        } else if self.connecting {
+            ("Connecting", "Starting the tunnel and the phone's helper…", 2)
         } else if self.mirroring {
             ("Mirroring", "The phone's helper is running (video comes in the next milestone)", 1)
         } else if self.phone_paused {
@@ -300,9 +307,11 @@ impl App {
         if self.mirroring || self.tunnel.is_some() {
             return;
         }
+        self.attempt += 1;
+        let attempt = self.attempt;
+        self.connecting = true;
         self.window.global::<AppState>().set_busy(true);
-        self.window.global::<AppState>().set_reach_title("Connecting".into());
-        self.window.global::<AppState>().set_reach_detail("Starting the tunnel…".into());
+        self.refresh();
         let need_wake = self.linked && !self.phone_tunnel_on;
         if !self.linked {
             // We can't see the phone's state without Bluetooth; say what's needed
@@ -340,11 +349,12 @@ impl App {
                     Err(e) => crate::log!("phone", "START {attempt}/12: {e:#}"),
                 }
             }
-            let _ = events.send(Event::Connected(result));
+            let _ = events.send(Event::Connected(attempt, result));
         });
     }
 
     fn fail(&mut self, message: String) {
+        self.connecting = false;
         let ui = self.window.global::<AppState>();
         ui.set_busy(false);
         ui.set_reach_title("Couldn't connect".into());
@@ -359,8 +369,10 @@ impl App {
         if !self.mirroring && self.tunnel.is_none() {
             return;
         }
-        let was_mirroring = self.mirroring;
+        let was_mirroring = self.mirroring || self.connecting;   // a cancelled connect may have STARTed the helper
         self.mirroring = false;
+        self.connecting = false;
+        self.attempt += 1;                                         // orphans any in-flight START
         self.window.global::<AppState>().set_busy(false);
         let tunnel = self.tunnel.take();
         if was_mirroring && self.linked {
@@ -486,7 +498,16 @@ impl App {
                     self.reconcile_keep_ready(keep == "1", at);
                 }
             }
-            Event::Connected(result) => {
+            Event::Connected(attempt, result) => {
+                if attempt != self.attempt {
+                    // Cancelled while connecting. If it got through anyway, undo it.
+                    if result.is_ok() {
+                        self.log("phone", "a cancelled connect had started the helper; stopping it");
+                        if let Some(b) = &self.ble { let _ = b.send_command("session over"); }
+                    }
+                    return;
+                }
+                self.connecting = false;
                 self.window.global::<AppState>().set_busy(false);
                 match result {
                     Ok(reply) => {

@@ -46,6 +46,17 @@ class BleLink(private val context: Context) {
         val TX: UUID = UUID.fromString("b71d0002-5c8f-4b1e-9a3a-3f1f0a7c9e11")
         /** Mac → phone, by write. */
         val RX: UUID = UUID.fromString("b71d0003-5c8f-4b1e-9a3a-3f1f0a7c9e11")
+        /**
+         * The second door, for Windows: the same protocol over characteristics
+         * with *no* link-layer encryption requirement, so no Bluetooth bond is
+         * needed. Instead, once the handshake has passed, every message is
+         * AES-GCM encrypted with a key derived from the pairing secret and the
+         * two handshake nonces (see [Pairing.sessionKey]). Windows' bond store
+         * proved too unreliable with Android as a peripheral; the Mac keeps
+         * using the bonded pair above, unchanged.
+         */
+        val TX_PLAIN: UUID = UUID.fromString("b71d0004-5c8f-4b1e-9a3a-3f1f0a7c9e11")
+        val RX_PLAIN: UUID = UUID.fromString("b71d0005-5c8f-4b1e-9a3a-3f1f0a7c9e11")
         private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         const val TYPE_NOTIFICATION: Byte = 1
@@ -81,7 +92,12 @@ class BleLink(private val context: Context) {
     @Volatile private var sendingSince = 0L
 
     /** Reassembly buffer for messages coming from the Mac. */
-    private val inbox = StringBuilder()
+    private val inbox = java.io.ByteArrayOutputStream()
+    /** True while the current subscriber came in through the plain (Windows) door. */
+    @Volatile private var plainDoor = false
+    private var txPlain: BluetoothGattCharacteristic? = null
+    private var crypto: Pairing.SessionCrypto? = null
+    private var ourNonce: String? = null
 
     @Volatile var connected = false
         private set(value) { field = value; TunnelState.macLinked = value }
@@ -129,13 +145,27 @@ class BleLink(private val context: Context) {
             BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
             BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED,
         )
+        val characteristicTxPlain = BluetoothGattCharacteristic(
+            TX_PLAIN, BluetoothGattCharacteristic.PROPERTY_NOTIFY, BluetoothGattCharacteristic.PERMISSION_READ,
+        ).apply {
+            addDescriptor(BluetoothGattDescriptor(CCCD,
+                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE))
+        }
+        val characteristicRxPlain = BluetoothGattCharacteristic(
+            RX_PLAIN,
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+            BluetoothGattCharacteristic.PERMISSION_WRITE,
+        )
         val service = BluetoothGattService(SERVICE, BluetoothGattService.SERVICE_TYPE_PRIMARY).apply {
             addCharacteristic(characteristicTx)
             addCharacteristic(characteristicRx)
+            addCharacteristic(characteristicTxPlain)
+            addCharacteristic(characteristicRxPlain)
         }
 
         server = openServer(manager)?.also { it.addService(service) }
         tx = characteristicTx
+        txPlain = characteristicTxPlain
         advertise(adapter)
         NotificationRelay.subscribe(notificationListener)
         startHeartbeat()
@@ -219,7 +249,8 @@ class BleLink(private val context: Context) {
     fun send(type: Byte, text: String) {
         if (subscribers.isEmpty()) return
         if (!verified && type != TYPE_AUTH) return      // strangers hear only the challenge
-        val bytes = text.toByteArray()
+        // Through the plain door, everything after the handshake is ciphertext.
+        val bytes = crypto?.takeIf { verified }?.seal(text.toByteArray()) ?: text.toByteArray()
         val room = mtuPayload - 2      // type + "more" flag
         synchronized(outbox) {
             if (bytes.isEmpty()) outbox.add(byteArrayOf(type, 0))
@@ -248,7 +279,7 @@ class BleLink(private val context: Context) {
         if (!sending.compareAndSet(false, true)) return
         sendingSince = System.currentTimeMillis()
         val chunk = synchronized(outbox) { outbox.poll() }
-        val characteristic = tx
+        val characteristic = if (plainDoor) txPlain else tx
         if (chunk == null || characteristic == null) { sending.set(false); return }
         val device = subscribers.firstOrNull()
         if (device == null) { sending.set(false); return }
@@ -307,6 +338,7 @@ class BleLink(private val context: Context) {
                     subscribers.remove(device)
                     verified = false
                     connected = false
+                    crypto = null
                     // Anything queued was for a Mac that's gone; start clean.
                     synchronized(outbox) { outbox.clear() }
                     sending.set(false)
@@ -321,10 +353,13 @@ class BleLink(private val context: Context) {
                 // The Mac subscribing (or unsubscribing) to notifications.
                 if (descriptor.uuid == CCCD) {
                     val on = value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                    // Encryption on the descriptor is enforced by the stack; the
+                    val plain = descriptor.characteristic.uuid == TX_PLAIN
+                    if (on) { plainDoor = plain; crypto = null }
+                    // Through the bonded door the stack enforces encryption; the
                     // bond is checked here as well, because an encrypted-but-
-                    // unbonded link is possible with some pairing modes.
-                    if (on && device.bondState != BluetoothDevice.BOND_BONDED) {
+                    // unbonded link is possible with some pairing modes. The
+                    // plain door needs no bond: the handshake and AES-GCM do it.
+                    if (on && !plain && device.bondState != BluetoothDevice.BOND_BONDED) {
                         TunnelState.log("Bluetooth: refused an unpaired device")
                         if (responseNeeded) server?.sendResponse(device, requestId,
                             BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION, 0, null)
@@ -342,9 +377,11 @@ class BleLink(private val context: Context) {
                         // re-dialled after bonding, and a controller can't accept
                         // a connection while it's initiating one.
                         pinConnectionParameters(device)
-                        TunnelState.log("Bluetooth: a paired device subscribed; challenging it")
+                        TunnelState.log(if (plain) "Bluetooth: a device subscribed (plain door); challenging it"
+                                        else "Bluetooth: a paired device subscribed; challenging it")
                         val nonce = Pairing.nonce()
                         pendingNonce = nonce
+                        ourNonce = nonce
                         send(TYPE_AUTH, "challenge $nonce")
                     } else {
                         TunnelState.log("Bluetooth: Mac left")
@@ -360,7 +397,7 @@ class BleLink(private val context: Context) {
                 device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
                 preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
             ) {
-                if (characteristic.uuid == RX) receive(value)
+                if (characteristic.uuid == RX || characteristic.uuid == RX_PLAIN) receive(value)
                 if (responseNeeded) {
                     server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                 }
@@ -381,10 +418,15 @@ class BleLink(private val context: Context) {
         if (chunk.size < 2) return
         val type = chunk[0]
         val more = chunk[1] == 1.toByte()
-        inbox.append(String(chunk, 2, chunk.size - 2))
+        inbox.write(chunk, 2, chunk.size - 2)
         if (more) return
-        val message = inbox.toString()
-        inbox.setLength(0)
+        val raw = inbox.toByteArray()
+        inbox.reset()
+        val message = if (verified && crypto != null) {
+            val plain = crypto?.open(raw)
+            if (plain == null) { TunnelState.log("Bluetooth: dropped a message that didn't decrypt"); return }
+            String(plain)
+        } else String(raw)
         if (!verified) {
             // Only the answer to our challenge gets through: "auth <hmac> <their nonce>".
             val words = message.trim().split(' ')
@@ -393,11 +435,14 @@ class BleLink(private val context: Context) {
                 Pairing.hmacMatches(Prefs.pairSecret(context), nonce, words[1])
             ) {
                 pendingNonce = null
+                // Prove ourselves back *before* switching on the cipher: the
+                // "ok" is the last plaintext message. On the plain door the
+                // session key comes from the secret and both nonces.
+                send(TYPE_AUTH, "ok " + Pairing.hmac(Prefs.pairSecret(context), words[2]))
+                if (plainDoor) crypto = Pairing.SessionCrypto(Prefs.pairSecret(context), nonce, words[2], phoneSide = true)
                 verified = true
                 connected = true
-                TunnelState.log("Bluetooth: Mac verified")
-                // Prove ourselves back, then the usual first status report.
-                send(TYPE_AUTH, "ok " + Pairing.hmac(Prefs.pairSecret(context), words[2]))
+                TunnelState.log(if (plainDoor) "Bluetooth: PC verified (encrypted session)" else "Bluetooth: Mac verified")
                 TunnelState.macSeen()
                 sendStatus()
             } else {

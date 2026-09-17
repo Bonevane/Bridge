@@ -29,6 +29,8 @@ windows = { version = "0.58", features = [
 # The pairing handshake (HMAC-SHA256), same as the phone and the Mac.
 hmac = "0.12"
 sha2 = "0.10"
+# App-layer encryption on the plain Bluetooth door (no bond needed).
+aes-gcm = "0.10"
 hex = "0.4"
 rand = "0.8"
 # Tray icon and its menu.

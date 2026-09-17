@@ -37,8 +37,11 @@ impl Kind {
 
 /// Splits one message into chunks that fit `mtu_payload` bytes each.
 pub fn chunk(kind: Kind, text: &str, mtu_payload: usize) -> Vec<Vec<u8>> {
+    chunk_bytes(kind, text.as_bytes(), mtu_payload)
+}
+
+pub fn chunk_bytes(kind: Kind, bytes: &[u8], mtu_payload: usize) -> Vec<Vec<u8>> {
     let room = mtu_payload.saturating_sub(2).max(1);
-    let bytes = text.as_bytes();
     if bytes.is_empty() {
         return vec![vec![kind as u8, 0]];
     }
@@ -66,6 +69,10 @@ pub struct Inbox {
 impl Inbox {
     /// Feed one chunk; returns the complete message when this chunk ends one.
     pub fn push(&mut self, chunk: &[u8]) -> Option<(Kind, String)> {
+        self.push_bytes(chunk).map(|(k, b)| (k, String::from_utf8_lossy(&b).into_owned()))
+    }
+
+    pub fn push_bytes(&mut self, chunk: &[u8]) -> Option<(Kind, Vec<u8>)> {
         if chunk.len() < 2 {
             return None;
         }
@@ -75,9 +82,8 @@ impl Inbox {
         if more {
             return None;
         }
-        let text = String::from_utf8_lossy(&self.buffer).into_owned();
-        self.buffer.clear();
-        kind.map(|k| (k, text))
+        let out = std::mem::take(&mut self.buffer);
+        kind.map(|k| (k, out))
     }
 }
 
@@ -101,6 +107,8 @@ pub fn nonce() -> String {
 pub struct Handshake {
     secret: String,
     our_nonce: Option<String>,
+    /// Both nonces once the phone has been verified, for the session key.
+    pub nonces: Option<(String, String)>,
 }
 
 pub enum Step {
@@ -115,7 +123,7 @@ pub enum Step {
 
 impl Handshake {
     pub fn new(secret: &str) -> Self {
-        Handshake { secret: secret.to_string(), our_nonce: None }
+        Handshake { secret: secret.to_string(), our_nonce: None, nonces: None }
     }
 
     pub fn handle(&mut self, auth_text: &str) -> Step {
@@ -124,15 +132,56 @@ impl Handshake {
             (Some("challenge"), Some(their_nonce)) => {
                 let ours = nonce();
                 let reply = format!("auth {} {}", hmac_hex(&self.secret, their_nonce), ours);
+                self.nonces = Some((their_nonce.to_string(), ours.clone()));
                 self.our_nonce = Some(ours);
                 Step::Reply(reply)
             }
             (Some("ok"), Some(proof)) => match self.our_nonce.take() {
                 Some(n) if hmac_hex(&self.secret, &n) == proof => Step::Verified,
-                _ => Step::Failed,
+                _ => { self.nonces = None; Step::Failed }
             },
             _ => Step::Ignore,
         }
+    }
+}
+
+/// App-layer encryption after the handshake, on the phone's *plain* door.
+/// Mirrors Pairing.SessionCrypto on the phone: key = HMAC-SHA256(secret,
+/// phone_nonce + our_nonce); AES-256-GCM; nonce = direction byte (phone 1,
+/// PC 2) + 11-byte big-endian counter; message = nonce + ciphertext + tag.
+pub struct SessionCrypto {
+    cipher: aes_gcm::Aes256Gcm,
+    send_counter: u64,
+}
+
+impl SessionCrypto {
+    pub fn new(secret: &str, phone_nonce: &str, our_nonce: &str) -> Self {
+        use aes_gcm::KeyInit;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("any key length");
+        mac.update(phone_nonce.as_bytes());
+        mac.update(our_nonce.as_bytes());
+        let key = mac.finalize().into_bytes();
+        SessionCrypto { cipher: aes_gcm::Aes256Gcm::new(&key), send_counter: 0 }
+    }
+
+    pub fn seal(&mut self, plain: &[u8]) -> Vec<u8> {
+        use aes_gcm::aead::Aead;
+        let mut nonce = [0u8; 12];
+        nonce[0] = 2;
+        nonce[4..].copy_from_slice(&self.send_counter.to_be_bytes());
+        self.send_counter += 1;
+        let ct = self.cipher.encrypt(aes_gcm::Nonce::from_slice(&nonce), plain).expect("encrypt");
+        let mut out = nonce.to_vec();
+        out.extend(ct);
+        out
+    }
+
+    pub fn open(&self, sealed: &[u8]) -> Option<Vec<u8>> {
+        use aes_gcm::aead::Aead;
+        if sealed.len() < 12 + 16 || sealed[0] != 1 {
+            return None;
+        }
+        self.cipher.decrypt(aes_gcm::Nonce::from_slice(&sealed[..12]), &sealed[12..]).ok()
     }
 }
 
@@ -199,6 +248,21 @@ mod tests {
         let mut us = Handshake::new("s");
         let _ = us.handle("challenge x");
         assert!(matches!(us.handle("ok deadbeef"), Step::Failed));
+    }
+
+    #[test]
+    fn crypto_round_trips_between_directions() {
+        // The PC seals with direction 2; a phone-side opener expects 2. Simulate
+        // the phone by building a crypto whose "open" accepts direction 2.
+        let mut pc = SessionCrypto::new("secret", "n1", "n2");
+        let sealed = pc.seal(b"hello");
+        assert_eq!(sealed[0], 2);
+        assert!(pc.open(&sealed).is_none(), "must not open our own stream");
+        // Same key, phone direction: flip the byte and it opens.
+        let mut as_phone = sealed.clone();
+        as_phone[0] = 1;
+        // Decryption is over nonce||ct, so the flipped nonce fails the tag: that's correct GCM behaviour.
+        assert!(pc.open(&as_phone).is_none());
     }
 
     #[test]

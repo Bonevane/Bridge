@@ -15,7 +15,7 @@
 //!    needs the link, and drops it when nothing holds the device object.
 //!    We keep the `BluetoothLEDevice` alive for the life of the link.
 
-use crate::protocol::{self, Handshake, Inbox, Kind, Step};
+use crate::protocol::{self, Handshake, Inbox, Kind, SessionCrypto, Step};
 use anyhow::{anyhow, bail, Context, Result};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -26,18 +26,21 @@ use windows::Devices::Bluetooth::Advertisement::{
 };
 use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
-    GattDeviceService, GattOpenStatus, GattProtectionLevel, GattSharingMode, GattValueChangedEventArgs,
-    GattWriteOption,
+    GattDeviceService, GattOpenStatus, GattSharingMode, GattValueChangedEventArgs, GattWriteOption,
 };
 use windows::Devices::Bluetooth::{BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
-use windows::Devices::Enumeration::{DeviceInformation, DevicePairingKinds, DevicePairingRequestedEventArgs, DevicePairingResultStatus};
+use windows::Devices::Enumeration::DeviceInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter};
 
 // Same UUIDs as BleLink.kt.
 const SERVICE: GUID = GUID::from_u128(0xb71d0001_5c8f_4b1e_9a3a_3f1f0a7c9e11);
-const TX: GUID = GUID::from_u128(0xb71d0002_5c8f_4b1e_9a3a_3f1f0a7c9e11);
-const RX: GUID = GUID::from_u128(0xb71d0003_5c8f_4b1e_9a3a_3f1f0a7c9e11);
+// The phone's *plain* door (see BleLink.kt): no bond, no link-layer
+// encryption requirement; the session is AES-GCM encrypted at our layer once
+// the handshake has passed. Windows' bond store was not reliable enough with
+// Android as a peripheral to depend on.
+const TX: GUID = GUID::from_u128(0xb71d0004_5c8f_4b1e_9a3a_3f1f0a7c9e11);
+const RX: GUID = GUID::from_u128(0xb71d0005_5c8f_4b1e_9a3a_3f1f0a7c9e11);
 
 /// What the link tells the rest of the app.
 #[derive(Debug)]
@@ -59,6 +62,7 @@ struct Link {
     verified: bool,
     last_heard: Instant,
     mtu_payload: usize,
+    crypto: Option<SessionCrypto>,
 }
 
 /// One connect attempt at a time: a rescan mid-attempt used to start a second.
@@ -84,6 +88,7 @@ impl Ble {
                 verified: false,
                 last_heard: Instant::now(),
                 mtu_payload: 20,
+                crypto: None,
             })),
             watcher: None,
         }
@@ -185,11 +190,15 @@ impl Ble {
     }
 
     pub fn send(&self, kind: Kind, text: &str) -> Result<()> {
-        let l = self.link.lock().unwrap();
+        let mut l = self.link.lock().unwrap();
         if !l.verified && kind != Kind::Command {
             bail!("not linked");
         }
-        write_chunks(&l, kind, text)
+        let payload = match l.crypto.as_mut() {
+            Some(c) if l.verified => c.seal(text.as_bytes()),
+            _ => text.as_bytes().to_vec(),
+        };
+        write_chunks(&l, kind, &payload)
     }
 
     pub fn send_command(&self, text: &str) -> Result<()> {
@@ -197,9 +206,9 @@ impl Ble {
     }
 }
 
-fn write_chunks(l: &Link, kind: Kind, text: &str) -> Result<()> {
+fn write_chunks(l: &Link, kind: Kind, payload: &[u8]) -> Result<()> {
     let rx = l.rx.as_ref().ok_or_else(|| anyhow!("no RX characteristic"))?;
-    for chunk in protocol::chunk(kind, text, l.mtu_payload) {
+    for chunk in protocol::chunk_bytes(kind, payload, l.mtu_payload) {
         let writer = DataWriter::new()?;
         writer.WriteBytes(&chunk)?;
         let buffer = writer.DetachBuffer()?;
@@ -215,40 +224,16 @@ fn write_chunks(l: &Link, kind: Kind, text: &str) -> Result<()> {
 /// characteristics → subscribe. The handshake then runs in the ValueChanged
 /// callback.
 fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Event>) -> Result<()> {
-    let advertised = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get().context("opening the device")?;
-    let name = advertised.Name()?.to_string_lossy();
-    let is_paired = advertised.DeviceInformation()?.Pairing()?.IsPaired()?;
+    let device = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get().context("opening the device")?;
+    let name = device.Name()?.to_string_lossy();
+    let is_paired = device.DeviceInformation()?.Pairing()?.IsPaired()?;
     crate::log!("bluetooth", "found {name} (paired={is_paired})");
-
-    // Once bonded, the phone must be reached through its *paired device
-    // record*, not through the random address it advertises: Windows connects
-    // to the bonded identity, and a device object made from the advertised
-    // address reports "Connected" while its ATT requests go nowhere.
-    let device = if is_paired {
-        match paired_record(&name)? {
-            Some(d) => {
-                crate::log!("bluetooth", "using the paired record {} ({:?})", d.DeviceId()?.to_string_lossy(), d.BluetoothAddressType()?);
-                d
-            }
-            None => {
-                crate::log!("bluetooth", "no paired record by that name; using the advertised address");
-                advertised
-            }
-        }
-    } else {
-        advertised
-    };
-    let pairing = device.DeviceInformation()?.Pairing()?;
     if is_paired {
-        // What kind of bond Windows holds. An LE bond made with a passkey
-        // reports EncryptionAndAuthentication; a classic-only bond shows up
-        // differently here, which would explain encryption never coming up.
-        crate::log!("bluetooth", "bond protection level: {:?}", pairing.ProtectionLevel()?);
+        // Not needed any more, and Windows behaves worse with one: the bonded
+        // link came up "Connected" with no working ATT. Say so once.
+        crate::log!("bluetooth", "note: the phone is bonded in Windows settings; Bridge no longer needs that, and removing it avoids trouble");
     }
 
-    // Discovery first, on whatever link we have. It needs no encryption, and
-    // doing it *after* bonding hit a Windows quirk where the post-bond link
-    // came up "Connected" but every ATT request timed out.
     let service = find_service(&device)?;
     let open = service.OpenAsync(GattSharingMode::SharedReadAndWrite)?.get()?;
     if open != GattOpenStatus::Success && open != GattOpenStatus::AlreadyOpened {
@@ -258,50 +243,12 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     let rx = characteristic(&service, RX)?;
     crate::log!("bluetooth", "service and characteristics found");
 
-    // Bond if we haven't, on this same link. The phone's characteristics are
-    // encrypted, so an unbonded link gets nothing past this point.
-    if !pairing.IsPaired()? {
-        crate::log!("bluetooth", "pairing: confirm the code on the phone");
-        let custom = pairing.Custom()?;
-        custom.PairingRequested(&TypedEventHandler::new(
-            |_: &Option<windows::Devices::Enumeration::DeviceInformationCustomPairing>,
-             args: &Option<DevicePairingRequestedEventArgs>| {
-                if let Some(args) = args {
-                    if let Ok(pin) = args.Pin() {
-                        let pin = pin.to_string_lossy();
-                        if !pin.is_empty() {
-                            crate::log!("bluetooth", "pairing code {pin}");
-                        }
-                    }
-                    args.Accept()?;
-                }
-                Ok(())
-            },
-        ))?;
-        let result = custom
-            .PairAsync(DevicePairingKinds::ConfirmOnly | DevicePairingKinds::ConfirmPinMatch | DevicePairingKinds::DisplayPin)?
-            .get()?;
-        let status = result.Status()?;
-        if status != DevicePairingResultStatus::Paired && status != DevicePairingResultStatus::AlreadyPaired {
-            bail!("pairing failed: {:?}", status);
-        }
-        crate::log!("bluetooth", "paired");
-    }
-
-    // Encryption on the characteristics, so the subscribe goes over an
-    // encrypted link. *Encryption*, not "and authentication": the phone's
-    // descriptor asks for an encrypted link only, and asking Windows for an
-    // authenticated one makes it refuse to use an unauthenticated bond at
-    // all, so encryption never came up and the phone answered
-    // "insufficient authentication" (ATT error 5) to every subscribe.
-    tx.SetProtectionLevel(GattProtectionLevel::EncryptionRequired)?;
-    rx.SetProtectionLevel(GattProtectionLevel::EncryptionRequired)?;
-
     {
         let mut l = link.lock().unwrap();
         l.rx = Some(rx.clone());
         l.handshake = Handshake::new(secret);
         l.verified = false;
+        l.crypto = None;
         l.last_heard = Instant::now();
         l.mtu_payload = 20; // conservative; the phone's chunking allows for it
     }
@@ -309,6 +256,7 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     // Incoming chunks arrive here.
     let link_cb = link.clone();
     let events_cb = events.clone();
+    let secret_cb = secret.to_string();
     tx.ValueChanged(&TypedEventHandler::new(
         move |_: &Option<GattCharacteristic>, args: &Option<GattValueChangedEventArgs>| {
             let Some(args) = args else { return Ok(()) };
@@ -316,7 +264,7 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
             let reader = DataReader::FromBuffer(&buffer)?;
             let mut bytes = vec![0u8; buffer.Length()? as usize];
             reader.ReadBytes(&mut bytes)?;
-            receive(&bytes, &link_cb, &events_cb);
+            receive(&bytes, &link_cb, &events_cb, &secret_cb);
             Ok(())
         },
     ))?;
@@ -333,6 +281,7 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
                         l.verified = false;
                         l.rx = None;
                         l.device = None;
+                        l.crypto = None;
                         crate::log!("bluetooth", "disconnected");
                         let _ = events_cs.send(Event::Dropped("disconnected".into()));
                     }
@@ -342,23 +291,9 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         },
     ))?;
 
-    // Bring the encryption up before the subscribe: a read of the encrypted
-    // characteristic makes Windows start it (it won't for a descriptor write
-    // on some stacks, which then fails as "write not permitted").
-    for attempt in 1..=5 {
-        let r = rx.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?.get()?;
-        let st = r.Status()?;
-        crate::log!("bluetooth", "link probe {attempt}/5: {st:?} (connection {:?})", device.ConnectionStatus()?);
-        if st == GattCommunicationStatus::Success || st == GattCommunicationStatus::ProtocolError {
-            break; // ProtocolError = the phone answered (it forbids reads of RX): the link is up
-        }
-        std::thread::sleep(Duration::from_millis(2000));
-    }
-
-    // Subscribe. The high-level helper first; if it errors, write the CCCD
-    // descriptor (0x2902) by hand, which more stacks accept.
+    // Subscribe: the helper first; if it errors, the descriptor by hand.
     let mut subscribed = false;
-    for attempt in 1..=6 {
+    for attempt in 1..=4 {
         let status = match tx.WriteClientCharacteristicConfigurationDescriptorAsync(
             GattClientCharacteristicConfigurationDescriptorValue::Notify,
         ) {
@@ -369,14 +304,12 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
             subscribed = true;
             break;
         }
-        crate::log!("bluetooth", "subscribe {attempt}/6 via helper: {status}; trying the descriptor directly");
-        if let Ok(direct) = subscribe_direct(&tx) {
-            if direct {
-                subscribed = true;
-                break;
-            }
+        crate::log!("bluetooth", "subscribe {attempt}/4 via helper: {status}; trying the descriptor directly");
+        if let Ok(true) = subscribe_direct(&tx) {
+            subscribed = true;
+            break;
         }
-        std::thread::sleep(Duration::from_millis(2000));
+        std::thread::sleep(Duration::from_millis(1500));
     }
     if !subscribed {
         bail!("subscribe failed");
@@ -401,26 +334,6 @@ fn subscribe_direct(tx: &GattCharacteristic) -> Result<bool> {
     let st = result.Status()?;
     crate::log!("bluetooth", "direct CCCD write: {st:?} (protocol error {:?})", result.ProtocolError().ok().and_then(|p| p.Value().ok()));
     Ok(st == GattCommunicationStatus::Success)
-}
-
-/// The bonded record for a phone with this name, from Windows' paired-device list.
-fn paired_record(name: &str) -> Result<Option<BluetoothLEDevice>> {
-    let selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true)?;
-    let infos = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.get()?;
-    let mut fallback = None;
-    for i in 0..infos.Size()? {
-        let info = infos.GetAt(i)?;
-        let Ok(d) = BluetoothLEDevice::FromIdAsync(&info.Id()?).and_then(|op| op.get()) else { continue };
-        let n = d.Name()?.to_string_lossy();
-        crate::log!("bluetooth", "paired record: {n} ({:?})", d.BluetoothAddressType()?);
-        if n == name {
-            return Ok(Some(d));
-        }
-        if fallback.is_none() && infos.Size()? == 1 {
-            fallback = Some(d);
-        }
-    }
-    Ok(fallback)
 }
 
 /// The Bridge service, with a few retries: the first query on a fresh link
@@ -459,21 +372,25 @@ fn characteristic(service: &GattDeviceService, uuid: GUID) -> Result<GattCharact
 }
 
 /// One chunk in from the phone.
-fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>) {
+fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret: &str) {
     let mut l = link.lock().unwrap();
     l.last_heard = Instant::now();
-    let Some((kind, text)) = l.inbox.push(bytes) else { return };
+    let Some((kind, raw)) = l.inbox.push_bytes(bytes) else { return };
 
     if kind == Kind::Auth {
+        let text = String::from_utf8_lossy(&raw).into_owned();
         match l.handshake.handle(&text) {
             Step::Reply(r) => {
-                if let Err(e) = write_chunks(&l, Kind::Command, &r) {
+                if let Err(e) = write_chunks(&l, Kind::Command, r.as_bytes()) {
                     crate::log!("bluetooth", "couldn't answer the challenge: {e:#}");
                 }
             }
             Step::Verified => {
+                if let Some((phone_nonce, our_nonce)) = l.handshake.nonces.clone() {
+                    l.crypto = Some(SessionCrypto::new(secret, &phone_nonce, &our_nonce));
+                }
                 l.verified = true;
-                crate::log!("bluetooth", "linked to the phone (verified)");
+                crate::log!("bluetooth", "linked to the phone (verified, encrypted session)");
                 let _ = events.send(Event::Linked);
             }
             Step::Failed => {
@@ -488,6 +405,16 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>) {
     if !l.verified {
         return; // nothing from an unverified phone counts
     }
+    let text = match l.crypto.as_ref() {
+        Some(c) => match c.open(&raw) {
+            Some(p) => String::from_utf8_lossy(&p).into_owned(),
+            None => {
+                crate::log!("bluetooth", "dropped a message that didn't decrypt");
+                return;
+            }
+        },
+        None => String::from_utf8_lossy(&raw).into_owned(),
+    };
     match kind {
         Kind::Notification => {
             if let Some((app, title, body)) = protocol::parse_notification(&text) {

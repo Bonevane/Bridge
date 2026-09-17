@@ -217,12 +217,41 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         crate::log!("bluetooth", "paired");
     }
 
+    // The handle we opened belongs to the *random* address the phone was
+    // advertising. Bonding resolves it to the phone's real identity, and the
+    // old handle then reports Unreachable for everything. Re-open by the
+    // stable device ID, which survives that switch, and give the stack a
+    // moment to reconnect.
+    let id = device.DeviceId()?;
+    drop(device);
+    let device = {
+        let mut last = None;
+        let mut opened = None;
+        for attempt in 1..=10 {
+            std::thread::sleep(Duration::from_millis(if attempt == 1 { 500 } else { 1500 }));
+            match BluetoothLEDevice::FromIdAsync(&id).and_then(|op| op.get()) {
+                Ok(d) => { opened = Some(d); break; }
+                Err(e) => last = Some(e),
+            }
+        }
+        opened.ok_or_else(|| anyhow!("couldn't reopen the phone after pairing: {last:?}"))?
+    };
+
     // Uncached: Windows keeps a copy of the phone's GATT table from earlier
     // pairings and happily returns it, characteristics missing and all.
-    let services = device.GetGattServicesForUuidWithCacheModeAsync(SERVICE, BluetoothCacheMode::Uncached)?.get()?;
-    if services.Status()? != GattCommunicationStatus::Success || services.Services()?.Size()? == 0 {
-        bail!("Bridge service not found on the phone (status {:?})", services.Status()?);
+    // Unreachable right after (re)connecting is normal for a few seconds.
+    let mut services = None;
+    for attempt in 1..=8 {
+        let r = device.GetGattServicesForUuidWithCacheModeAsync(SERVICE, BluetoothCacheMode::Uncached)?.get()?;
+        let status = r.Status()?;
+        if status == GattCommunicationStatus::Success && r.Services()?.Size()? > 0 {
+            services = Some(r);
+            break;
+        }
+        crate::log!("bluetooth", "service query {attempt}/8: {status:?}");
+        std::thread::sleep(Duration::from_millis(1500));
     }
+    let services = services.ok_or_else(|| anyhow!("Bridge service not found on the phone"))?;
     let service = services.Services()?.GetAt(0)?;
     // The service has to be opened before its (encrypted) characteristics
     // can be read; without this the query comes back empty.

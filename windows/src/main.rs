@@ -383,12 +383,32 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         let tx_close = tx.clone();
-        let session = session::Session::start(&self.creds.secret, &options, tx)?;
+        let window = MirrorWindow::new()?;
+        // Frames land on the UI thread straight from the video thread. If the
+        // UI hasn't drawn the last one yet, the newer frame replaces it: we
+        // want the latest picture, not every picture.
+        let pending: std::sync::Arc<std::sync::Mutex<Option<video::Frame>>> = Default::default();
+        let sink_pending = pending.clone();
+        let sink_window = window.as_weak();
+        let frames: session::FrameSink = std::sync::Arc::new(move |f: video::Frame| {
+            let was_empty = { let mut p = sink_pending.lock().unwrap(); let e = p.is_none(); *p = Some(f); e };
+            if !was_empty {
+                return; // a draw is already queued; it will pick up this newer frame
+            }
+            let pending = sink_pending.clone();
+            let _ = sink_window.upgrade_in_event_loop(move |win| {
+                if let Some(f) = pending.lock().unwrap().take() {
+                    let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(f.width, f.height);
+                    buf.make_mut_bytes().copy_from_slice(&f.rgba);
+                    win.set_frame(slint::Image::from_rgba8(buf));
+                }
+            });
+        });
+        let session = session::Session::start(&self.creds.secret, &options, tx, frames)?;
         if st.turn_screen_off {
             session.send(&scrcpy::display_power(false));
         }
 
-        let window = MirrorWindow::new()?;
         // Input → scrcpy control messages. The window reports image-pixel
         // coordinates; the phone wants them relative to the video size it sent.
         let s = Rc::new(RefCell::new(None::<std::sync::Arc<session::Session>>));
@@ -606,12 +626,10 @@ impl App {
     /// Frames, size changes, clipboard and the end of the stream.
     fn poll_session(&mut self) {
         let Some(rx) = self.session_events.as_ref() else { return };
-        let mut newest_frame = None;
         let mut ended = None;
         let mut others = Vec::new();
         while let Ok(e) = rx.try_recv() {
             match e {
-                SessionEvent::Frame(f) => newest_frame = Some(f), // drop older frames if we're behind
                 SessionEvent::Ended(why) => { ended = Some(why); break; }
                 other => others.push(other),
             }
@@ -636,13 +654,6 @@ impl App {
                 }
                 SessionEvent::Log(line) => self.log("video", &line),
                 _ => {}
-            }
-        }
-        if let Some(f) = newest_frame {
-            if let Some(win) = &self.mirror_window {
-                let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(f.width, f.height);
-                buf.make_mut_bytes().copy_from_slice(&f.rgba);
-                win.set_frame(slint::Image::from_rgba8(buf));
             }
         }
         if let Some(why) = ended {

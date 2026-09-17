@@ -346,10 +346,11 @@ export component MirrorWindow inherits Window {
     title: "Phone";
     background: black;
     in-out property <image> frame;
-    in-out property <length> video-width: 360px;
-    in-out property <length> video-height: 780px;
-    preferred-width: video-width;
-    preferred-height: video-height;
+    in-out property <length> video-width: 1080px;
+    in-out property <length> video-height: 2400px;
+    // Open at a size that fits a laptop screen, keeping the phone's aspect.
+    preferred-height: 820px;
+    preferred-width: 820px * video-width / video-height;
 
     // (x, y) in image pixels; kind: 0 down · 1 up · 2 move · 3 hover; button 0 left · 1 right
     callback pointer(int, int, int, int);

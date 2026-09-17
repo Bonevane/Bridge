@@ -11,10 +11,11 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Where decoded frames go: called on the video thread, as fast as they come.
+pub type FrameSink = Arc<dyn Fn(video::Frame) + Send + Sync>;
+
 /// What the session tells the UI.
 pub enum SessionEvent {
-    /// A decoded frame. Only the newest is kept if the UI is behind.
-    Frame(video::Frame),
     /// Video size from the server's session meta.
     Size(u32, u32),
     /// The phone's clipboard changed.
@@ -25,6 +26,7 @@ pub enum SessionEvent {
 }
 
 struct Shared {
+    frames: FrameSink,
     control: Mutex<Option<Stream>>,
     stopped: AtomicBool,
     restarting: AtomicBool,
@@ -42,7 +44,7 @@ pub struct Session {
 
 impl Session {
     /// Opens the streams; `options` are scrcpy server options (video_bit_rate managed here).
-    pub fn start(secret: &str, options: &str, events: Sender<SessionEvent>) -> Result<Session> {
+    pub fn start(secret: &str, options: &str, events: Sender<SessionEvent>, frames: FrameSink) -> Result<Session> {
         let base: Vec<&str> = options.split(' ').filter(|o| !o.starts_with("video_bit_rate=")).collect();
         let target = options
             .split(' ')
@@ -50,6 +52,7 @@ impl Session {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(4_000_000);
         let shared = Arc::new(Shared {
+            frames,
             control: Mutex::new(None),
             stopped: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
@@ -95,12 +98,14 @@ fn current_options(s: &Shared) -> String {
 
 fn open(shared: &Arc<Shared>) -> Result<()> {
     let options = current_options(shared);
-    let mut v = Stream::open(&shared.secret, Duration::from_secs(30))?;
+    // Long timeouts on the media streams: a phone showing a static screen
+    // sends no frames at all, and a dead tunnel shows up as a reset anyway.
+    let mut v = Stream::open(&shared.secret, Duration::from_secs(600))?;
     v.write_all(format!("VIDEO {options}\n").as_bytes())?;
     let reply = v.read_line()?;
     let scid = reply.strip_prefix("OK scid=").ok_or_else(|| anyhow!("phone: {reply}"))?.to_string();
 
-    let mut a = Stream::open(&shared.secret, Duration::from_secs(30))?;
+    let mut a = Stream::open(&shared.secret, Duration::from_secs(600))?;
     a.write_all(format!("AUDIO {scid}\n").as_bytes())?;
     let areply = a.read_line()?;
     if !areply.starts_with("OK") {
@@ -193,7 +198,7 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
             match decoder.handle(&data, is_config, is_key, pts) {
                 Ok(frames) => {
                     for f in frames {
-                        let _ = shared.events.send(SessionEvent::Frame(f));
+                        (shared.frames)(f);
                     }
                 }
                 Err(e) => {

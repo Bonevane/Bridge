@@ -26,17 +26,23 @@ Remote-controlling a phone you own is strangely hard. The tools exist, but each 
 
 <table width="100%">
   <tr>
-    <td width="33%" valign="top">
+    <td width="33%" valign="top" align="center">
+      <br>
       <h3 align="center"><img src="https://api.iconify.design/lucide/cable.svg?color=%234F9CF9" width="18" height="18">&nbsp; Tethered to ADB</h3>
       <p align="center">scrcpy is excellent, but it needs a cable or the same Wi-Fi, and a port that changes on every reboot.</p>
+      <br>
     </td>
-    <td width="33%" valign="top">
+    <td width="33%" valign="top" align="center">
+      <br>
       <h3 align="center"><img src="https://api.iconify.design/lucide/lock.svg?color=%234F9CF9" width="18" height="18">&nbsp; Blind on the lock screen</h3>
       <p align="center">Normal screen mirroring apps can't show the lock screen. Android 14+ stops capture the moment the phone locks, so you can't unlock it from afar.</p>
+      <br>
     </td>
-    <td width="33%" valign="top">
+    <td width="33%" valign="top" align="center">
+      <br>
       <h3 align="center"><img src="https://api.iconify.design/lucide/landmark.svg?color=%234F9CF9" width="18" height="18">&nbsp; Blocked by banking apps</h3>
       <p align="center">Banking apps refuse to run while USB debugging is on. "Just leave adb enabled" is not an option on a real phone.</p>
+      <br>
     </td>
   </tr>
 </table>

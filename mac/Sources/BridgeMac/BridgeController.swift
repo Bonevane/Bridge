@@ -185,7 +185,9 @@ final class BridgeController: ObservableObject {
         backgroundClipboard = defaults.bool(forKey: "backgroundClipboard")
         mutePhone = defaults.bool(forKey: "mutePhone")
         launchAtLogin = SMAppService.mainApp.status == .enabled
-        mirrorNotifications = defaults.bool(forKey: "mirrorNotifications")
+        // On by default: over Bluetooth this costs nothing. The paid option
+        // ("also over the internet") stays off.
+        mirrorNotifications = defaults.object(forKey: "mirrorNotifications") as? Bool ?? true
         useBluetooth = defaults.object(forKey: "useBluetooth") as? Bool ?? true
         notificationsAnywhere = defaults.bool(forKey: "notificationsAnywhere")
     }

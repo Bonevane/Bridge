@@ -24,15 +24,15 @@ object AdbToggle {
     /**
      * Whether USB debugging is on. Not read from the setting: since Android 17
      * the settings provider reports `adb_enabled` as 0 to apps even when it is
-     * 1 (checked against `adb shell settings get` on a Pixel 9 Pro). The USB
-     * gadget configuration and adbd's own service state are still readable
-     * through getprop, and they're the truth.
+     * 1. Of the getprop signals, `sys.usb.config` keeps saying "adb" after
+     * debugging is turned off (probed on a Pixel 9 Pro), so it's useless;
+     * adbd's own service state flips correctly, and the persisted USB config
+     * clears when debugging is turned off.
      */
     fun isEnabled(ctx: Context): Boolean {
-        val config = prop("sys.usb.config").ifEmpty { prop("persist.sys.usb.config") }
-        if (config.split(',').contains("adb")) return true
-        if (prop("init.svc.adbd") == "running") return true
-        return Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+        val adbd = prop("init.svc.adbd")
+        if (adbd.isNotEmpty()) return adbd == "running"
+        return prop("persist.sys.usb.config").split(',').contains("adb")
     }
 
     private fun prop(name: String): String = runCatching {

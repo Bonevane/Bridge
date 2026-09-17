@@ -302,7 +302,6 @@ class BleLink(private val context: Context) {
         manager.openGattServer(context, object : BluetoothGattServerCallback() {
 
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) pinConnectionParameters(device)
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     runCatching { paramGatt?.close() }; paramGatt = null
                     subscribers.remove(device)
@@ -338,6 +337,11 @@ class BleLink(private val context: Context) {
                         server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                     }
                     if (on) {
+                        // Only now: doing this on the raw connect left the radio
+                        // *initiating* an outgoing link while Windows dropped and
+                        // re-dialled after bonding, and a controller can't accept
+                        // a connection while it's initiating one.
+                        pinConnectionParameters(device)
                         TunnelState.log("Bluetooth: a paired device subscribed; challenging it")
                         val nonce = Pairing.nonce()
                         pendingNonce = nonce

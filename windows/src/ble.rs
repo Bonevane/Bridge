@@ -61,6 +61,9 @@ struct Link {
     mtu_payload: usize,
 }
 
+/// One connect attempt at a time: a rescan mid-attempt used to start a second.
+static CONNECTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct Ble {
     secret: String,
     events: Sender<Event>,
@@ -107,11 +110,15 @@ impl Ble {
                 let link = link.clone();
                 let events = events.clone();
                 let secret = secret.clone();
+                if CONNECTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return Ok(()); // an attempt is already running
+                }
                 std::thread::spawn(move || {
                     if let Err(e) = connect(address, &secret, link, events.clone()) {
                         crate::log!("bluetooth", "connect failed: {e:#}");
                         let _ = events.send(Event::Dropped(format!("{e:#}")));
                     }
+                    CONNECTING.store(false, std::sync::atomic::Ordering::SeqCst);
                 });
                 Ok(())
             },
@@ -236,6 +243,30 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         }
         opened.ok_or_else(|| anyhow!("couldn't reopen the phone after pairing: {last:?}"))?
     };
+    // Diagnostics for the log: what Windows believes about the phone now.
+    crate::log!(
+        "bluetooth",
+        "reopened: paired={:?} status={:?} address={:016x} addrType={:?}",
+        device.DeviceInformation()?.Pairing()?.IsPaired()?,
+        device.ConnectionStatus()?,
+        device.BluetoothAddress()?,
+        device.BluetoothAddressType()?
+    );
+    // Is the phone still advertising? If not, nothing can connect to it.
+    {
+        let seen = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let w = BluetoothLEAdvertisementWatcher::new()?;
+        w.AdvertisementFilter()?.Advertisement()?.ServiceUuids()?.Append(SERVICE)?;
+        let seen2 = seen.clone();
+        w.Received(&TypedEventHandler::new(move |_: &Option<BluetoothLEAdvertisementWatcher>, _: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
+            seen2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }))?;
+        w.Start()?;
+        std::thread::sleep(Duration::from_secs(3));
+        let _ = w.Stop();
+        crate::log!("bluetooth", "phone adverts seen in 3 s after pairing: {}", seen.load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     // Uncached: Windows keeps a copy of the phone's GATT table from earlier
     // pairings and happily returns it, characteristics missing and all.

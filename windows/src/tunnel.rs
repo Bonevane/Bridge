@@ -35,7 +35,7 @@ impl Tunnel {
         // port; the new one would then fail with "address in use".
         Self::reap_stale();
         let exe = Self::dumbpipe()?;
-        let child = Command::new(&exe)
+        let mut child = Command::new(&exe)
             .args(["connect-tcp", "--addr", &format!("127.0.0.1:{LOCAL_PORT}"), ticket])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -44,8 +44,7 @@ impl Tunnel {
             .spawn()
             .with_context(|| format!("starting {}", exe.display()))?;
         crate::log!("tunnel", "dumbpipe started");
-        let stderr = child.stderr.as_ref().map(|s| s.try_clone());
-        if let Some(Ok(stderr)) = stderr {
+        if let Some(stderr) = child.stderr.take() {
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     // dumbpipe prints this machine's own iroh key on start; keep it out of the log.

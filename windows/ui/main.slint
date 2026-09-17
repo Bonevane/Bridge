@@ -40,7 +40,10 @@ component Card inherits Rectangle {
     in property <brush> tint: transparent;
     border-radius: 12px;
     background: tint == transparent ? #00000010 : tint;
-    padding: 12px;
+    VerticalLayout {
+        padding: 12px;
+        @children
+    }
 }
 
 component CapabilityRow inherits HorizontalBox {

@@ -89,11 +89,14 @@ struct MenuView: View {
         Button {
             if bridge.isConnected || bridge.isBusy {
                 bridge.disconnect()
+            } else if !bridge.isPaired {
+                bridge.setUpOverUSB()
             } else {
                 bridge.connect()
             }
         } label: {
-            Text(bridge.isConnected || bridge.isBusy ? "Disconnect" : "Mirror Phone")
+            Text(bridge.isConnected || bridge.isBusy ? "Disconnect"
+                 : bridge.isPaired ? "Mirror Phone" : "Set Up Over USB…")
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
         }
@@ -201,6 +204,11 @@ struct MenuView: View {
     }
 
     private var reach: Reach {
+        if !bridge.isPaired, bridge.phase == .idle {
+            return Reach(title: "Pair your phone first",
+                         detail: "Install Bridge on the phone, turn on USB debugging, plug it in, then click Set Up Over USB below.",
+                         symbol: "cable.connector", tint: .blue)
+        }
         if case .failed(let message) = bridge.phase {
             return Reach(title: "Couldn't connect", detail: message,
                          symbol: "exclamationmark.triangle.fill", tint: .red)

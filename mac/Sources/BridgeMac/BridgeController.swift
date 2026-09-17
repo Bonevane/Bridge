@@ -46,8 +46,16 @@ final class BridgeController: ObservableObject {
     }
     /// Proves this Mac to the phone. See Keychain.swift.
     @Published var pairSecret: String {
-        didSet { Keychain.set("pairSecret", pairSecret) }
+        didSet {
+            Keychain.set("pairSecret", pairSecret)
+            // Pairing is what makes the Bluetooth link meaningful: without the
+            // secret, no phone can pass the challenge, so there's no point scanning.
+            updateBluetooth()
+        }
     }
+
+    /// Set Up Over USB (or a pasted ticket) has happened.
+    var isPaired: Bool { !ticket.isEmpty && !pairSecret.isEmpty }
     @Published var bitrateMbps: Int {
         didSet { UserDefaults.standard.set(bitrateMbps, forKey: "bitrateMbps") }
     }
@@ -737,7 +745,7 @@ final class BridgeController: ObservableObject {
         onClipboard: { [weak self] text in Task { @MainActor in self?.phoneClipboardChanged(text) } })
 
     func updateBluetooth() {
-        guard useBluetooth else {
+        guard useBluetooth, isPaired else {
             bluetoothLink.stop()
             bluetoothLinked = false
             return

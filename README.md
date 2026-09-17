@@ -128,7 +128,7 @@ Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binar
 ### Install a release
 
 1. **Phone:** download `app-release.apk` from [Releases](https://github.com/Bonevane/Bridge/releases) and open it (allow installs from your browser when asked). Requires Android 11+ and an arm64 phone, i.e. anything from the last several years.
-2. **Mac:** download `Bridge-<version>.zip`, unzip, move `Bridge.app` to Applications. It isn't notarized (that needs a paid Apple developer account), so the first launch is **right-click → Open → Open**; after that it opens normally. Everything it needs is inside the bundle.
+2. **Mac:** download `Bridge-<version>.dmg`, open it and drag Bridge onto Applications. It isn't notarized (that needs a paid Apple developer account), so the first launch is **right-click → Open → Open**; after that it opens normally. Everything it needs is inside the bundle.
 3. **Pair, once:** on the phone, enable Developer options → USB debugging. Plug in, click **Set Up Over USB** in Bridge's menu on the Mac, accept "Allow USB debugging" on the phone with *Always allow*. Unplug. **Mirror Phone.** The first time on each Wi-Fi network Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
 
 macOS will ask for Bluetooth and Notifications the first time; both are needed for the short-range link.
@@ -150,7 +150,7 @@ echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
 ```bash
 cd mac && ./make-app.sh && open build/Bridge.app
 ```
-`make-app.sh` bundles `dumbpipe` and `adb` from Homebrew and signs ad-hoc; pass `SIGN_ID="<certificate name>"` to sign with a certificate from Keychain Access so macOS keeps the app's permissions between builds. `./release.sh` produces the zip.
+`make-app.sh` bundles `dumbpipe` and `adb` from Homebrew and signs ad-hoc; pass `SIGN_ID="<certificate name>"` to sign with a certificate from Keychain Access so macOS keeps the app's permissions between builds. `./release.sh` produces the DMG.
 
 Then pair as in step 3 above.
 

@@ -180,7 +180,7 @@ final class BridgeController: ObservableObject {
         bitrateMbps = defaults.object(forKey: "bitrateMbps") as? Int ?? 4
         maxSize = defaults.object(forKey: "maxSize") as? Int ?? 1280
         turnScreenOff = defaults.bool(forKey: "turnScreenOff")
-        keepReady = defaults.bool(forKey: "keepReady")
+        keepReady = defaults.object(forKey: "keepReady") as? Bool ?? true
         syncClipboard = defaults.object(forKey: "syncClipboard") as? Bool ?? true
         backgroundClipboard = defaults.bool(forKey: "backgroundClipboard")
         mutePhone = defaults.bool(forKey: "mutePhone")

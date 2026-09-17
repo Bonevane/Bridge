@@ -60,7 +60,11 @@ object Prefs {
      * After a session ends: false = turn USB debugging off (default, safest);
      * true = keep the daemon so Connect works on cellular; pause manually for banking.
      */
-    fun keepReady(ctx: Context): Boolean = prefs(ctx).getBoolean("keepReady", false)
+    // On by default: it costs nothing (adbd idle on USB, the helper idle on
+    // loopback) and it's what makes Mirror work from cellular. The reason to
+    // turn it off is a banking app that objects to USB debugging; Pause covers
+    // that case too.
+    fun keepReady(ctx: Context): Boolean = prefs(ctx).getBoolean("keepReady", true)
 
     /** When this was last changed, so the two devices can tell whose copy is newer. */
     fun keepReadyAt(ctx: Context): Long = prefs(ctx).getLong("keepReadyAt", 0)

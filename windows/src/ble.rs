@@ -30,7 +30,7 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattWriteOption,
 };
 use windows::Devices::Bluetooth::{BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
-use windows::Devices::Enumeration::{DevicePairingKinds, DevicePairingRequestedEventArgs, DevicePairingResultStatus};
+use windows::Devices::Enumeration::{DeviceInformation, DevicePairingKinds, DevicePairingRequestedEventArgs, DevicePairingResultStatus};
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter};
 
@@ -189,9 +189,30 @@ fn write_chunks(l: &Link, kind: Kind, text: &str) -> Result<()> {
 /// characteristics → subscribe. The handshake then runs in the ValueChanged
 /// callback.
 fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Event>) -> Result<()> {
-    let device = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get().context("opening the device")?;
+    let advertised = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get().context("opening the device")?;
+    let name = advertised.Name()?.to_string_lossy();
+    let is_paired = advertised.DeviceInformation()?.Pairing()?.IsPaired()?;
+    crate::log!("bluetooth", "found {name} (paired={is_paired})");
+
+    // Once bonded, the phone must be reached through its *paired device
+    // record*, not through the random address it advertises: Windows connects
+    // to the bonded identity, and a device object made from the advertised
+    // address reports "Connected" while its ATT requests go nowhere.
+    let device = if is_paired {
+        match paired_record(&name)? {
+            Some(d) => {
+                crate::log!("bluetooth", "using the paired record {} ({:?})", d.DeviceId()?.to_string_lossy(), d.BluetoothAddressType()?);
+                d
+            }
+            None => {
+                crate::log!("bluetooth", "no paired record by that name; using the advertised address");
+                advertised
+            }
+        }
+    } else {
+        advertised
+    };
     let pairing = device.DeviceInformation()?.Pairing()?;
-    crate::log!("bluetooth", "found {} (paired={})", device.Name()?.to_string_lossy(), pairing.IsPaired()?);
 
     // Discovery first, on whatever link we have. It needs no encryption, and
     // doing it *after* bonding hit a Windows quirk where the post-bond link
@@ -344,6 +365,26 @@ fn subscribe_direct(tx: &GattCharacteristic) -> Result<bool> {
     let st = result.Status()?;
     crate::log!("bluetooth", "direct CCCD write: {st:?} (protocol error {:?})", result.ProtocolError().ok().and_then(|p| p.Value().ok()));
     Ok(st == GattCommunicationStatus::Success)
+}
+
+/// The bonded record for a phone with this name, from Windows' paired-device list.
+fn paired_record(name: &str) -> Result<Option<BluetoothLEDevice>> {
+    let selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true)?;
+    let infos = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.get()?;
+    let mut fallback = None;
+    for i in 0..infos.Size()? {
+        let info = infos.GetAt(i)?;
+        let Ok(d) = BluetoothLEDevice::FromIdAsync(&info.Id()?).and_then(|op| op.get()) else { continue };
+        let n = d.Name()?.to_string_lossy();
+        crate::log!("bluetooth", "paired record: {n} ({:?})", d.BluetoothAddressType()?);
+        if n == name {
+            return Ok(Some(d));
+        }
+        if fallback.is_none() && infos.Size()? == 1 {
+            fallback = Some(d);
+        }
+    }
+    Ok(fallback)
 }
 
 /// The Bridge service, with a few retries: the first query on a fresh link

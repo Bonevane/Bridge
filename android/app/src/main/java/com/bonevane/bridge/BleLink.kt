@@ -421,7 +421,11 @@ class BleLink(private val context: Context) {
                         // *initiating* an outgoing link while Windows dropped and
                         // re-dialled after bonding, and a controller can't accept
                         // a connection while it's initiating one.
-                        pinConnectionParameters(device)
+                        // The Mac's link needs its parameters pinned (see
+                        // pinConnectionParameters); Windows doesn't, and the
+                        // client link it opens back to the PC is what made
+                        // Windows offer to pair, which then broke the plain door.
+                        if (!plain) pinConnectionParameters(device)
                         TunnelState.log(if (plain) "Bluetooth: a device subscribed (plain door); challenging it"
                                         else "Bluetooth: a paired device subscribed; challenging it")
                         val nonce = Pairing.nonce()

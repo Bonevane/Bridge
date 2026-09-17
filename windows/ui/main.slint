@@ -1,6 +1,6 @@
 // Bridge's window. Same three questions as the Mac panel, in order: is my
 // phone reachable, what works right now, what can I do about it.
-import { Button, VerticalBox, HorizontalBox, ScrollView, Switch, LineEdit } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, ScrollView, Palette } from "std-widgets.slint";
 
 export struct Capability {
     name: string,
@@ -39,7 +39,7 @@ export global AppState {
 component Card inherits Rectangle {
     in property <brush> tint: transparent;
     border-radius: 12px;
-    background: tint == transparent ? #00000010 : tint;
+    background: tint == transparent ? Palette.alternate-background : tint;
     VerticalLayout {
         padding: 12px;
         @children
@@ -53,8 +53,8 @@ component CapabilityRow inherits HorizontalBox {
     spacing: 10px;
     VerticalLayout {
         spacing: 1px;
-        Text { text: cap.name; font-size: 13px; font-weight: 600; }
-        Text { text: cap.detail; font-size: 11px; opacity: 0.65; wrap: word-wrap; }
+        Text { text: cap.name; font-size: 13px; font-weight: 600; color: Palette.foreground; }
+        Text { text: cap.detail; font-size: 11px; color: Palette.foreground; opacity: 0.65; wrap: word-wrap; }
     }
     Rectangle {
         width: 12px; height: 12px;
@@ -68,7 +68,7 @@ export component MainWindow inherits Window {
     title: "Bridge";
     width: 340px;
     preferred-height: 560px;
-    background: #f3f3f3;
+    background: Palette.background;
 
     VerticalBox {
         padding: 14px;
@@ -76,7 +76,7 @@ export component MainWindow inherits Window {
 
         HorizontalBox {
             padding: 0;
-            Text { text: "Bridge"; font-size: 14px; font-weight: 700; opacity: 0.7; horizontal-alignment: center; }
+            Text { text: "Bridge"; font-size: 14px; font-weight: 700; color: Palette.foreground; opacity: 0.7; horizontal-alignment: center; }
         }
 
         // How the phone is reachable: the one line worth reading first.
@@ -87,13 +87,13 @@ export component MainWindow inherits Window {
                 spacing: 10px;
                 Rectangle {
                     width: 34px; height: 34px; border-radius: 17px;
-                    background: AppState.reach-tint == 1 ? #34c75940 : AppState.reach-tint == 2 ? #ff9f0a40 : AppState.reach-tint == 3 ? #ff3b3040 : #00000018;
-                    Text { text: AppState.reach-tint == 1 ? "●" : AppState.reach-tint == 3 ? "!" : "○"; font-size: 14px; }
+                    background: AppState.reach-tint == 1 ? #34c75940 : AppState.reach-tint == 2 ? #ff9f0a40 : AppState.reach-tint == 3 ? #ff3b3040 : Palette.alternate-background;
+                    Text { text: AppState.reach-tint == 1 ? "●" : AppState.reach-tint == 3 ? "!" : "○"; font-size: 14px; color: Palette.foreground; }
                 }
                 VerticalLayout {
                     spacing: 2px;
-                    Text { text: AppState.reach-title; font-size: 13px; font-weight: 600; }
-                    Text { text: AppState.reach-detail; font-size: 11px; opacity: 0.7; wrap: word-wrap; }
+                    Text { text: AppState.reach-title; font-size: 13px; font-weight: 600; color: Palette.foreground; }
+                    Text { text: AppState.reach-detail; font-size: 11px; color: Palette.foreground; opacity: 0.7; wrap: word-wrap; }
                 }
             }
         }
@@ -108,9 +108,9 @@ export component MainWindow inherits Window {
         Card {
             VerticalLayout {
                 CapabilityRow { cap: AppState.screen; }
-                Rectangle { height: 1px; background: #00000015; }
+                Rectangle { height: 1px; background: Palette.border; }
                 CapabilityRow { cap: AppState.notifications; }
-                Rectangle { height: 1px; background: #00000015; }
+                Rectangle { height: 1px; background: Palette.border; }
                 CapabilityRow { cap: AppState.clipboard; }
             }
         }
@@ -136,14 +136,14 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
             VerticalLayout {
                 spacing: 6px;
-                Text { text: "Activity log"; font-size: 12px; font-weight: 600; opacity: 0.7; }
+                Text { text: "Activity log"; font-size: 12px; font-weight: 600; color: Palette.foreground; opacity: 0.7; }
                 ScrollView {
                     vertical-stretch: 1;
-                    Text { text: AppState.log-text; font-size: 10px; font-family: "Consolas"; wrap: word-wrap; }
+                    Text { text: AppState.log-text; font-size: 10px; font-family: "Consolas"; color: Palette.foreground; wrap: word-wrap; }
                 }
             }
         }
 
-        Text { text: "Bridge " + AppState.version + " · made by Bonevane"; font-size: 10px; opacity: 0.5; horizontal-alignment: center; }
+        Text { text: "Bridge " + AppState.version + " · made by Bonevane"; font-size: 10px; color: Palette.foreground; opacity: 0.5; horizontal-alignment: center; }
     }
 }

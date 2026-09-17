@@ -170,6 +170,7 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 - [iroh](https://github.com/n0-computer/iroh) and [dumbpipe](https://github.com/n0-computer/dumbpipe): connectivity that just works
 - [Shizuku](https://github.com/RikkaApps/Shizuku): the in-app ADB client is adapted from theirs
 - [thedjchi's Shizuku fork](https://github.com/thedjchi/Shizuku/wiki): for the TCP-mode-and-intents trick that unlocked the banking-app problem
+- [awesome-readme](https://github.com/matiassingers/awesome-readme): for listing this README among its examples
 
 Bridge is released under the [Apache License 2.0](LICENSE). See `NOTICE` for the licences of the parts it builds on.
 

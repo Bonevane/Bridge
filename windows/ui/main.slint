@@ -1,6 +1,9 @@
-// Bridge's window. Same three questions as the Mac panel, in order: is my
+// Bridge's windows, in Windows' own Fluent style.
+//
+// Main window: the same three questions as the Mac panel, in order: is my
 // phone reachable, what works right now, what can I do about it.
-import { Button, VerticalBox, HorizontalBox, ScrollView, Palette } from "std-widgets.slint";
+// Settings window: the Mac's four tabs, same switches, same words.
+import { Button, VerticalBox, HorizontalBox, ScrollView, Palette, Switch, ComboBox, SpinBox, TabWidget, LineEdit } from "std-widgets.slint";
 
 export struct Capability {
     name: string,
@@ -11,50 +14,83 @@ export struct Capability {
 export global AppState {
     // How the phone is reachable.
     in-out property <string> reach-title: "Pair your phone first";
-    in-out property <string> reach-detail: "Copy the ticket on the phone, then click Pair.";
+    in-out property <string> reach-detail: "";
     in-out property <int> reach-tint: 0;   // 0 neutral · 1 good · 2 warning · 3 error
     in-out property <bool> busy: false;
+    in-out property <bool> searching: false;
 
     in-out property <bool> paired: false;
     in-out property <bool> linked: false;
     in-out property <bool> phone-tunnel-on: false;
+    in-out property <bool> phone-paused: false;
     in-out property <bool> mirroring: false;
 
     in-out property <Capability> screen: { name: "Screen", detail: "", state: 0 };
     in-out property <Capability> notifications: { name: "Notifications", detail: "", state: 0 };
     in-out property <Capability> clipboard: { name: "Clipboard", detail: "", state: 0 };
 
+    in-out property <bool> show-log: false;
     in-out property <string> log-text: "";
     in-out property <string> version: "";
 
     callback primary();         // Pair / Mirror / Disconnect, depending on state
-    callback pair-from-clipboard();
-    callback rescan();
+    callback refresh();
+    callback pause-phone();
     callback toggle-phone-tunnel();
-    callback unpair();
+    callback open-settings();
     callback open-log-folder();
     callback quit();
 }
 
+export global SettingsState {
+    in-out property <bool> launch-at-login;
+    in-out property <bool> use-bluetooth;
+    in-out property <bool> mirror-notifications;
+    in-out property <bool> notifications-anywhere;
+    in-out property <bool> sync-clipboard;
+    in-out property <bool> background-clipboard;
+    in-out property <bool> keep-ready;
+    in-out property <int> max-size-index;      // into the resolution list
+    in-out property <int> bitrate-mbps;
+    in-out property <bool> turn-screen-off;
+    in-out property <bool> mute-phone;
+
+    // Pairing tab.
+    in-out property <string> ticket-short: "Not paired";
+    in-out property <string> pasted: "";
+    in-out property <string> pasted-status: "";
+
+    callback changed();                 // any switch: save + apply
+    callback copy-ticket();
+    callback paste-ticket();
+    callback apply-pasted();
+    callback unpair();
+}
+
+// A card sitting on the window background, like the Mac's inner cards.
 component Card inherits Rectangle {
     in property <brush> tint: transparent;
     border-radius: 12px;
     background: tint == transparent ? Palette.alternate-background : tint;
     VerticalLayout {
-        padding: 12px;
+        padding: 4px;
         @children
     }
 }
 
+component Label inherits Text {
+    color: Palette.foreground;
+}
+
 component CapabilityRow inherits HorizontalBox {
     in property <Capability> cap;
-    padding-top: 6px;
-    padding-bottom: 6px;
+    padding-left: 10px; padding-right: 10px;
+    padding-top: 7px; padding-bottom: 7px;
     spacing: 10px;
     VerticalLayout {
         spacing: 1px;
-        Text { text: cap.name; font-size: 13px; font-weight: 600; color: Palette.foreground; }
-        Text { text: cap.detail; font-size: 11px; color: Palette.foreground; opacity: 0.65; wrap: word-wrap; }
+        Label { text: cap.name; font-size: 12px; font-weight: 600; }
+        Label { text: cap.detail; font-size: 10px; opacity: 0.65; wrap: word-wrap; }
     }
     Rectangle {
         width: 12px; height: 12px;
@@ -64,36 +100,87 @@ component CapabilityRow inherits HorizontalBox {
     }
 }
 
+// One action in the panel, highlighted under the pointer like a menu row.
+component MenuRow inherits Rectangle {
+    in property <string> title;
+    in property <string> hint;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 32px;
+    border-radius: 8px;
+    background: area.has-hover && enabled ? Palette.accent-background : transparent;
+    HorizontalBox {
+        padding-left: 10px; padding-right: 10px;
+        padding-top: 0; padding-bottom: 0;
+        Label {
+            text: title;
+            font-size: 12px;
+            vertical-alignment: center;
+            color: area.has-hover && enabled ? Palette.accent-foreground : Palette.foreground;
+            opacity: enabled ? 1 : 0.4;
+        }
+        Label {
+            text: hint;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            color: area.has-hover && enabled ? Palette.accent-foreground : Palette.foreground;
+            opacity: 0.5;
+        }
+    }
+    area := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Bridge";
-    width: 340px;
-    preferred-height: 560px;
+    width: 320px;
     background: Palette.background;
+    icon: @image-url("../../assets/bridge-mark.png");
 
     VerticalBox {
-        padding: 14px;
-        spacing: 12px;
+        padding: 12px;
+        spacing: 10px;
 
-        HorizontalBox {
-            padding: 0;
-            Text { text: "Bridge"; font-size: 14px; font-weight: 700; color: Palette.foreground; opacity: 0.7; horizontal-alignment: center; }
+        // Header: title, refresh.
+        Rectangle {
+            height: 22px;
+            Label { text: "Bridge"; font-size: 13px; font-weight: 600; opacity: 0.7; horizontal-alignment: center; vertical-alignment: center; }
+            HorizontalLayout {
+                alignment: end;
+                Rectangle {
+                    width: 24px;
+                    Label { text: "↻"; font-size: 14px; opacity: 0.6; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { clicked => { AppState.refresh(); } }
+                }
+            }
         }
 
         // How the phone is reachable: the one line worth reading first.
         Card {
             tint: AppState.reach-tint == 1 ? #34c75926 : AppState.reach-tint == 2 ? #ff9f0a26 : AppState.reach-tint == 3 ? #ff3b3026 : transparent;
             HorizontalBox {
-                padding: 0;
+                padding: 8px;
                 spacing: 10px;
                 Rectangle {
                     width: 34px; height: 34px; border-radius: 17px;
-                    background: AppState.reach-tint == 1 ? #34c75940 : AppState.reach-tint == 2 ? #ff9f0a40 : AppState.reach-tint == 3 ? #ff3b3040 : Palette.alternate-background;
-                    Text { text: AppState.reach-tint == 1 ? "●" : AppState.reach-tint == 3 ? "!" : "○"; font-size: 14px; color: Palette.foreground; }
+                    background: AppState.reach-tint == 1 ? #34c75940 : AppState.reach-tint == 2 ? #ff9f0a40 : AppState.reach-tint == 3 ? #ff3b3040 : Palette.border;
+                    Label {
+                        text: AppState.reach-tint == 3 ? "!" : AppState.reach-tint == 1 ? "●" : "○";
+                        font-size: 14px; horizontal-alignment: center; vertical-alignment: center;
+                        color: AppState.reach-tint == 1 ? #1f8f3c : AppState.reach-tint == 2 ? #b36b00 : AppState.reach-tint == 3 ? #c62828 : Palette.foreground;
+                    }
                 }
                 VerticalLayout {
                     spacing: 2px;
-                    Text { text: AppState.reach-title; font-size: 13px; font-weight: 600; color: Palette.foreground; }
-                    Text { text: AppState.reach-detail; font-size: 11px; color: Palette.foreground; opacity: 0.7; wrap: word-wrap; }
+                    alignment: center;
+                    Label { text: AppState.reach-title; font-size: 13px; font-weight: 600; }
+                    Label { text: AppState.reach-detail; font-size: 11px; opacity: 0.7; wrap: word-wrap; }
+                }
+                if AppState.busy || (AppState.searching && !AppState.linked) : Label {
+                    text: "…"; font-size: 14px; opacity: 0.6; vertical-alignment: center;
                 }
             }
         }
@@ -118,32 +205,136 @@ export component MainWindow inherits Window {
         // Actions.
         Card {
             VerticalLayout {
-                spacing: 4px;
-                Button { text: "Pair from Clipboard"; clicked => { AppState.pair-from-clipboard(); } }
-                Button { text: "Look for the Phone Again"; clicked => { AppState.rescan(); } }
-                Button {
-                    text: AppState.phone-tunnel-on ? "Turn Phone Tunnel Off" : "Turn Phone Tunnel On";
-                    enabled: AppState.linked;
+                spacing: 1px;
+                MenuRow { title: "Pause Phone for Banking"; hint: "15 min"; enabled: AppState.linked && !AppState.busy; clicked => { AppState.pause-phone(); } }
+                if AppState.linked : MenuRow {
+                    title: AppState.phone-tunnel-on ? "Turn Phone Tunnel Off" : "Turn Phone Tunnel On";
                     clicked => { AppState.toggle-phone-tunnel(); }
                 }
-                Button { text: "Open Log Folder"; clicked => { AppState.open-log-folder(); } }
-                Button { text: "Unpair"; clicked => { AppState.unpair(); } }
+                MenuRow { title: "Settings…"; hint: "Ctrl+,"; clicked => { AppState.open-settings(); } }
+                Rectangle { height: 1px; background: Palette.border; }
+                MenuRow { title: "Quit Bridge"; hint: "Ctrl+Q"; clicked => { AppState.quit(); } }
             }
         }
 
-        // Activity log.
-        Card {
-            vertical-stretch: 1;
-            VerticalLayout {
+        // Activity log, collapsed by default like the Mac's disclosure.
+        VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
                 spacing: 6px;
-                Text { text: "Activity log"; font-size: 12px; font-weight: 600; color: Palette.foreground; opacity: 0.7; }
-                ScrollView {
-                    vertical-stretch: 1;
-                    Text { text: AppState.log-text; font-size: 10px; font-family: "Consolas"; color: Palette.foreground; wrap: word-wrap; }
+                Label { text: AppState.show-log ? "▾  Activity Log" : "▸  Activity Log"; font-size: 12px; opacity: 0.8; }
+                TouchArea { clicked => { AppState.show-log = !AppState.show-log; } }
+            }
+            if AppState.show-log : VerticalLayout {
+                spacing: 6px;
+                Card {
+                    ScrollView {
+                        height: 140px;
+                        Label { text: AppState.log-text; font-size: 10px; font-family: "Consolas"; wrap: word-wrap; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button { text: "Open Log Folder"; clicked => { AppState.open-log-folder(); } }
                 }
             }
         }
+    }
+}
 
-        Text { text: "Bridge " + AppState.version + " · made by Bonevane"; font-size: 10px; color: Palette.foreground; opacity: 0.5; horizontal-alignment: center; }
+component Footer inherits Label {
+    font-size: 11px;
+    opacity: 0.6;
+    wrap: word-wrap;
+    horizontal-alignment: center;
+}
+
+component Row inherits HorizontalBox {
+    in property <string> title;
+    padding-top: 6px; padding-bottom: 6px;
+    Label { text: title; font-size: 12px; vertical-alignment: center; }
+}
+
+export component SettingsWindow inherits Window {
+    title: "Bridge Settings";
+    width: 460px;
+    height: 420px;
+    background: Palette.background;
+
+    TabWidget {
+        Tab {
+            title: "General";
+            VerticalBox {
+                spacing: 8px;
+                Card { Row { title: "Open Bridge at login"; Switch { checked <=> SettingsState.launch-at-login; toggled => { SettingsState.changed(); } } } }
+                Footer { text: "Bridge lives in the system tray."; }
+                Card { Row { title: "Use Bluetooth when the phone is nearby"; Switch { checked <=> SettingsState.use-bluetooth; toggled => { SettingsState.changed(); } } } }
+                Footer { text: "Notifications and the clipboard travel over Bluetooth when the phone is within range, which costs almost nothing. Without it they need an open internet tunnel."; }
+                Card {
+                    Row { title: "Show the phone's notifications"; Switch { checked <=> SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } } }
+                    Row { title: "Also over the internet, when the phone is far away"; Switch { enabled: SettingsState.mirror-notifications; checked <=> SettingsState.notifications-anywhere; toggled => { SettingsState.changed(); } } }
+                }
+                Footer { text: "The first option is free. The second keeps a tunnel open so they also arrive when the phone is elsewhere; that costs the phone a little battery and data all the time."; }
+                Card {
+                    Row { title: "Sync the clipboard"; Switch { checked <=> SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } } }
+                    Row { title: "Also with no phone window open"; Switch { enabled: SettingsState.sync-clipboard; checked <=> SettingsState.background-clipboard; toggled => { SettingsState.changed(); } } }
+                }
+                Footer { text: "The first option is free: while a phone window is open the clipboard rides the mirroring session, and while the phone is nearby it goes over Bluetooth."; }
+            }
+        }
+        Tab {
+            title: "Phone";
+            VerticalBox {
+                spacing: 8px;
+                Card { Row { title: "Keep the phone ready"; Switch { checked <=> SettingsState.keep-ready; toggled => { SettingsState.changed(); } } } }
+                Footer { text: SettingsState.keep-ready
+                    ? "USB debugging stays on between sessions, so you can mirror from anywhere, including cellular. Pause it when a banking app complains."
+                    : "USB debugging is turned off after each session. The next session needs the phone on Wi-Fi to start its helper."; }
+            }
+        }
+        Tab {
+            title: "Mirroring";
+            VerticalBox {
+                spacing: 8px;
+                Card {
+                    Row { title: "Resolution"; ComboBox { model: ["720 px", "1024 px", "1280 px", "1600 px", "Full size"]; current-index <=> SettingsState.max-size-index; selected => { SettingsState.changed(); } } }
+                    Row { title: "Bitrate (Mbps)"; SpinBox { minimum: 1; maximum: 16; value <=> SettingsState.bitrate-mbps; edited => { SettingsState.changed(); } } }
+                }
+                Footer { text: "Bridge lowers the bitrate by itself when the connection can't keep up, and raises it again when it can."; }
+                Card {
+                    Row { title: "Turn the phone's screen off"; Switch { checked <=> SettingsState.turn-screen-off; toggled => { SettingsState.changed(); } } }
+                    Row { title: "Mute the phone"; Switch { checked <=> SettingsState.mute-phone; toggled => { SettingsState.changed(); } } }
+                }
+            }
+        }
+        Tab {
+            title: "Pairing";
+            VerticalBox {
+                spacing: 8px;
+                Card {
+                    Row {
+                        title: "Ticket";
+                        Label { text: SettingsState.ticket-short; font-family: "Consolas"; font-size: 12px; vertical-alignment: center; }
+                        Button { text: "Copy"; clicked => { SettingsState.copy-ticket(); } }
+                    }
+                }
+                Footer { text: "Treat the ticket like a password: anyone who has it and the pairing secret can reach the phone."; }
+                Card {
+                    VerticalLayout {
+                        spacing: 6px;
+                        padding: 6px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            LineEdit { placeholder-text: "endpoint… <secret>"; text <=> SettingsState.pasted; }
+                            Button { text: "Paste"; clicked => { SettingsState.paste-ticket(); } }
+                            Button { text: "Pair"; primary: true; enabled: SettingsState.pasted != ""; clicked => { SettingsState.apply-pasted(); } }
+                        }
+                        if SettingsState.pasted-status != "" : Label { text: SettingsState.pasted-status; font-size: 11px; opacity: 0.8; }
+                    }
+                }
+                Footer { text: "On the phone, tap Copy under Ticket and get it to this PC privately (a message to yourself, a note). Then Paste and Pair. Never post the ticket anywhere: it's a key, not an address."; }
+                Button { text: "Unpair"; clicked => { SettingsState.unpair(); } }
+            }
+        }
     }
 }

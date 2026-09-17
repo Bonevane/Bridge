@@ -18,6 +18,7 @@ mod clipboard;
 mod log;
 mod notify;
 mod protocol;
+mod settings;
 mod store;
 mod tunnel;
 mod twins;
@@ -38,13 +39,17 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Everything the UI thread owns.
 struct App {
     window: MainWindow,
+    settings_window: SettingsWindow,
+    settings: settings::Settings,
     creds: store::Credentials,
     ble: Option<ble::Ble>,
     events: mpsc::Receiver<Event>,
     events_tx: mpsc::Sender<Event>,
     clipboard: clipboard::Watcher,
     linked: bool,
+    searching: bool,
     phone_tunnel_on: bool,
+    phone_paused: bool,
     tunnel: Option<tunnel::Tunnel>,
     mirroring: bool,
     last_twins: Option<BTreeSet<String>>,
@@ -54,17 +59,21 @@ struct App {
 }
 
 impl App {
-    fn new(window: MainWindow) -> Self {
+    fn new(window: MainWindow, settings_window: SettingsWindow) -> Self {
         let (events_tx, events) = mpsc::channel();
         App {
             window,
+            settings_window,
+            settings: settings::Settings::load(),
             creds: store::load().unwrap_or_default(),
             ble: None,
             events,
             events_tx,
             clipboard: clipboard::Watcher::new(),
             linked: false,
+            searching: false,
             phone_tunnel_on: false,
+            phone_paused: false,
             tunnel: None,
             mirroring: false,
             last_twins: None,
@@ -91,7 +100,9 @@ impl App {
         let ui = self.window.global::<AppState>();
         ui.set_paired(self.creds.is_paired());
         ui.set_linked(self.linked);
+        ui.set_searching(self.searching);
         ui.set_phone_tunnel_on(self.phone_tunnel_on);
+        ui.set_phone_paused(self.phone_paused);
         ui.set_mirroring(self.mirroring);
         ui.set_version(VERSION.into());
 
@@ -99,12 +110,16 @@ impl App {
             ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
         } else if self.mirroring {
             ("Mirroring", "The phone's helper is running (video comes in the next milestone)", 1)
+        } else if self.phone_paused {
+            ("Phone paused", "USB debugging off for banking apps", 2)
         } else if self.linked {
             (
                 "Phone nearby",
                 if self.phone_tunnel_on { "Bluetooth linked, and reachable from anywhere" } else { "Bluetooth linked · tunnel off, so no remote mirroring" },
                 1,
             )
+        } else if !self.settings.use_bluetooth {
+            ("Phone not nearby", "Bluetooth is switched off in Bridge's settings.", 0)
         } else {
             ("Looking for your phone", "Searching over Bluetooth. Mirroring still works if its tunnel is on.", 0)
         };
@@ -114,25 +129,96 @@ impl App {
 
         ui.set_screen(Capability {
             name: "Screen".into(),
-            detail: if self.mirroring { "Live" } else if self.phone_tunnel_on { "Ready to mirror" } else if self.linked { "Click Mirror: the tunnel comes up over Bluetooth" } else { "Needs the phone's tunnel, or Bluetooth to wake it" }.into(),
+            detail: if self.mirroring { "Live" } else if self.phone_paused { "Paused for banking" } else if self.phone_tunnel_on { "Ready to mirror" } else if self.linked { "Click Mirror: the tunnel comes up over Bluetooth" } else { "Needs the phone's tunnel, or Bluetooth to wake it" }.into(),
             state: if self.mirroring || self.phone_tunnel_on { 2 } else if self.linked { 1 } else { 0 },
         });
+        let notif_on = self.settings.mirror_notifications;
         ui.set_notifications(Capability {
             name: "Notifications".into(),
-            detail: if self.linked { "Over Bluetooth" } else { "When the phone is nearby" }.into(),
-            state: if self.linked { 2 } else { 0 },
+            detail: if !notif_on { "Off in Settings" } else if self.linked { "Over Bluetooth" } else { "When the phone is nearby" }.into(),
+            state: if notif_on && self.linked { 2 } else { 0 },
         });
+        let clip_on = self.settings.sync_clipboard;
         ui.set_clipboard(Capability {
             name: "Clipboard".into(),
-            detail: if self.linked { "Both ways, over Bluetooth" } else { "When the phone is nearby" }.into(),
-            state: if self.linked { 2 } else { 0 },
+            detail: if !clip_on { "Off in Settings" } else if self.linked { "Both ways, over Bluetooth" } else { "When the phone is nearby" }.into(),
+            state: if clip_on && self.linked { 2 } else { 0 },
         });
+
+        // Settings window mirrors the model.
+        let st = self.settings_window.global::<SettingsState>();
+        st.set_launch_at_login(self.settings.launch_at_login);
+        st.set_use_bluetooth(self.settings.use_bluetooth);
+        st.set_mirror_notifications(self.settings.mirror_notifications);
+        st.set_notifications_anywhere(self.settings.notifications_anywhere);
+        st.set_sync_clipboard(self.settings.sync_clipboard);
+        st.set_background_clipboard(self.settings.background_clipboard);
+        st.set_keep_ready(self.settings.keep_ready);
+        st.set_max_size_index(match self.settings.max_size { 720 => 0, 1024 => 1, 1280 => 2, 1600 => 3, _ => 4 });
+        st.set_bitrate_mbps(self.settings.bitrate_mbps);
+        st.set_turn_screen_off(self.settings.turn_screen_off);
+        st.set_mute_phone(self.settings.mute_phone);
+        let t = &self.creds.ticket;
+        st.set_ticket_short(if t.is_empty() { "Not paired".into() } else if t.len() > 28 { format!("{}…{}", &t[..14], &t[t.len() - 8..]).into() } else { t.clone().into() });
+    }
+
+    /// The Settings window's switches → the model, saved and applied.
+    fn settings_changed(&mut self) {
+        let st = self.settings_window.global::<SettingsState>();
+        let before = self.settings.clone();
+        self.settings.launch_at_login = st.get_launch_at_login();
+        self.settings.use_bluetooth = st.get_use_bluetooth();
+        self.settings.mirror_notifications = st.get_mirror_notifications();
+        self.settings.notifications_anywhere = st.get_notifications_anywhere();
+        self.settings.sync_clipboard = st.get_sync_clipboard();
+        self.settings.background_clipboard = st.get_background_clipboard();
+        self.settings.max_size = [720, 1024, 1280, 1600, 0][st.get_max_size_index().clamp(0, 4) as usize];
+        self.settings.bitrate_mbps = st.get_bitrate_mbps();
+        self.settings.turn_screen_off = st.get_turn_screen_off();
+        self.settings.mute_phone = st.get_mute_phone();
+        let keep = st.get_keep_ready();
+        if keep != self.settings.keep_ready {
+            self.settings.keep_ready = keep;
+            self.settings.keep_ready_changed_at = chrono::Utc::now().timestamp_millis();
+            if let Some(b) = &self.ble {
+                let _ = b.send_command(&format!("keep {} at={}", if keep { "on" } else { "off" }, self.settings.keep_ready_changed_at));
+            }
+        }
+        if self.settings != before {
+            self.settings.save();
+            if before.use_bluetooth != self.settings.use_bluetooth {
+                if self.settings.use_bluetooth {
+                    self.start_bluetooth();
+                } else if let Some(mut b) = self.ble.take() {
+                    b.stop();
+                    self.linked = false;
+                }
+            }
+            self.refresh();
+        }
+    }
+
+    /// "keep ready" from the phone's status: the side that changed it more
+    /// recently wins, so neither device silently overwrites the other.
+    fn reconcile_keep_ready(&mut self, phone_value: bool, phone_changed_at: i64) {
+        if phone_changed_at >= self.settings.keep_ready_changed_at {
+            if phone_value != self.settings.keep_ready {
+                self.settings.keep_ready = phone_value;
+                self.settings.keep_ready_changed_at = phone_changed_at;
+                self.settings.save();
+                self.log("", &format!("took \"keep ready\" = {phone_value} from the phone (changed there more recently)"));
+            }
+        } else if phone_value != self.settings.keep_ready {
+            if let Some(b) = &self.ble {
+                let _ = b.send_command(&format!("keep {} at={}", if self.settings.keep_ready { "on" } else { "off" }, self.settings.keep_ready_changed_at));
+            }
+        }
     }
 
     // MARK: - Pairing and Bluetooth
 
     fn start_bluetooth(&mut self) {
-        if !self.creds.is_paired() {
+        if !self.creds.is_paired() || !self.settings.use_bluetooth {
             self.refresh();
             return;
         }
@@ -199,6 +285,13 @@ impl App {
         if let Some(b) = &self.ble {
             let _ = b.send_command(if on { "tunnel on" } else { "tunnel off" });
             self.log("bluetooth", if on { "asked the phone to start its tunnel" } else { "asked the phone to stop its tunnel" });
+        }
+    }
+
+    fn pause_phone(&mut self) {
+        if let Some(b) = &self.ble {
+            let _ = b.send_command("pause 15");
+            self.log("phone", "asked the phone to pause USB debugging for 15 minutes");
         }
     }
 
@@ -308,7 +401,7 @@ impl App {
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
         }
-        if self.linked {
+        if self.linked && self.settings.sync_clipboard {
             if let Some(text) = self.clipboard.poll() {
                 if let Some(b) = &self.ble {
                     match b.send(Kind::Clipboard, &text) {
@@ -355,10 +448,12 @@ impl App {
         match event {
             Event::Searching => {
                 self.linked = false;
+                self.searching = true;
                 self.log("bluetooth", "looking for the phone");
             }
             Event::Linked => {
                 self.linked = true;
+                self.searching = false;
                 self.log("bluetooth", "linked to the phone");
                 self.report_twins(true);
                 if let Some(b) = &self.ble {
@@ -372,15 +467,24 @@ impl App {
                 self.rescan_at = Some(Instant::now() + Duration::from_secs(3));
             }
             Event::Notification { app, title, body } => {
-                self.log("notify", &format!("{app}: {title}"));
-                notify::show(&app, &title, &body);
+                if self.settings.mirror_notifications {
+                    self.log("notify", &format!("{app}: {title}"));
+                    notify::show(&app, &title, &body);
+                }
             }
             Event::Clipboard(text) => {
-                self.log("clipboard", &format!("from the phone ({} chars)", text.chars().count()));
-                self.clipboard.set(&text);
+                if self.settings.sync_clipboard {
+                    self.log("clipboard", &format!("from the phone ({} chars)", text.chars().count()));
+                    self.clipboard.set(&text);
+                }
             }
             Event::Status(fields) => {
                 self.phone_tunnel_on = fields.get("tunnel").map(|v| v == "1").unwrap_or(false);
+                self.phone_paused = fields.get("paused").map(|v| v == "1").unwrap_or(false);
+                if let Some(keep) = fields.get("keep") {
+                    let at = fields.get("keepAt").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+                    self.reconcile_keep_ready(keep == "1", at);
+                }
             }
             Event::Connected(result) => {
                 self.window.global::<AppState>().set_busy(false);
@@ -436,13 +540,15 @@ fn main() {
     crate::log!("", "Bridge {VERSION} starting");
 
     let window = MainWindow::new().expect("window");
-    let app = Rc::new(RefCell::new(App::new(window.clone_strong())));
+    let settings_window = SettingsWindow::new().expect("settings window");
+    let app = Rc::new(RefCell::new(App::new(window.clone_strong(), settings_window.clone_strong())));
 
-    // Tray: left-click shows the window; the menu has Open and Quit.
+    // Tray: left-click shows the window; the menu has Open, Settings and Quit.
     let menu = tray_icon::menu::Menu::new();
     let show = tray_icon::menu::MenuItem::new("Open Bridge", true, None);
+    let settings_item = tray_icon::menu::MenuItem::new("Settings…", true, None);
     let quit = tray_icon::menu::MenuItem::new("Quit Bridge", true, None);
-    let _ = menu.append_items(&[&show, &tray_icon::menu::PredefinedMenuItem::separator(), &quit]);
+    let _ = menu.append_items(&[&show, &settings_item, &tray_icon::menu::PredefinedMenuItem::separator(), &quit]);
     let _tray = tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Bridge")
@@ -450,7 +556,7 @@ fn main() {
         .build()
         .expect("tray icon");
 
-    // UI callbacks.
+    // Main window callbacks.
     {
         let ui = window.global::<AppState>();
         let a = app.clone();
@@ -466,13 +572,20 @@ fn main() {
             }
         });
         let a = app.clone();
-        ui.on_pair_from_clipboard(move || a.borrow_mut().pair_from_clipboard());
+        ui.on_refresh(move || {
+            let mut app = a.borrow_mut();
+            if app.linked {
+                if let Some(b) = &app.ble { let _ = b.send_command("status"); }
+            } else {
+                app.rescan();
+            }
+        });
         let a = app.clone();
-        ui.on_rescan(move || a.borrow_mut().rescan());
+        ui.on_pause_phone(move || a.borrow_mut().pause_phone());
         let a = app.clone();
         ui.on_toggle_phone_tunnel(move || a.borrow_mut().toggle_phone_tunnel());
-        let a = app.clone();
-        ui.on_unpair(move || a.borrow_mut().unpair());
+        let sw = settings_window.as_weak();
+        ui.on_open_settings(move || { if let Some(w) = sw.upgrade() { let _ = w.show(); } });
         ui.on_open_log_folder(move || {
             let _ = std::process::Command::new("explorer").arg(store::data_dir()).spawn();
         });
@@ -480,6 +593,57 @@ fn main() {
         ui.on_quit(move || {
             a.borrow_mut().disconnect();
             let _ = slint::quit_event_loop();
+        });
+    }
+
+    // Settings window callbacks.
+    {
+        let st = settings_window.global::<SettingsState>();
+        let a = app.clone();
+        st.on_changed(move || a.borrow_mut().settings_changed());
+        let a = app.clone();
+        st.on_copy_ticket(move || {
+            let app = a.borrow();
+            if let Ok(mut c) = arboard::Clipboard::new() {
+                let _ = c.set_text(format!("{} {}", app.creds.ticket, app.creds.secret));
+            }
+        });
+        let sw = settings_window.as_weak();
+        st.on_paste_ticket(move || {
+            if let Some(w) = sw.upgrade() {
+                let text = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default();
+                let st = w.global::<SettingsState>();
+                st.set_pasted(text.trim().into());
+                st.set_pasted_status(if store::Credentials::parse(text.trim()).is_some() { "Looks right".into() } else { "Should be two words: endpoint… and the secret".into() });
+            }
+        });
+        let a = app.clone();
+        let sw = settings_window.as_weak();
+        st.on_apply_pasted(move || {
+            let Some(w) = sw.upgrade() else { return };
+            let text = w.global::<SettingsState>().get_pasted().to_string();
+            match store::Credentials::parse(&text) {
+                Some(creds) => {
+                    let mut app = a.borrow_mut();
+                    if store::save(&creds).is_ok() {
+                        app.creds = creds;
+                        app.log("", "paired from the pasted ticket");
+                        if let Some(b) = app.ble.as_mut() { b.stop(); }
+                        app.ble = None;
+                        app.start_bluetooth();
+                        w.global::<SettingsState>().set_pasted("".into());
+                        w.global::<SettingsState>().set_pasted_status("Paired".into());
+                    }
+                }
+                None => w.global::<SettingsState>().set_pasted_status("Should be two words: endpoint… and the secret".into()),
+            }
+        });
+        let a = app.clone();
+        st.on_unpair(move || a.borrow_mut().unpair());
+        let sw = settings_window.as_weak();
+        settings_window.window().on_close_requested(move || {
+            if let Some(w) = sw.upgrade() { let _ = w.hide(); }
+            slint::CloseRequestResponse::HideWindow
         });
     }
 
@@ -502,6 +666,7 @@ fn main() {
     {
         let a = app.clone();
         let w = window.as_weak();
+        let sw = settings_window.as_weak();
         let tray_events = tray_icon::menu::MenuEvent::receiver();
         let tray_clicks = tray_icon::TrayIconEvent::receiver();
         timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
@@ -510,6 +675,10 @@ fn main() {
                 if e.id == show.id() {
                     if let Some(w) = w.upgrade() {
                         let _ = w.show();
+                    }
+                } else if e.id == settings_item.id() {
+                    if let Some(s) = sw.upgrade() {
+                        let _ = s.show();
                     }
                 } else if e.id == quit.id() {
                     a.borrow_mut().disconnect();

@@ -523,6 +523,15 @@ class BleLink(private val context: Context) {
                 // "keep on at=<millis>" carries a timestamp, so it can't match exactly.
                 else -> when {
                     message.startsWith("keep ") -> keepReady(message)
+                    // "pause 15": USB debugging off for that many minutes, the
+                    // same as the tunnel's PAUSE and the phone's own tile.
+                    message.startsWith("pause") -> {
+                        val minutes = message.removePrefix("pause").trim().toIntOrNull() ?: 15
+                        val policy = TunnelService.current?.policy
+                        TunnelState.log("Mac/PC asked to pause: " +
+                            (policy?.pause(minutes) ?: DaemonManager.stop(context, force = true)))
+                        sendStatus()
+                    }
                     // "macapps com.whatsapp org.telegram.messenger": the Android
                     // packages whose Mac twin is open, so their notifications
                     // would only be duplicates. Empty list = none open.

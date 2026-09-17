@@ -99,6 +99,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Diagnostic: which USB-debugging signal the app can see. Android 17
+        // hides adb_enabled from apps, so the truth has to come from getprop,
+        // and this line in the Activity log shows what each source says.
+        Thread {
+            val props = listOf("sys.usb.config", "persist.sys.usb.config", "sys.usb.state", "init.svc.adbd")
+                .joinToString(" ") { n ->
+                    val v = runCatching { ProcessBuilder("getprop", n).start().inputStream.bufferedReader().readText().trim() }.getOrDefault("ERR")
+                    "$n=${v.ifEmpty { "(empty)" }}"
+                }
+            val setting = Settings.Global.getString(contentResolver, Settings.Global.ADB_ENABLED) ?: "null"
+            TunnelState.log("USB probe: adb_enabled=$setting $props")
+        }.start()
         accessState = Access.all(this)      // a permission may have just been granted
         // Bluetooth permission may have just been granted, here or in system
         // settings. Starting again is harmless if the link is already up.

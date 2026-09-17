@@ -376,9 +376,10 @@ final class BridgeController: ObservableObject {
             }
             if !spawn.ok { appendLog(spawn.output, source: "adb") }
             phase = .idle
-            notice = keepReady
-                ? "Set up, and the helper is running. You can unplug the phone and click Mirror Phone."
-                : "Set up. Unplug and click Mirror Phone. After each session the phone locks down again; turn on \"Keep ready\" to skip that."
+            notice = (keepReady
+                ? "Set up, and the helper is running. Unplug and click Mirror Phone."
+                : "Set up. Unplug and click Mirror Phone. After each session the phone locks down again; turn on \"Keep ready\" to skip that.")
+                + " The phone will now ask to pair over Bluetooth: accept it, that's the link for notifications and clipboard."
         }
     }
 

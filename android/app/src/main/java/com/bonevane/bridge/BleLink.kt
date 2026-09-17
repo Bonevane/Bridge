@@ -276,6 +276,13 @@ class BleLink(private val context: Context) {
         manager.openGattServer(context, object : BluetoothGattServerCallback() {
 
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    // Android quirk: a GATT server has to claim the connection
+                    // or the stack treats it as idle and lets it lapse; the Mac
+                    // then sees "connection timed out" (reason 6) every few
+                    // seconds and relinks. This is what stops that.
+                    runCatching { server?.connect(device, false) }
+                }
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     subscribers.remove(device)
                     verified = false

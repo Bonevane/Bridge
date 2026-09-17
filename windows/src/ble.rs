@@ -242,7 +242,7 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
 
     {
         let mut l = link.lock().unwrap();
-        l.rx = Some(rx);
+        l.rx = Some(rx.clone());
         l.handshake = Handshake::new(secret);
         l.verified = false;
         l.last_heard = Instant::now();

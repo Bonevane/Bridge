@@ -8,7 +8,7 @@
   <b>Your Android phone, on your Mac, from anywhere</b>
 </p>
 <p align="center">
-  See and control a locked phone over any network, with nothing left listening when you're done.
+  See and control your phone over any network, with shared clipboard and notifications.
 </p>
 
 <div align="center">
@@ -22,21 +22,21 @@
 <br>
 
 ## <img src="https://api.iconify.design/lucide/telescope.svg?color=%234F9CF9" width="24" height="24"> The Problem
-Remote-controlling a phone you own is strangely hard. The tools exist, but each one stops exactly where daily life begins.
+Remote-controlling a phone you own is strangely hard. The tools exist, but each one attempts to solve a single problem.
 
 <table width="100%">
   <tr>
     <td width="33%" valign="top">
-      <h3 align="center"><img src="https://api.iconify.design/lucide/cable.svg?color=%234F9CF9" width="20" height="20"> Tied to ADB</h3>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/cable.svg?color=%234F9CF9" width="20" height="20"></h3>
       <p align="center">scrcpy is excellent, but it needs a cable or the same Wi-Fi, and a port that changes on every reboot.</p>
     </td>
     <td width="33%" valign="top">
-      <h3 align="center"><img src="https://api.iconify.design/lucide/lock.svg?color=%234F9CF9" width="20" height="20"> Locked Out</h3>
-      <p align="center">Mirroring apps can't show the lock screen. Android 14+ stops capture the moment the phone locks, so you can't unlock it from afar.</p>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/lock.svg?color=%234F9CF9" width="20" height="20"></h3>
+      <p align="center">Normal screen mirroring apps can't show the lock screen. Android 14+ stops capture the moment the phone locks, so you can't unlock it from afar.</p>
     </td>
     <td width="33%" valign="top">
-      <h3 align="center"><img src="https://api.iconify.design/lucide/landmark.svg?color=%234F9CF9" width="20" height="20"> Banking Apps</h3>
-      <p align="center">They refuse to run while USB debugging is on. "Just leave adb enabled" is not an option on a real phone.</p>
+      <h3 align="center"><img src="https://api.iconify.design/lucide/landmark.svg?color=%234F9CF9" width="20" height="20"></h3>
+      <p align="center">Banking apps refuse to run while USB debugging is on. "Just leave adb enabled" is not an option on a real phone.</p>
     </td>
   </tr>
 </table>
@@ -52,39 +52,16 @@ Bridge treats it as a **connectivity and privilege problem**, not a screen-shari
 </p>
 
 1.  **Tunnel:** The phone keeps an outbound iroh connection open (bundled `dumbpipe`, foreground service). Works on cellular and with VPNs on both ends.
-2.  **Wake:** The Mac sends `START`. The phone turns USB debugging on, opens wireless debugging on a random localhost port for about a second, and connects to its own adbd with its own already-trusted key. No pairing code, no computer.
+2.  **Wake:** The Mac sends `START` via bluetooth. The phone turns USB debugging on, opens wireless debugging on a random localhost port for about a second, and connects to its own adbd with its own already-trusted key. No pairing code, no computer.
 3.  **Daemon:** Over that connection it spawns a shell-uid helper with `app_process`, then closes the window. The helper launches scrcpy's server and relays its video, audio and control sockets.
-4.  **Session:** The Mac decodes H.264 with `AVSampleBufferDisplayLayer` and AAC with AudioToolbox, and turns mouse and keyboard into scrcpy control messages. Bitrate adapts to the link.
-5.  **Lock down:** Disconnect turns USB debugging off again. Or keep it ready for cellular and pause it from a Quick Settings tile when a banking app complains.
+4.  **Session:** The Mac decodes H.264 with `AVSampleBufferDisplayLayer` and AAC with AudioToolbox, and turns mouse and keyboard into scrcpy control messages. Bitrate adapts to the link strength.
+5.  **Lock down:** Disconnect turns USB debugging off again. Or keeps it ready for cellular and pauses it from a Quick Settings tile when a banking app complains.
 
-<details>
-<summary>Text version of the diagram</summary>
-
-```
- Mac                                      Phone
-┌──────────────────┐                     ┌─────────────────────────────────────┐
-│ Bridge.app       │                     │ Bridge app (normal uid)             │
-│  viewer + input  │                     │  TunnelService ── dumbpipe listen   │
-│        │         │   iroh / QUIC       │        │                            │
-│  dumbpipe ───────┼══ direct or relay ══┼──> ControlProxy :5580               │
-│  connect-tcp     │                     │     ├─ START/STOP/PAUSE/MODE/STATUS │
-└──────────────────┘                     │     ├─ NOTIF ── NotificationService │
-                                         │     └─ VIDEO/AUDIO/CTRL/CLIP/PUSH ┐ │
-                                         │                                   │ │
-                                         │ Daemon (shell uid, app_process)   │ │
-                                         │  :5577 <───────────────────────────┘ │
-                                         │   └─ scrcpy-server ── localabstract  │
-                                         │                                      │
-                                         │ adbd: alive during a session,        │
-                                         │       USB only, no TCP listener      │
-                                         └──────────────────────────────────────┘
-```
-</details>
+> Some banking apps look for Developer Options instead of USB Debugging, for which you can disable Developer Options after the setup is complete (At least after using Wifi to connect once and "Keep Ready" on for cellular).
 
 <br>
 
 ## <img src="https://api.iconify.design/lucide/shield-check.svg?color=%234F9CF9" width="24" height="24"> Security Model
-We port-scanned the phone during a session to make sure of this.
 
 | **When**                  | **What's reachable**                                                                                       |
 | :------------------------ | :--------------------------------------------------------------------------------------------------------- |
@@ -108,7 +85,7 @@ Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binar
 | **Phone app**        | <img src="https://skillicons.dev/icons?i=kotlin,androidstudio,gradle" valign="middle" />                       | Kotlin and Compose (Material 3). Foreground service, in-app ADB client (RSA + TLS), Wi-Fi bootstrap. |
 | **Mac app**          | <img src="https://skillicons.dev/icons?i=swift,apple" valign="middle" />                                       | Swift Package: SwiftUI menu bar, AppKit viewer, AVFoundation and AudioToolbox decoding.    |
 | **Connectivity**     | <img src="https://skillicons.dev/icons?i=rust" valign="middle" />                                              | [iroh](https://github.com/n0-computer/iroh) via `dumbpipe`: QUIC, hole punching, relay fallback. |
-| **Capture & input**  | <img src="https://raw.githubusercontent.com/Genymobile/scrcpy/master/app/data/icon.svg" width="40" valign="middle" /> | [scrcpy](https://github.com/Genymobile/scrcpy)'s server, bundled as-is, run by our shell-uid daemon. |
+| **Capture & input**  | <img src="https://raw.githubusercontent.com/Genymobile/scrcpy/refs/heads/master/app/data/scrcpy.png" width="40" valign="middle" /> | [scrcpy](https://github.com/Genymobile/scrcpy)'s server, bundled as-is, run by our shell-uid daemon. |
 | **ADB client**       | <img src="https://api.iconify.design/lucide/terminal.svg?color=%234F9CF9" width="36" valign="middle" />        | Adapted from [Shizuku](https://github.com/RikkaApps/Shizuku); talks to the phone's own adbd over loopback. |
 
 <br>
@@ -128,12 +105,12 @@ Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binar
 ### Install a release
 
 1. **Phone:** download `app-release.apk` from [Releases](https://github.com/Bonevane/Bridge/releases) and open it (allow installs from your browser when asked). Requires Android 11+ and an arm64 phone, i.e. anything from the last several years.
-2. **Mac:** download `Bridge-<version>.dmg`, open it and drag Bridge onto Applications. It isn't notarized (that needs a paid Apple developer account), so the first launch is **right-click → Open → Open**; after that it opens normally. Everything it needs is inside the bundle.
-3. **Pair, once:** on the phone, enable Developer options → USB debugging. Plug in, click **Set Up Over USB** in Bridge's menu on the Mac, accept "Allow USB debugging" on the phone with *Always allow*. Unplug. **Mirror Phone.** The first time on each Wi-Fi network Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
+2. **Mac:** download `Bridge-<version>.dmg`, open it and drag Bridge onto Applications. Everything it needs is inside the bundle.
+3. **Pair, once:** on the phone after allowing all permissions, enable Developer options → USB debugging. Plug in, click **Set Up Over USB** in Bridge's menu on the Mac, accept "Allow USB debugging" on the phone with *Always allow*. Unplug. **Mirror Phone.** The first time on each Wi-Fi network Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
 
 macOS will ask for Bluetooth and Notifications the first time; both are needed for the short-range link.
 
-You can turn Developer options off again after setup — Bridge switches USB debugging itself — but **do it on Wi-Fi**: it also turns USB debugging off, and Bridge can only restart its helper through wireless debugging, which Android offers on Wi-Fi only. Once the helper is back (a few seconds), cellular works again. Do it on LTE and you're stuck until the phone next sees Wi-Fi.
+You can turn Developer options off again after setup. Bridge switches USB debugging itself, but **do it on Wi-Fi**: it also turns USB debugging off, and Bridge can only restart its helper through wireless debugging, which Android offers on Wi-Fi only. Once the helper is back (a few seconds), cellular works again. Do it on LTE and you're stuck until the phone next sees Wi-Fi (or you reconnect via a cable).
 
 ### Build from source
 

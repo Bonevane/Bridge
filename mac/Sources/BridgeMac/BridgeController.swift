@@ -42,6 +42,9 @@ final class BridgeController: ObservableObject {
                 return
             }
             Keychain.set("ticket", ticket)
+            // Setup stores the secret first and the ticket second; Bluetooth
+            // waits for both, so it has to be re-checked here as well.
+            updateBluetooth()
         }
     }
     /// Proves this Mac to the phone. See Keychain.swift.
@@ -812,6 +815,7 @@ final class BridgeController: ObservableObject {
         guard useBluetooth, isPaired else {
             bluetoothLink.stop()
             bluetoothLinked = false
+            bluetoothState = .searching     // not "off": simply not started yet
             return
         }
         bluetoothLink.onStateChange = { [weak self] state in

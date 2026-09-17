@@ -26,9 +26,10 @@ use windows::Devices::Bluetooth::Advertisement::{
 };
 use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
-    GattProtectionLevel, GattValueChangedEventArgs, GattWriteOption,
+    GattDeviceService, GattOpenStatus, GattProtectionLevel, GattSharingMode, GattValueChangedEventArgs,
+    GattWriteOption,
 };
-use windows::Devices::Bluetooth::{BluetoothConnectionStatus, BluetoothLEDevice};
+use windows::Devices::Bluetooth::{BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
 use windows::Devices::Enumeration::{DevicePairingKinds, DevicePairingRequestedEventArgs, DevicePairingResultStatus};
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter};
@@ -216,11 +217,19 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         crate::log!("bluetooth", "paired");
     }
 
-    let services = device.GetGattServicesForUuidAsync(SERVICE)?.get()?;
+    // Uncached: Windows keeps a copy of the phone's GATT table from earlier
+    // pairings and happily returns it, characteristics missing and all.
+    let services = device.GetGattServicesForUuidWithCacheModeAsync(SERVICE, BluetoothCacheMode::Uncached)?.get()?;
     if services.Status()? != GattCommunicationStatus::Success || services.Services()?.Size()? == 0 {
-        bail!("Bridge service not found on the phone");
+        bail!("Bridge service not found on the phone (status {:?})", services.Status()?);
     }
     let service = services.Services()?.GetAt(0)?;
+    // The service has to be opened before its (encrypted) characteristics
+    // can be read; without this the query comes back empty.
+    let open = service.OpenAsync(GattSharingMode::SharedReadAndWrite)?.get()?;
+    if open != GattOpenStatus::Success && open != GattOpenStatus::AlreadyOpened {
+        bail!("couldn't open the Bridge service: {:?}", open);
+    }
     let tx = characteristic(&service, TX)?;
     let rx = characteristic(&service, RX)?;
     // Encryption first, or the phone's encrypted descriptor refuses the subscribe.
@@ -283,15 +292,23 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     Ok(())
 }
 
-fn characteristic(
-    service: &windows::Devices::Bluetooth::GenericAttributeProfile::GattDeviceService,
-    uuid: GUID,
-) -> Result<GattCharacteristic> {
-    let result = service.GetCharacteristicsForUuidAsync(uuid)?.get()?;
-    if result.Status()? != GattCommunicationStatus::Success || result.Characteristics()?.Size()? == 0 {
-        bail!("characteristic {uuid:?} not found");
+fn characteristic(service: &GattDeviceService, uuid: GUID) -> Result<GattCharacteristic> {
+    let result = service.GetCharacteristicsForUuidWithCacheModeAsync(uuid, BluetoothCacheMode::Uncached)?.get()?;
+    let status = result.Status()?;
+    let found = result.Characteristics()?;
+    if status != GattCommunicationStatus::Success || found.Size()? == 0 {
+        // Say what the phone did offer, so a mismatch is obvious from the log.
+        let all = service.GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)?.get()?;
+        let listed: Vec<String> = (0..all.Characteristics()?.Size()?)
+            .filter_map(|i| all.Characteristics().ok()?.GetAt(i).ok()?.Uuid().ok().map(|u| format!("{u:?}")))
+            .collect();
+        bail!(
+            "characteristic {uuid:?} not found (query status {status:?}, all-characteristics status {:?}, offered: [{}])",
+            all.Status()?,
+            listed.join(", ")
+        );
     }
-    Ok(result.Characteristics()?.GetAt(0)?)
+    Ok(found.GetAt(0)?)
 }
 
 /// One chunk in from the phone.

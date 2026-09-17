@@ -3,6 +3,7 @@ package com.bonevane.bridge
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattServer
@@ -269,6 +270,31 @@ class BleLink(private val context: Context) {
         }
     }
 
+    // MARK: - Connection parameters
+
+    private var paramGatt: BluetoothGatt? = null
+
+    /**
+     * Android's GATT subrate manager renegotiates every new link to a 720 ms
+     * supervision timeout (interval=24 latency=0 timeout=72, seen in logcat as
+     * `gatt_subrate_mgr … mode:0`), and the Pixel radio then drops the link on
+     * the first hiccup: the Mac sees "connection timed out" every few seconds.
+     * A peripheral has no API for this, but a *client* handle on the same link
+     * does: connectGatt() reuses the existing connection, and
+     * requestConnectionPriority() puts sane parameters (5 s timeout) back.
+     */
+    @SuppressLint("MissingPermission")
+    private fun pinConnectionParameters(device: BluetoothDevice) {
+        runCatching { paramGatt?.close() }
+        paramGatt = device.connectGatt(context, false, object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                }
+            }
+        }, BluetoothDevice.TRANSPORT_LE)
+    }
+
     // MARK: - GATT server
 
     @SuppressLint("MissingPermission")
@@ -276,14 +302,9 @@ class BleLink(private val context: Context) {
         manager.openGattServer(context, object : BluetoothGattServerCallback() {
 
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    // Android quirk: a GATT server has to claim the connection
-                    // or the stack treats it as idle and lets it lapse; the Mac
-                    // then sees "connection timed out" (reason 6) every few
-                    // seconds and relinks. This is what stops that.
-                    runCatching { server?.connect(device, false) }
-                }
+                if (newState == BluetoothProfile.STATE_CONNECTED) pinConnectionParameters(device)
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    runCatching { paramGatt?.close() }; paramGatt = null
                     subscribers.remove(device)
                     verified = false
                     connected = false

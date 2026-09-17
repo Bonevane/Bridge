@@ -77,7 +77,10 @@ object Prefs {
      * can't connect from afar, but notifications and clipboard still work nearby
      * and the phone stops paying for relay keepalives.
      */
-    fun tunnelEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean("tunnelEnabled", true)
+    // Off by default: Nearby costs nothing, and the Mac switches the tunnel on
+    // over Bluetooth for a session and off again afterwards. "Anywhere" is for
+    // when you'll be out of Bluetooth range and want to mirror anyway.
+    fun tunnelEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean("tunnelEnabled", false)
     fun setTunnelEnabled(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("tunnelEnabled", on).apply()
 
     /** Whether the user last left the tunnel on. */

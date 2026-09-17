@@ -271,6 +271,9 @@ final class BridgeController: ObservableObject {
                     fail("The phone didn't start its tunnel. Turn it on from the phone's screen.")
                     return
                 }
+                // We turned it on, so we turn it off again at Disconnect: the
+                // phone goes back to the free Nearby mode it was in.
+                tunnelWokenForSession = true
                 try? await Task.sleep(nanoseconds: 2_000_000_000)   // let it reach a relay
             }
             _ = await background { Shell.run(adb, ["start-server"]) }
@@ -444,6 +447,9 @@ final class BridgeController: ObservableObject {
                     fail("The phone didn't start its tunnel. Turn it on from the phone's screen.")
                     return
                 }
+                // We turned it on, so we turn it off again at Disconnect: the
+                // phone goes back to the free Nearby mode it was in.
+                tunnelWokenForSession = true
                 try? await Task.sleep(nanoseconds: 2_000_000_000)   // let it reach a relay
             }
             _ = await background { Shell.run(adb, ["start-server"]) }
@@ -574,6 +580,9 @@ final class BridgeController: ObservableObject {
         onPhoneText: { [weak self] text in self?.phoneClipboardChanged(text) },
         macText: { NSPasteboard.general.string(forType: .string) },
         markSynced: { [weak self] text in self?.lastSyncedText = text })
+
+    /// True while a session is running on a tunnel this Mac switched on.
+    private var tunnelWokenForSession = false
 
     /// Asks the phone (over Bluetooth) to start its tunnel, and waits for it to
     /// say it has. Returns false if it never does.
@@ -872,6 +881,8 @@ final class BridgeController: ObservableObject {
     func disconnect() {
         guard !disconnecting else { return }
         disconnecting = true
+        let wokeTunnel = tunnelWokenForSession     // read now: the Task below runs later
+        tunnelWokenForSession = false
         userStopped = true
         stopSessionWatchdog()
         session?.stop()
@@ -890,6 +901,12 @@ final class BridgeController: ObservableObject {
             if viaBluetooth {
                 bluetoothLink.endSession()
                 appendLog("Told the phone over Bluetooth.", source: "phone")
+                if wokeTunnel {
+                    // Back to Nearby: the tunnel was only up for this session.
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)   // let the phone finish STOP first
+                    bluetoothLink.setPhoneTunnel(false)
+                    appendLog("Tunnel off again; the phone is back to Nearby.", source: "phone")
+                }
             } else {
                 var temp: Process?
                 if !tunnelAlive, let dumbpipe = dumbpipe, currentTicket.hasPrefix("endpoint") {

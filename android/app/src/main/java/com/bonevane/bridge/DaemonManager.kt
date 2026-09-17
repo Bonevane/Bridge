@@ -69,7 +69,7 @@ object DaemonManager {
         if (!AdbToggle.isGranted(ctx)) {
             error("WRITE_SECURE_SETTINGS not granted yet; run \"Set up over USB\" once")
         }
-        if (Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) != 1) {
+        if (!AdbToggle.isEnabled(ctx)) {
             AdbToggle.set(ctx, true)
         }
 

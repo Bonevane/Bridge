@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_AUTHORIZE = "com.bonevane.bridge.AUTHORIZE"
+        const val ACTION_NEARBY = "com.bonevane.bridge.NEARBY"
     }
 
     /// Permission state is read once per screen; granting happens in a system
@@ -128,6 +129,11 @@ class MainActivity : ComponentActivity() {
         if (intent?.action == TunnelService.ACTION_START || Prefs.wantRunning(this)) {
             TunnelService.start(this)
         }
+        // Set Up Over USB needs a ticket, and only a running tunnel makes one,
+        // so setup switches the tunnel on and switches it back to Nearby when
+        // it's done (ACTION_NEARBY). The mode the user picked is untouched.
+        if (intent?.action == TunnelService.ACTION_START) TunnelService.setTunnel(this, true, remember = false)
+        if (intent?.action == ACTION_NEARBY && !Prefs.tunnelEnabled(this)) TunnelService.setTunnel(this, false, remember = false)
         if (intent?.action == ACTION_AUTHORIZE) authorizeKey()
     }
 

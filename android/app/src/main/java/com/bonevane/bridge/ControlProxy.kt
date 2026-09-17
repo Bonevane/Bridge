@@ -202,7 +202,7 @@ class ControlProxy(private val ctx: Context) {
                 reply("OK wrote=$ok")
             }
             "STATUS" -> {
-                val adb = Settings.Global.getInt(ctx.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1
+                val adb = AdbToggle.isEnabled(ctx)
                 val paused = TunnelService.current?.policy?.isPaused ?: false
                 reply("OK adb=$adb daemon=${DaemonManager.isDaemonAlive()} keep=${Prefs.keepReady(ctx)}" +
                     " keepAt=${Prefs.keepReadyAt(ctx)}" +

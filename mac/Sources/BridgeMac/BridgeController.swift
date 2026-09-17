@@ -395,6 +395,11 @@ final class BridgeController: ObservableObject {
                     "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
             }
             if !spawn.ok { appendLog(spawn.output, source: "adb") }
+            // Setup switched the phone's tunnel on to mint the ticket; hand it
+            // back to whatever mode the user chose (Nearby by default).
+            _ = await background {
+                Shell.run(adb, ["-s", usbSerial, "shell", "am", "start", "-n", activity, "-a", "com.bonevane.bridge.NEARBY"], timeout: 10)
+            }
             phase = .idle
             notice = (keepReady
                 ? "Set up, and the helper is running. Unplug and click Mirror Phone."

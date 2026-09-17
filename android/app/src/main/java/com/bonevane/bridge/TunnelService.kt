@@ -48,15 +48,22 @@ class TunnelService : Service() {
         }
 
         /** Turns the internet tunnel on or off, leaving Bluetooth alone. */
-        fun setTunnel(ctx: Context, on: Boolean) {
+        /**
+         * [remember] = false is for the Mac and for setup: the tunnel comes up
+         * for a session (or to mint the ticket) without changing the mode the
+         * user chose, so the phone lands back in Nearby afterwards.
+         */
+        fun setTunnel(ctx: Context, on: Boolean, remember: Boolean = true) {
             ctx.startForegroundService(
                 Intent(ctx, TunnelService::class.java)
                     .setAction(ACTION_TUNNEL)
                     .putExtra(EXTRA_ON, on)
+                    .putExtra(EXTRA_REMEMBER, remember)
             )
         }
 
         const val EXTRA_ON = "on"
+        const val EXTRA_REMEMBER = "remember"
     }
 
     @Volatile private var active = false
@@ -95,7 +102,7 @@ class TunnelService : Service() {
             // Mac asked for a particular state.
             val on = if (intent.hasExtra(EXTRA_ON)) intent.getBooleanExtra(EXTRA_ON, true)
                      else !TunnelState.tunnelOn
-            Prefs.setTunnelEnabled(this, on)
+            if (intent.getBooleanExtra(EXTRA_REMEMBER, true)) Prefs.setTunnelEnabled(this, on)
             if (on) startTunnel() else stopTunnel()
         }
         return START_STICKY

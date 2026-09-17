@@ -386,11 +386,11 @@ class BleLink(private val context: Context) {
             when (message.trim()) {
                 "tunnel on" -> {
                     TunnelState.log("Mac asked for the tunnel over Bluetooth")
-                    TunnelService.setTunnel(context, true)
+                    TunnelService.setTunnel(context, true, remember = false)
                 }
                 "tunnel off" -> {
                     TunnelState.log("Mac turned the tunnel off over Bluetooth")
-                    TunnelService.setTunnel(context, false)
+                    TunnelService.setTunnel(context, false, remember = false)
                 }
                 "status" -> sendStatus()        // the Mac's refresh button
                 "session over" -> {

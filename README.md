@@ -171,7 +171,7 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 - [Shizuku](https://github.com/RikkaApps/Shizuku): the in-app ADB client is adapted from theirs
 - [thedjchi's Shizuku fork](https://github.com/thedjchi/Shizuku/wiki): for the TCP-mode-and-intents trick that unlocked the banking-app problem
 
-See `NOTICE` for licenses.
+Bridge is released under the [Apache License 2.0](LICENSE). See `NOTICE` for the licences of the parts it builds on.
 
 <br>
 

@@ -224,8 +224,8 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     let tx = characteristic(&service, TX)?;
     let rx = characteristic(&service, RX)?;
     // Encryption first, or the phone's encrypted descriptor refuses the subscribe.
-    tx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthentication)?;
-    rx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthentication)?;
+    tx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthenticationRequired)?;
+    rx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthenticationRequired)?;
 
     {
         let mut l = link.lock().unwrap();

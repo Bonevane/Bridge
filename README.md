@@ -182,3 +182,7 @@ See `NOTICE` for licenses.
 [![Email](https://img.shields.io/badge/Email-34A853?style=flat&logo=gmail&logoColor=white)](mailto:rahmad.atomic44@gmail.com)
 
 </div>
+
+<p align="center">
+  <sub>Made with <img src="https://api.iconify.design/lucide/heart.svg?color=%234F9CF9" width="12" height="12"> by Bonevane</sub>
+</p>

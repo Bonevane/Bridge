@@ -39,9 +39,14 @@ tray-icon = "0.19"
 arboard = "3"
 # Windows toast notifications without a Start Menu shortcut dance.
 tauri-winrt-notification = "0.7"
+# The window, in Windows' own Fluent style.
+slint = { version = "1.8", default-features = false, features = ["std", "backend-winit", "renderer-skia", "compat-1-2"] }
 # Small conveniences.
 anyhow = "1"
 chrono = "0.4"
+
+[build-dependencies]
+slint-build = "1.8"
 
 [profile.release]
 opt-level = "z"

@@ -1,0 +1,146 @@
+// Bridge's window. Same three questions as the Mac panel, in order: is my
+// phone reachable, what works right now, what can I do about it.
+import { Button, VerticalBox, HorizontalBox, ScrollView, Switch, LineEdit } from "std-widgets.slint";
+
+export struct Capability {
+    name: string,
+    detail: string,
+    state: int,   // 0 off · 1 limited · 2 working
+}
+
+export global AppState {
+    // How the phone is reachable.
+    in-out property <string> reach-title: "Pair your phone first";
+    in-out property <string> reach-detail: "Copy the ticket on the phone, then click Pair.";
+    in-out property <int> reach-tint: 0;   // 0 neutral · 1 good · 2 warning · 3 error
+    in-out property <bool> busy: false;
+
+    in-out property <bool> paired: false;
+    in-out property <bool> linked: false;
+    in-out property <bool> phone-tunnel-on: false;
+    in-out property <bool> mirroring: false;
+
+    in-out property <Capability> screen: { name: "Screen", detail: "", state: 0 };
+    in-out property <Capability> notifications: { name: "Notifications", detail: "", state: 0 };
+    in-out property <Capability> clipboard: { name: "Clipboard", detail: "", state: 0 };
+
+    in-out property <string> log-text: "";
+    in-out property <string> version: "";
+
+    callback primary();         // Pair / Mirror / Disconnect, depending on state
+    callback pair-from-clipboard();
+    callback rescan();
+    callback toggle-phone-tunnel();
+    callback unpair();
+    callback open-log-folder();
+    callback quit();
+}
+
+component Card inherits Rectangle {
+    in property <brush> tint: transparent;
+    border-radius: 12px;
+    background: tint == transparent ? #00000010 : tint;
+    padding: 12px;
+}
+
+component CapabilityRow inherits HorizontalBox {
+    in property <Capability> cap;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    spacing: 10px;
+    VerticalLayout {
+        spacing: 1px;
+        Text { text: cap.name; font-size: 13px; font-weight: 600; }
+        Text { text: cap.detail; font-size: 11px; opacity: 0.65; wrap: word-wrap; }
+    }
+    Rectangle {
+        width: 12px; height: 12px;
+        border-radius: 6px;
+        background: cap.state == 2 ? #34c759 : cap.state == 1 ? #ff9f0a : #8e8e93;
+        opacity: cap.state == 0 ? 0.5 : 1;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Bridge";
+    width: 340px;
+    preferred-height: 560px;
+    background: #f3f3f3;
+
+    VerticalBox {
+        padding: 14px;
+        spacing: 12px;
+
+        HorizontalBox {
+            padding: 0;
+            Text { text: "Bridge"; font-size: 14px; font-weight: 700; opacity: 0.7; horizontal-alignment: center; }
+        }
+
+        // How the phone is reachable: the one line worth reading first.
+        Card {
+            tint: AppState.reach-tint == 1 ? #34c75926 : AppState.reach-tint == 2 ? #ff9f0a26 : AppState.reach-tint == 3 ? #ff3b3026 : transparent;
+            HorizontalBox {
+                padding: 0;
+                spacing: 10px;
+                Rectangle {
+                    width: 34px; height: 34px; border-radius: 17px;
+                    background: AppState.reach-tint == 1 ? #34c75940 : AppState.reach-tint == 2 ? #ff9f0a40 : AppState.reach-tint == 3 ? #ff3b3040 : #00000018;
+                    Text { text: AppState.reach-tint == 1 ? "●" : AppState.reach-tint == 3 ? "!" : "○"; font-size: 14px; }
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    Text { text: AppState.reach-title; font-size: 13px; font-weight: 600; }
+                    Text { text: AppState.reach-detail; font-size: 11px; opacity: 0.7; wrap: word-wrap; }
+                }
+            }
+        }
+
+        Button {
+            text: AppState.mirroring || AppState.busy ? "Disconnect" : AppState.paired ? "Mirror Phone" : "Pair from Clipboard";
+            primary: true;
+            clicked => { AppState.primary(); }
+        }
+
+        // What works right now.
+        Card {
+            VerticalLayout {
+                CapabilityRow { cap: AppState.screen; }
+                Rectangle { height: 1px; background: #00000015; }
+                CapabilityRow { cap: AppState.notifications; }
+                Rectangle { height: 1px; background: #00000015; }
+                CapabilityRow { cap: AppState.clipboard; }
+            }
+        }
+
+        // Actions.
+        Card {
+            VerticalLayout {
+                spacing: 4px;
+                Button { text: "Pair from Clipboard"; clicked => { AppState.pair-from-clipboard(); } }
+                Button { text: "Look for the Phone Again"; clicked => { AppState.rescan(); } }
+                Button {
+                    text: AppState.phone-tunnel-on ? "Turn Phone Tunnel Off" : "Turn Phone Tunnel On";
+                    enabled: AppState.linked;
+                    clicked => { AppState.toggle-phone-tunnel(); }
+                }
+                Button { text: "Open Log Folder"; clicked => { AppState.open-log-folder(); } }
+                Button { text: "Unpair"; clicked => { AppState.unpair(); } }
+            }
+        }
+
+        // Activity log.
+        Card {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "Activity log"; font-size: 12px; font-weight: 600; opacity: 0.7; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    Text { text: AppState.log-text; font-size: 10px; font-family: "Consolas"; wrap: word-wrap; }
+                }
+            }
+        }
+
+        Text { text: "Bridge " + AppState.version + " · made by Bonevane"; font-size: 10px; opacity: 0.5; horizontal-alignment: center; }
+    }
+}

@@ -51,6 +51,8 @@ pub enum Event {
     Notification { app: String, title: String, body: String },
     Clipboard(String),
     Status(std::collections::HashMap<String, String>),
+    /// From the tunnel thread: START's reply, or why it failed.
+    Connected(Result<String, String>),
 }
 
 /// The live link, shared between the WinRT callbacks and the app.

@@ -1,16 +1,15 @@
-//! Bridge for Windows. Milestone 1: the Bluetooth trio.
+//! Bridge for Windows.
 //!
-//!   - pair by copying the ticket from the phone (Copy under Ticket) and
-//!     choosing "Pair from clipboard" in the tray menu;
-//!   - Bluetooth LE link with the pairing handshake;
-//!   - phone notifications as toasts, clipboard both ways, and "open on this
-//!     PC" twin reporting so the phone skips duplicate notifications.
+//! Milestone 1 (done): pair by copying the ticket from the phone; Bluetooth
+//! link with the handshake and app-layer encryption; notifications as
+//! toasts; clipboard both ways; open-app twins.
+//! Milestone 2a (this file): the tunnel (bundled dumbpipe) and the control
+//! protocol over it: Mirror wakes the phone's tunnel over Bluetooth, starts
+//! the helper, and Disconnect puts everything back. Video comes next.
 //!
-//! No tunnel and no mirroring yet; those are milestone 2.
-//!
-//! Structure: one worker thread owns the Bluetooth link and a channel of
-//! events from it; the main thread runs the Win32 message loop for the tray
-//! icon and polls the channel and the clipboard on a timer.
+//! Structure: Slint owns the window and the event loop; the Bluetooth link
+//! and the tunnel run on their own threads and report back through a channel
+//! that a timer drains on the UI thread.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -20,66 +19,129 @@ mod log;
 mod notify;
 mod protocol;
 mod store;
+mod tunnel;
 mod twins;
 
 use ble::Event;
 use protocol::Kind;
+use slint::{ComponentHandle, Timer, TimerMode};
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIconBuilder};
-use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE};
+
+slint::include_modules!();
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Everything the UI thread owns.
 struct App {
+    window: MainWindow,
     creds: store::Credentials,
     ble: Option<ble::Ble>,
     events: mpsc::Receiver<Event>,
     events_tx: mpsc::Sender<Event>,
     clipboard: clipboard::Watcher,
     linked: bool,
+    phone_tunnel_on: bool,
+    tunnel: Option<tunnel::Tunnel>,
+    mirroring: bool,
     last_twins: Option<BTreeSet<String>>,
     last_tick: Instant,
-    status_item: MenuItem,
-    /// When to look for the phone again after a drop.
     rescan_at: Option<Instant>,
+    log_lines: Vec<String>,
 }
 
 impl App {
-    fn new(status_item: MenuItem) -> Self {
+    fn new(window: MainWindow) -> Self {
         let (events_tx, events) = mpsc::channel();
         App {
+            window,
             creds: store::load().unwrap_or_default(),
             ble: None,
             events,
             events_tx,
             clipboard: clipboard::Watcher::new(),
             linked: false,
+            phone_tunnel_on: false,
+            tunnel: None,
+            mirroring: false,
             last_twins: None,
             last_tick: Instant::now(),
-            status_item,
             rescan_at: None,
+            log_lines: Vec::new(),
         }
     }
 
+    fn log(&mut self, source: &str, text: &str) {
+        crate::log::line(source, text);
+        let stamp = chrono::Local::now().format("%H:%M:%S");
+        let line = if source.is_empty() { format!("{stamp} {text}") } else { format!("{stamp} [{source}] {text}") };
+        self.log_lines.push(line);
+        if self.log_lines.len() > 200 {
+            self.log_lines.remove(0);
+        }
+        self.window.global::<AppState>().set_log_text(self.log_lines.join("\n").into());
+    }
+
+    // MARK: - State → UI
+
+    fn refresh(&self) {
+        let ui = self.window.global::<AppState>();
+        ui.set_paired(self.creds.is_paired());
+        ui.set_linked(self.linked);
+        ui.set_phone_tunnel_on(self.phone_tunnel_on);
+        ui.set_mirroring(self.mirroring);
+        ui.set_version(VERSION.into());
+
+        let (title, detail, tint) = if !self.creds.is_paired() {
+            ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
+        } else if self.mirroring {
+            ("Mirroring", "The phone's helper is running (video comes in the next milestone)", 1)
+        } else if self.linked {
+            (
+                "Phone nearby",
+                if self.phone_tunnel_on { "Bluetooth linked, and reachable from anywhere" } else { "Bluetooth linked · tunnel off, so no remote mirroring" },
+                1,
+            )
+        } else {
+            ("Looking for your phone", "Searching over Bluetooth. Mirroring still works if its tunnel is on.", 0)
+        };
+        ui.set_reach_title(title.into());
+        ui.set_reach_detail(detail.into());
+        ui.set_reach_tint(tint);
+
+        ui.set_screen(Capability {
+            name: "Screen".into(),
+            detail: if self.mirroring { "Live" } else if self.phone_tunnel_on { "Ready to mirror" } else if self.linked { "Click Mirror: the tunnel comes up over Bluetooth" } else { "Needs the phone's tunnel, or Bluetooth to wake it" }.into(),
+            state: if self.mirroring || self.phone_tunnel_on { 2 } else if self.linked { 1 } else { 0 },
+        });
+        ui.set_notifications(Capability {
+            name: "Notifications".into(),
+            detail: if self.linked { "Over Bluetooth" } else { "When the phone is nearby" }.into(),
+            state: if self.linked { 2 } else { 0 },
+        });
+        ui.set_clipboard(Capability {
+            name: "Clipboard".into(),
+            detail: if self.linked { "Both ways, over Bluetooth" } else { "When the phone is nearby" }.into(),
+            state: if self.linked { 2 } else { 0 },
+        });
+    }
+
+    // MARK: - Pairing and Bluetooth
+
     fn start_bluetooth(&mut self) {
         if !self.creds.is_paired() {
-            self.set_status("Not paired: copy the ticket on the phone, then Pair from clipboard");
+            self.refresh();
             return;
         }
         let mut link = ble::Ble::new(&self.creds.secret, self.events_tx.clone());
         match link.start() {
-            Ok(()) => {
-                self.ble = Some(link);
-                self.set_status("Looking for your phone…");
-            }
-            Err(e) => {
-                crate::log!("bluetooth", "couldn't start: {e:#}");
-                self.set_status(&format!("Bluetooth unavailable: {e}"));
-            }
+            Ok(()) => self.ble = Some(link),
+            Err(e) => self.log("bluetooth", &format!("couldn't start: {e:#}")),
         }
+        self.refresh();
     }
 
     fn pair_from_clipboard(&mut self) {
@@ -87,11 +149,11 @@ impl App {
         match store::Credentials::parse(&text) {
             Some(creds) => {
                 if let Err(e) = store::save(&creds) {
-                    crate::log!("", "couldn't save credentials: {e:#}");
+                    self.log("", &format!("couldn't save credentials: {e:#}"));
                     return;
                 }
                 self.creds = creds;
-                crate::log!("", "paired from the clipboard");
+                self.log("", "paired from the clipboard");
                 if let Some(b) = self.ble.as_mut() {
                     b.stop();
                 }
@@ -99,13 +161,14 @@ impl App {
                 self.start_bluetooth();
             }
             None => {
-                crate::log!("", "clipboard doesn't hold a Bridge ticket (expected \"endpoint… <secret>\")");
+                self.log("", "the clipboard doesn't hold a Bridge ticket (expected \"endpoint… <secret>\")");
                 notify::show("Bridge", "Nothing to pair with", "Tap Copy under Ticket on the phone first, then try again.");
             }
         }
     }
 
     fn unpair(&mut self) {
+        self.disconnect();
         let _ = store::clear();
         ble::Ble::unpair_all();
         self.creds = store::Credentials::default();
@@ -114,15 +177,116 @@ impl App {
         }
         self.ble = None;
         self.linked = false;
-        self.set_status("Not paired");
-        crate::log!("", "unpaired");
+        self.log("", "unpaired");
+        self.refresh();
     }
 
-    fn set_status(&self, text: &str) {
-        self.status_item.set_text(text);
+    fn rescan(&mut self) {
+        match self.ble.as_mut() {
+            Some(b) => {
+                if let Err(e) = b.start() {
+                    self.log("bluetooth", &format!("rescan failed: {e:#}"));
+                }
+            }
+            None => self.start_bluetooth(),
+        }
     }
 
-    /// Runs every ~500 ms from the message loop.
+    // MARK: - Tunnel and mirroring
+
+    fn toggle_phone_tunnel(&mut self) {
+        let on = !self.phone_tunnel_on;
+        if let Some(b) = &self.ble {
+            let _ = b.send_command(if on { "tunnel on" } else { "tunnel off" });
+            self.log("bluetooth", if on { "asked the phone to start its tunnel" } else { "asked the phone to stop its tunnel" });
+        }
+    }
+
+    /// Mirror Phone: wake the tunnel if needed, connect, START.
+    fn connect(&mut self) {
+        if self.mirroring || self.tunnel.is_some() {
+            return;
+        }
+        self.window.global::<AppState>().set_busy(true);
+        self.window.global::<AppState>().set_reach_title("Connecting".into());
+        self.window.global::<AppState>().set_reach_detail("Starting the tunnel…".into());
+        let need_wake = self.linked && !self.phone_tunnel_on;
+        if need_wake {
+            if let Some(b) = &self.ble {
+                let _ = b.send_command("tunnel on");
+            }
+            self.log("bluetooth", "waking the phone's tunnel");
+        }
+        let ticket = self.creds.ticket.clone();
+        match tunnel::Tunnel::start(&ticket) {
+            Ok(t) => self.tunnel = Some(t),
+            Err(e) => {
+                self.log("tunnel", &format!("{e:#}"));
+                self.fail(format!("{e:#}"));
+                return;
+            }
+        }
+        // START over the tunnel, on a thread: dumbpipe needs a moment to find the phone.
+        let secret = self.creds.secret.clone();
+        let events = self.events_tx.clone();
+        std::thread::spawn(move || {
+            if need_wake {
+                std::thread::sleep(Duration::from_secs(4)); // let the phone reach a relay
+            }
+            let mut result = Err("the phone didn't answer over the tunnel".to_string());
+            for attempt in 1..=12 {
+                std::thread::sleep(Duration::from_secs(2));
+                match tunnel::control(&secret, "START", Duration::from_secs(40)) {
+                    Ok(r) if r.starts_with("OK") => { result = Ok(r); break; }
+                    Ok(r) => { result = Err(r); break; }
+                    Err(e) => crate::log!("phone", "START {attempt}/12: {e:#}"),
+                }
+            }
+            let _ = events.send(Event::Connected(result));
+        });
+    }
+
+    fn fail(&mut self, message: String) {
+        let ui = self.window.global::<AppState>();
+        ui.set_busy(false);
+        ui.set_reach_title("Couldn't connect".into());
+        ui.set_reach_detail(message.into());
+        ui.set_reach_tint(3);
+        if let Some(mut t) = self.tunnel.take() {
+            t.stop();
+        }
+    }
+
+    fn disconnect(&mut self) {
+        if !self.mirroring && self.tunnel.is_none() {
+            return;
+        }
+        let was_mirroring = self.mirroring;
+        self.mirroring = false;
+        self.window.global::<AppState>().set_busy(false);
+        if was_mirroring {
+            if self.linked {
+                if let Some(b) = &self.ble {
+                    // The phone stops the helper and, in Nearby mode, its tunnel.
+                    let _ = b.send_command("session over");
+                }
+                self.log("phone", "told the phone over Bluetooth");
+            } else {
+                let secret = self.creds.secret.clone();
+                std::thread::spawn(move || match tunnel::control(&secret, "STOP", Duration::from_secs(10)) {
+                    Ok(r) => crate::log!("phone", "{r}"),
+                    Err(e) => crate::log!("phone", "couldn't reach the phone to stop: {e:#}"),
+                });
+            }
+        }
+        if let Some(mut t) = self.tunnel.take() {
+            t.stop();
+        }
+        self.refresh();
+    }
+
+    // MARK: - Events
+
     fn poll(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
@@ -131,8 +295,8 @@ impl App {
             if let Some(text) = self.clipboard.poll() {
                 if let Some(b) = &self.ble {
                     match b.send(Kind::Clipboard, &text) {
-                        Ok(()) => crate::log!("clipboard", "sent to the phone"),
-                        Err(e) => crate::log!("clipboard", "couldn't send: {e:#}"),
+                        Ok(()) => self.log("clipboard", "sent to the phone"),
+                        Err(e) => self.log("clipboard", &format!("couldn't send: {e:#}")),
                     }
                 }
             }
@@ -143,7 +307,7 @@ impl App {
                 if let Some(b) = self.ble.as_mut() {
                     if !b.is_linked() {
                         if let Err(e) = b.start() {
-                            crate::log!("bluetooth", "rescan failed: {e:#}");
+                            self.log("bluetooth", &format!("rescan failed: {e:#}"));
                         }
                     }
                 }
@@ -157,6 +321,16 @@ impl App {
             if self.linked {
                 self.report_twins(false);
             }
+            if let Some(t) = self.tunnel.as_mut() {
+                if !t.is_running() {
+                    self.log("tunnel", "dumbpipe exited");
+                    self.tunnel = None;
+                    if self.mirroring {
+                        self.mirroring = false;
+                        self.fail("the tunnel dropped".into());
+                    }
+                }
+            }
         }
     }
 
@@ -164,42 +338,51 @@ impl App {
         match event {
             Event::Searching => {
                 self.linked = false;
-                self.set_status("Looking for your phone…");
+                self.log("bluetooth", "looking for the phone");
             }
             Event::Linked => {
                 self.linked = true;
-                self.set_status("Phone nearby (Bluetooth)");
+                self.log("bluetooth", "linked to the phone");
                 self.report_twins(true);
+                if let Some(b) = &self.ble {
+                    let _ = b.send_command("status");
+                }
             }
             Event::Dropped(why) => {
                 self.linked = false;
-                self.set_status(&format!("Phone out of range ({why})"));
                 self.last_twins = None;
-                // Nothing else restarts the scan: the watcher stops the moment
-                // the phone is first seen, so a drop has to bring it back.
+                self.log("bluetooth", &format!("dropped ({why})"));
                 self.rescan_at = Some(Instant::now() + Duration::from_secs(3));
             }
             Event::Notification { app, title, body } => {
-                crate::log!("notify", "{app}: {title}");
+                self.log("notify", &format!("{app}: {title}"));
                 notify::show(&app, &title, &body);
             }
             Event::Clipboard(text) => {
-                crate::log!("clipboard", "from the phone ({} chars)", text.chars().count());
+                self.log("clipboard", &format!("from the phone ({} chars)", text.chars().count()));
                 self.clipboard.set(&text);
             }
             Event::Status(fields) => {
-                let tunnel = fields.get("tunnel").map(|v| v == "1").unwrap_or(false);
-                let daemon = fields.get("daemon").map(|v| v == "1").unwrap_or(false);
-                self.set_status(&format!(
-                    "Phone nearby · tunnel {} · helper {}",
-                    if tunnel { "on" } else { "off" },
-                    if daemon { "running" } else { "off" }
-                ));
+                self.phone_tunnel_on = fields.get("tunnel").map(|v| v == "1").unwrap_or(false);
+            }
+            Event::Connected(result) => {
+                self.window.global::<AppState>().set_busy(false);
+                match result {
+                    Ok(reply) => {
+                        self.mirroring = true;
+                        self.log("phone", &reply);
+                    }
+                    Err(e) => {
+                        self.log("", &format!("couldn't connect: {e}"));
+                        self.fail(e);
+                        return;
+                    }
+                }
             }
         }
+        self.refresh();
     }
 
-    /// Tells the phone which twin apps are open here (see twins.rs).
     fn report_twins(&mut self, force: bool) {
         let now = twins::open_packages();
         if !force && self.last_twins.as_ref() == Some(&now) {
@@ -214,9 +397,7 @@ impl App {
     }
 }
 
-fn tray_icon() -> Icon {
-    // The bridge mark, 32×32, generated from assets/bridge-mark.png at build
-    // time would be nicer; for the skeleton, a navy square with a white bar.
+fn tray_icon() -> tray_icon::Icon {
     let size = 32u32;
     let mut rgba = vec![0u8; (size * size * 4) as usize];
     for y in 0..size {
@@ -230,73 +411,104 @@ fn tray_icon() -> Icon {
             rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
         }
     }
-    Icon::from_rgba(rgba, size, size).expect("icon")
+    tray_icon::Icon::from_rgba(rgba, size, size).expect("icon")
 }
 
 fn main() {
     log::init();
     crate::log!("", "Bridge {VERSION} starting");
 
-    let menu = Menu::new();
-    let status = MenuItem::new("Starting…", false, None);
-    let pair = MenuItem::new("Pair from clipboard", true, None);
-    let rescan = MenuItem::new("Look for the phone again", true, None);
-    let unpair = MenuItem::new("Unpair", true, None);
-    let open_log = MenuItem::new("Open log folder", true, None);
-    let quit = MenuItem::new("Quit Bridge", true, None);
-    let _ = menu.append_items(&[
-        &status,
-        &PredefinedMenuItem::separator(),
-        &pair,
-        &rescan,
-        &unpair,
-        &PredefinedMenuItem::separator(),
-        &open_log,
-        &quit,
-    ]);
-    let _tray = TrayIconBuilder::new()
+    let window = MainWindow::new().expect("window");
+    let app = Rc::new(RefCell::new(App::new(window.clone_strong())));
+
+    // Tray: left-click shows the window; the menu has Open and Quit.
+    let menu = tray_icon::menu::Menu::new();
+    let show = tray_icon::menu::MenuItem::new("Open Bridge", true, None);
+    let quit = tray_icon::menu::MenuItem::new("Quit Bridge", true, None);
+    let _ = menu.append_items(&[&show, &tray_icon::menu::PredefinedMenuItem::separator(), &quit]);
+    let _tray = tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Bridge")
         .with_icon(tray_icon())
         .build()
         .expect("tray icon");
 
-    let mut app = App::new(status);
-    app.start_bluetooth();
-
-    let menu_events = MenuEvent::receiver();
-    let mut msg = MSG::default();
-    loop {
-        // Pump the Win32 queue so the tray and its menu work, then do our
-        // own polling. Sleeping keeps this at ~0% CPU.
-        unsafe {
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-        while let Ok(e) = menu_events.try_recv() {
-            if e.id == pair.id() {
+    // UI callbacks.
+    {
+        let ui = window.global::<AppState>();
+        let a = app.clone();
+        ui.on_primary(move || {
+            let mut app = a.borrow_mut();
+            let busy = app.window.global::<AppState>().get_busy();
+            if app.mirroring || busy {
+                app.disconnect();
+            } else if !app.creds.is_paired() {
                 app.pair_from_clipboard();
-            } else if e.id == rescan.id() {
-                if let Some(b) = app.ble.as_mut() {
-                    let _ = b.start();
-                } else {
-                    app.start_bluetooth();
-                }
-            } else if e.id == unpair.id() {
-                app.unpair();
-            } else if e.id == open_log.id() {
-                let _ = std::process::Command::new("explorer").arg(store::data_dir()).spawn();
-            } else if e.id == quit.id() {
-                crate::log!("", "quit");
-                if let Some(b) = app.ble.as_mut() {
-                    b.stop();
-                }
-                return;
+            } else {
+                app.connect();
             }
-        }
-        app.poll();
-        std::thread::sleep(Duration::from_millis(100));
+        });
+        let a = app.clone();
+        ui.on_pair_from_clipboard(move || a.borrow_mut().pair_from_clipboard());
+        let a = app.clone();
+        ui.on_rescan(move || a.borrow_mut().rescan());
+        let a = app.clone();
+        ui.on_toggle_phone_tunnel(move || a.borrow_mut().toggle_phone_tunnel());
+        let a = app.clone();
+        ui.on_unpair(move || a.borrow_mut().unpair());
+        ui.on_open_log_folder(move || {
+            let _ = std::process::Command::new("explorer").arg(store::data_dir()).spawn();
+        });
+        let a = app.clone();
+        ui.on_quit(move || {
+            a.borrow_mut().disconnect();
+            let _ = slint::quit_event_loop();
+        });
     }
+
+    // Closing the window hides it; the tray brings it back.
+    {
+        let w = window.as_weak();
+        window.window().on_close_requested(move || {
+            if let Some(w) = w.upgrade() {
+                let _ = w.hide();
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+
+    app.borrow_mut().start_bluetooth();
+    app.borrow_mut().refresh();
+
+    // Drain events, the clipboard and the tray on the UI thread.
+    let timer = Timer::default();
+    {
+        let a = app.clone();
+        let w = window.as_weak();
+        let tray_events = tray_icon::menu::MenuEvent::receiver();
+        let tray_clicks = tray_icon::TrayIconEvent::receiver();
+        timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            a.borrow_mut().poll();
+            while let Ok(e) = tray_events.try_recv() {
+                if e.id == show.id() {
+                    if let Some(w) = w.upgrade() {
+                        let _ = w.show();
+                    }
+                } else if e.id == quit.id() {
+                    a.borrow_mut().disconnect();
+                    let _ = slint::quit_event_loop();
+                }
+            }
+            while let Ok(e) = tray_clicks.try_recv() {
+                if let tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = e {
+                    if let Some(w) = w.upgrade() {
+                        let _ = w.show();
+                    }
+                }
+            }
+        });
+    }
+
+    window.run().expect("event loop");
+    crate::log!("", "quit");
 }

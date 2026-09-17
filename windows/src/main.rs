@@ -211,6 +211,11 @@ impl App {
         self.window.global::<AppState>().set_reach_title("Connecting".into());
         self.window.global::<AppState>().set_reach_detail("Starting the tunnel…".into());
         let need_wake = self.linked && !self.phone_tunnel_on;
+        if !self.linked {
+            // We can't see the phone's state without Bluetooth; say what's needed
+            // rather than waiting half a minute for a tunnel that may be off.
+            self.log("", "no Bluetooth link: mirroring needs the phone's tunnel to be on (Anywhere mode)");
+        }
         if need_wake {
             if let Some(b) = &self.ble {
                 let _ = b.send_command("tunnel on");

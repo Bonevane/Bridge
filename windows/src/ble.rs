@@ -26,7 +26,7 @@ use windows::Devices::Bluetooth::Advertisement::{
 };
 use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
-    GattDeviceService, GattOpenStatus, GattSharingMode, GattValueChangedEventArgs, GattWriteOption,
+    GattDeviceService, GattOpenStatus, GattSession, GattSharingMode, GattValueChangedEventArgs, GattWriteOption,
 };
 use windows::Devices::Bluetooth::{BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
 use windows::Devices::Enumeration::DeviceInformation;
@@ -80,14 +80,16 @@ pub struct Ble {
     events: Sender<Event>,
     link: Arc<Mutex<Link>>,
     watcher: Option<BluetoothLEAdvertisementWatcher>,
+    /// Outgoing messages. A writer thread drains this, so a slow or dead
+    /// link never blocks the window (a write to a bonded phone could take
+    /// 60 s to time out, and it used to do so on the UI thread).
+    outbox: Sender<(Kind, String)>,
 }
 
 impl Ble {
     pub fn new(secret: &str, events: Sender<Event>) -> Self {
-        Ble {
-            secret: secret.to_string(),
-            events,
-            link: Arc::new(Mutex::new(Link {
+        let (outbox, outbox_rx) = std::sync::mpsc::channel::<(Kind, String)>();
+        let link = Arc::new(Mutex::new(Link {
                 device: None,
                 rx: None,
                 tx: None,
@@ -98,9 +100,25 @@ impl Ble {
                 last_heard: Instant::now(),
                 mtu_payload: 20,
                 crypto: None,
-            })),
-            watcher: None,
-        }
+            }));
+        let writer_link = link.clone();
+        std::thread::spawn(move || {
+            for (kind, text) in outbox_rx {
+                let mut l = writer_link.lock().unwrap();
+                if !l.verified && kind != Kind::Command {
+                    continue; // nobody to talk to; the message is stale anyway
+                }
+                let verified = l.verified;
+                let payload = match l.crypto.as_mut() {
+                    Some(c) if verified => c.seal(text.as_bytes()),
+                    _ => text.as_bytes().to_vec(),
+                };
+                if let Err(e) = write_chunks(&l, kind, &payload) {
+                    crate::log!("bluetooth", "send failed: {e:#}");
+                }
+            }
+        });
+        Ble { secret: secret.to_string(), events, link, watcher: None, outbox }
     }
 
     pub fn is_linked(&self) -> bool {
@@ -118,6 +136,9 @@ impl Ble {
         watcher.Received(&TypedEventHandler::new(
             move |w: &Option<BluetoothLEAdvertisementWatcher>, args: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
                 let (Some(w), Some(args)) = (w, args) else { return Ok(()) };
+                if link.lock().unwrap().verified {
+                    return Ok(()); // already linked; a rescan mustn't tear that down
+                }
                 // One at a time: stop scanning while we try this one.
                 let _ = w.Stop();
                 let address = args.BluetoothAddress()?;
@@ -150,8 +171,13 @@ impl Ble {
         }
     }
 
-    /// Removes the Windows bond with the phone, so the next attempt pairs afresh.
+    /// Removes any Windows bond with a Bridge phone. Off the UI thread: each
+    /// probe of a bonded-but-absent device can take a minute to time out.
     pub fn unpair_all() {
+        std::thread::spawn(Self::unpair_all_now);
+    }
+
+    fn unpair_all_now() {
         let Ok(selector) = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true) else { return };
         let Ok(infos) = DeviceInformation::FindAllAsyncAqsFilter(&selector).and_then(|op| op.get()) else { return };
         for i in 0..infos.Size().unwrap_or(0) {
@@ -200,17 +226,13 @@ impl Ble {
         }
     }
 
+    /// Queues a message for the phone. Returns Err only if there is no link
+    /// at all; a queued message to a link that then drops is logged, not raised.
     pub fn send(&self, kind: Kind, text: &str) -> Result<()> {
-        let mut l = self.link.lock().unwrap();
-        if !l.verified && kind != Kind::Command {
+        if !self.link.lock().unwrap().verified && kind != Kind::Command {
             bail!("not linked");
         }
-        let verified = l.verified;
-        let payload = match l.crypto.as_mut() {
-            Some(c) if verified => c.seal(text.as_bytes()),
-            _ => text.as_bytes().to_vec(),
-        };
-        write_chunks(&l, kind, &payload)
+        self.outbox.send((kind, text.to_string())).map_err(|_| anyhow!("writer gone"))
     }
 
     pub fn send_command(&self, text: &str) -> Result<()> {
@@ -330,8 +352,20 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     if !subscribed {
         bail!("subscribe failed");
     }
-    link.lock().unwrap().device = Some(device);
-    crate::log!("bluetooth", "subscribed; waiting for the phone's challenge");
+    // Chunk to the negotiated MTU rather than the 20-byte minimum: Windows
+    // and Android usually agree on 500+, which makes long clipboard text and
+    // notifications arrive in one or two chunks instead of dozens.
+    let mtu_payload = GattSession::FromDeviceIdAsync(&device.BluetoothDeviceId()?)
+        .and_then(|op| op.get())
+        .and_then(|session| session.MaxPduSize())
+        .map(|pdu| (pdu as usize).saturating_sub(3).clamp(20, 500))
+        .unwrap_or(20);
+    {
+        let mut l = link.lock().unwrap();
+        l.mtu_payload = mtu_payload;
+        l.device = Some(device);
+    }
+    crate::log!("bluetooth", "subscribed (chunks of {mtu_payload} bytes); waiting for the phone's challenge");
     Ok(())
 }
 

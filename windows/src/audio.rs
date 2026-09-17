@@ -9,7 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::codecs::{CodecParameters, Decoder as _, CODEC_TYPE_AAC};
+use symphonia::core::codecs::{CodecParameters, CODEC_TYPE_AAC};
 use symphonia::core::formats::Packet;
 
 pub struct AudioPlayer {

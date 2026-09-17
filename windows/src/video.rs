@@ -8,8 +8,12 @@
 
 use anyhow::{anyhow, bail, Result};
 use std::mem::ManuallyDrop;
-use windows::core::Interface;
+use windows::core::{Interface, GUID};
 use windows::Win32::Media::MediaFoundation::*;
+
+/// The Microsoft H.264 decoder MFT (CLSID_CMSH264DecoderMFT), not exported by
+/// name in the bindings: {62CE7E72-4C71-4d20-B15D-452831A87D9D}.
+const H264_DECODER: GUID = GUID::from_u128(0x62ce7e72_4c71_4d20_b15d_452831a87d9d);
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
 
 /// One decoded frame, RGBA, tightly packed.
@@ -33,7 +37,7 @@ impl Decoder {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
-            let mft: IMFTransform = CoCreateInstance(&CLSID_CMSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)?;
+            let mft: IMFTransform = CoCreateInstance(&H264_DECODER, None, CLSCTX_INPROC_SERVER)?;
 
             // Lowest latency: decode and hand over each frame as it comes.
             if let Ok(attrs) = mft.GetAttributes() {

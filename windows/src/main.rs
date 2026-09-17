@@ -264,23 +264,35 @@ impl App {
         let was_mirroring = self.mirroring;
         self.mirroring = false;
         self.window.global::<AppState>().set_busy(false);
-        if was_mirroring {
-            if self.linked {
-                if let Some(b) = &self.ble {
-                    // The phone stops the helper and, in Nearby mode, its tunnel.
-                    let _ = b.send_command("session over");
-                }
-                self.log("phone", "told the phone over Bluetooth");
-            } else {
-                let secret = self.creds.secret.clone();
-                std::thread::spawn(move || match tunnel::control(&secret, "STOP", Duration::from_secs(10)) {
-                    Ok(r) => crate::log!("phone", "{r}"),
-                    Err(e) => crate::log!("phone", "couldn't reach the phone to stop: {e:#}"),
-                });
+        let tunnel = self.tunnel.take();
+        if was_mirroring && self.linked {
+            if let Some(b) = &self.ble {
+                // The phone stops the helper and, in Nearby mode, its tunnel.
+                let _ = b.send_command("session over");
             }
-        }
-        if let Some(mut t) = self.tunnel.take() {
-            t.stop();
+            self.log("phone", "told the phone over Bluetooth");
+            if let Some(mut t) = tunnel {
+                t.stop();
+            }
+        } else {
+            // No Bluetooth: STOP has to go through the tunnel, so the tunnel
+            // must outlive the request. Send, wait for the reply, then stop it.
+            let secret = self.creds.secret.clone();
+            let was = was_mirroring;
+            std::thread::spawn(move || {
+                let mut tunnel = tunnel;
+                if was {
+                    match tunnel::control(&secret, "STOP", Duration::from_secs(10)) {
+                        Ok(r) => crate::log!("phone", "{r}"),
+                        Err(e) => crate::log!("phone", "couldn't reach the phone to stop: {e:#}"),
+                    }
+                    // The phone switches its own tunnel off a moment after replying.
+                    std::thread::sleep(Duration::from_millis(2500));
+                }
+                if let Some(t) = tunnel.as_mut() {
+                    t.stop();
+                }
+            });
         }
         self.refresh();
     }

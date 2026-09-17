@@ -190,14 +190,25 @@ fn write_chunks(l: &Link, kind: Kind, text: &str) -> Result<()> {
 /// callback.
 fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Event>) -> Result<()> {
     let device = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get().context("opening the device")?;
-    crate::log!("bluetooth", "found {}", device.Name()?.to_string_lossy());
-
-    // Bond if we haven't. The phone's characteristics are encrypted, so an
-    // unbonded link gets nothing. Accept whatever pairing kind Android offers
-    // (usually a passkey to confirm on both screens).
     let pairing = device.DeviceInformation()?.Pairing()?;
+    crate::log!("bluetooth", "found {} (paired={})", device.Name()?.to_string_lossy(), pairing.IsPaired()?);
+
+    // Discovery first, on whatever link we have. It needs no encryption, and
+    // doing it *after* bonding hit a Windows quirk where the post-bond link
+    // came up "Connected" but every ATT request timed out.
+    let service = find_service(&device)?;
+    let open = service.OpenAsync(GattSharingMode::SharedReadAndWrite)?.get()?;
+    if open != GattOpenStatus::Success && open != GattOpenStatus::AlreadyOpened {
+        bail!("couldn't open the Bridge service: {:?}", open);
+    }
+    let tx = characteristic(&service, TX)?;
+    let rx = characteristic(&service, RX)?;
+    crate::log!("bluetooth", "service and characteristics found");
+
+    // Bond if we haven't, on this same link. The phone's characteristics are
+    // encrypted, so an unbonded link gets nothing past this point.
     if !pairing.IsPaired()? {
-        crate::log!("bluetooth", "pairing: accept the request on both screens");
+        crate::log!("bluetooth", "pairing: confirm the code on the phone");
         let custom = pairing.Custom()?;
         custom.PairingRequested(&TypedEventHandler::new(
             |_: &Option<windows::Devices::Enumeration::DeviceInformationCustomPairing>,
@@ -206,7 +217,7 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
                     if let Ok(pin) = args.Pin() {
                         let pin = pin.to_string_lossy();
                         if !pin.is_empty() {
-                            crate::log!("bluetooth", "pairing code {pin}: confirm it on the phone");
+                            crate::log!("bluetooth", "pairing code {pin}");
                         }
                     }
                     args.Accept()?;
@@ -224,75 +235,8 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         crate::log!("bluetooth", "paired");
     }
 
-    // The handle we opened belongs to the *random* address the phone was
-    // advertising. Bonding resolves it to the phone's real identity, and the
-    // old handle then reports Unreachable for everything. Re-open by the
-    // stable device ID, which survives that switch, and give the stack a
-    // moment to reconnect.
-    let id = device.DeviceId()?;
-    drop(device);
-    let device = {
-        let mut last = None;
-        let mut opened = None;
-        for attempt in 1..=10 {
-            std::thread::sleep(Duration::from_millis(if attempt == 1 { 500 } else { 1500 }));
-            match BluetoothLEDevice::FromIdAsync(&id).and_then(|op| op.get()) {
-                Ok(d) => { opened = Some(d); break; }
-                Err(e) => last = Some(e),
-            }
-        }
-        opened.ok_or_else(|| anyhow!("couldn't reopen the phone after pairing: {last:?}"))?
-    };
-    // Diagnostics for the log: what Windows believes about the phone now.
-    crate::log!(
-        "bluetooth",
-        "reopened: paired={:?} status={:?} address={:016x} addrType={:?}",
-        device.DeviceInformation()?.Pairing()?.IsPaired()?,
-        device.ConnectionStatus()?,
-        device.BluetoothAddress()?,
-        device.BluetoothAddressType()?
-    );
-    // Is the phone still advertising? If not, nothing can connect to it.
-    {
-        let seen = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let w = BluetoothLEAdvertisementWatcher::new()?;
-        w.AdvertisementFilter()?.Advertisement()?.ServiceUuids()?.Append(SERVICE)?;
-        let seen2 = seen.clone();
-        w.Received(&TypedEventHandler::new(move |_: &Option<BluetoothLEAdvertisementWatcher>, _: &Option<BluetoothLEAdvertisementReceivedEventArgs>| {
-            seen2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(())
-        }))?;
-        w.Start()?;
-        std::thread::sleep(Duration::from_secs(3));
-        let _ = w.Stop();
-        crate::log!("bluetooth", "phone adverts seen in 3 s after pairing: {}", seen.load(std::sync::atomic::Ordering::Relaxed));
-    }
-
-    // Uncached: Windows keeps a copy of the phone's GATT table from earlier
-    // pairings and happily returns it, characteristics missing and all.
-    // Unreachable right after (re)connecting is normal for a few seconds.
-    let mut services = None;
-    for attempt in 1..=8 {
-        let r = device.GetGattServicesForUuidWithCacheModeAsync(SERVICE, BluetoothCacheMode::Uncached)?.get()?;
-        let status = r.Status()?;
-        if status == GattCommunicationStatus::Success && r.Services()?.Size()? > 0 {
-            services = Some(r);
-            break;
-        }
-        crate::log!("bluetooth", "service query {attempt}/8: {status:?}");
-        std::thread::sleep(Duration::from_millis(1500));
-    }
-    let services = services.ok_or_else(|| anyhow!("Bridge service not found on the phone"))?;
-    let service = services.Services()?.GetAt(0)?;
-    // The service has to be opened before its (encrypted) characteristics
-    // can be read; without this the query comes back empty.
-    let open = service.OpenAsync(GattSharingMode::SharedReadAndWrite)?.get()?;
-    if open != GattOpenStatus::Success && open != GattOpenStatus::AlreadyOpened {
-        bail!("couldn't open the Bridge service: {:?}", open);
-    }
-    let tx = characteristic(&service, TX)?;
-    let rx = characteristic(&service, RX)?;
-    // Encryption first, or the phone's encrypted descriptor refuses the subscribe.
+    // Encryption on the characteristics, so the subscribe goes over an
+    // encrypted link (the phone's descriptor insists).
     tx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthenticationRequired)?;
     rx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthenticationRequired)?;
 
@@ -341,15 +285,41 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         },
     ))?;
 
-    let status = tx
-        .WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue::Notify)?
-        .get()?;
+    // Subscribing is the first encrypted operation; a few retries cover the
+    // seconds it takes the link to come back up encrypted after bonding.
+    let mut status = GattCommunicationStatus::Unreachable;
+    for attempt in 1..=6 {
+        status = tx
+            .WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue::Notify)?
+            .get()?;
+        if status == GattCommunicationStatus::Success {
+            break;
+        }
+        crate::log!("bluetooth", "subscribe {attempt}/6: {status:?} (connection {:?})", device.ConnectionStatus()?);
+        std::thread::sleep(Duration::from_millis(2000));
+    }
     if status != GattCommunicationStatus::Success {
         bail!("subscribe failed: {:?}", status);
     }
     link.lock().unwrap().device = Some(device);
     crate::log!("bluetooth", "subscribed; waiting for the phone's challenge");
     Ok(())
+}
+
+/// The Bridge service, with a few retries: the first query on a fresh link
+/// can come back Unreachable while the connection is still being set up.
+fn find_service(device: &BluetoothLEDevice) -> Result<GattDeviceService> {
+    let mut last = GattCommunicationStatus::Unreachable;
+    for attempt in 1..=4 {
+        let r = device.GetGattServicesForUuidWithCacheModeAsync(SERVICE, BluetoothCacheMode::Uncached)?.get()?;
+        last = r.Status()?;
+        if last == GattCommunicationStatus::Success && r.Services()?.Size()? > 0 {
+            return Ok(r.Services()?.GetAt(0)?);
+        }
+        crate::log!("bluetooth", "service query {attempt}/4: {last:?} (connection {:?})", device.ConnectionStatus()?);
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+    bail!("Bridge service not found on the phone ({last:?})")
 }
 
 fn characteristic(service: &GattDeviceService, uuid: GUID) -> Result<GattCharacteristic> {

@@ -16,7 +16,6 @@
   <img src="https://img.shields.io/badge/Status-Working%20Prototype-4F9CF9?style=for-the-badge&labelColor=0A1432" alt="Status" />
   <img src="https://img.shields.io/badge/Stack-Kotlin%20%7C%20Swift%20%7C%20iroh-4F9CF9?style=for-the-badge&labelColor=0A1432" alt="Stack" />
   <img src="https://img.shields.io/badge/Platforms-Android%2011%2B%20%7C%20macOS%2013%2B-4F9CF9?style=for-the-badge&labelColor=0A1432" alt="Platforms" />
-  <a href="https://github.com/matiassingers/awesome-readme#readme"><img src="https://cdn.jsdelivr.net/gh/sindresorhus/awesome@d7305f38d29fed78fa85652e3a63e154dd8e8829/media/badge.svg" alt="Mentioned in Awesome README" /></a>
 
 </div>
 
@@ -171,6 +170,7 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 - [iroh](https://github.com/n0-computer/iroh) and [dumbpipe](https://github.com/n0-computer/dumbpipe): connectivity that just works
 - [Shizuku](https://github.com/RikkaApps/Shizuku): the in-app ADB client is adapted from theirs
 - [thedjchi's Shizuku fork](https://github.com/thedjchi/Shizuku/wiki): for the TCP-mode-and-intents trick that unlocked the banking-app problem
+- [awesome-readme](https://github.com/matiassingers/awesome-readme#readme): for listing this README among its examples [![Awesome](https://cdn.jsdelivr.net/gh/sindresorhus/awesome@d7305f38d29fed78fa85652e3a63e154dd8e8829/media/badge.svg)](https://github.com/matiassingers/awesome-readme#readme)
 
 Bridge is released under the [Apache License 2.0](LICENSE). See `NOTICE` for the licences of the parts it builds on.
 

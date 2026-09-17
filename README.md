@@ -133,6 +133,8 @@ Jetpack Compose on the phone, SwiftUI on the Mac, and two carefully chosen binar
 
 macOS will ask for Bluetooth and Notifications the first time; both are needed for the short-range link.
 
+You can turn Developer options off again after setup — Bridge switches USB debugging itself — but **do it on Wi-Fi**: it also turns USB debugging off, and Bridge can only restart its helper through wireless debugging, which Android offers on Wi-Fi only. Once the helper is back (a few seconds), cellular works again. Do it on LTE and you're stuck until the phone next sees Wi-Fi.
+
 ### Build from source
 
 ```bash

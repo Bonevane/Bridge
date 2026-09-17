@@ -94,8 +94,9 @@ data class Access(
             name = "USB debugging",
             why = "Settings → About phone → tap Build number 7 times, then System → Developer options → USB debugging. " +
                 "When the Mac asks \"Allow USB debugging?\", tick Always allow from this computer. " +
-                "After setup you can turn Developer options off again if you like: Bridge switches USB debugging itself " +
-                "and doesn't need the menu.",
+                "After setup you can turn Developer options off again, but do it while on Wi-Fi: that also turns USB " +
+                "debugging off, and Bridge can only restart its helper over Wi-Fi. Once it's back (a few seconds), " +
+                "cellular is fine again.",
             granted = AdbToggle.isEnabled(ctx),
             intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
         )

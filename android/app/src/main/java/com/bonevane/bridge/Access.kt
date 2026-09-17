@@ -90,17 +90,12 @@ data class Access(
             intent = null,
         )
 
-        /**
-         * What the user has to switch on by hand. Not "USB debugging" itself:
-         * Bridge turns that on and off as sessions come and go, so a row tied
-         * to it would untick itself after every session.
-         */
         private fun developerOptions(ctx: Context) = Access(
-            name = "Developer options",
-            why = "Settings → About phone → tap Build number 7 times, then System → Developer options → turn on USB debugging " +
-                "for the setup. When the Mac asks \"Allow USB debugging?\", tick Always allow from this computer. " +
-                "Leave Developer options on; Bridge switches USB debugging itself from then on.",
-            granted = Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1,
+            name = "USB debugging",
+            why = "Settings → About phone → tap Build number 7 times, then System → Developer options → USB debugging. " +
+                "When the Mac asks \"Allow USB debugging?\", tick Always allow from this computer. " +
+                "Bridge switches this itself after setup, so it can show as off between sessions; that's normal.",
+            granted = AdbToggle.isEnabled(ctx),
             intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
         )
 

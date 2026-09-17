@@ -280,16 +280,31 @@ final class BridgeController: ObservableObject {
             }
             _ = await background { Shell.run(adb, ["start-server"]) }
 
-            let state = await background { Shell.run(adb, ["-d", "get-state"], timeout: 10) }
-            guard state.ok, state.output.hasSuffix("device") else {
-                appendLog(state.output, source: "adb")
-                fail("No phone found on USB. Plug it in, unlock it, and accept the USB debugging prompt.")
+            // Which phone? `adb -d` refuses to guess when two are plugged in,
+            // so list them and ask, and give a straight answer for the
+            // "unauthorized" state (the prompt hasn't been accepted yet).
+            let listing = await background { Shell.run(adb, ["devices", "-l"], timeout: 10).output }
+            let phones = Self.usbDevices(in: listing)
+            guard !phones.isEmpty else {
+                fail("No phone found on USB. Plug it in, unlock it, and turn on USB debugging.")
                 return
             }
+            guard let chosen = phones.count == 1 ? phones[0] : await pickPhone(from: phones) else {
+                phase = .idle
+                return
+            }
+            guard chosen.state == "device" else {
+                fail(chosen.state == "unauthorized"
+                     ? "The phone is waiting for you: accept \"Allow USB debugging?\" on it (tick Always allow), then click again."
+                     : "The phone is \(chosen.state); unlock it and check USB debugging is on.")
+                return
+            }
+            let usbSerial = chosen.serial
+            appendLog("Setting up \(chosen.name) (\(usbSerial)).")
 
             phase = .working("Starting Bridge on your phone...")
             let launch = await background {
-                Shell.run(adb, ["-d", "shell", "am", "start", "-n", activity, "-a", startAction], timeout: 10)
+                Shell.run(adb, ["-s", usbSerial, "shell", "am", "start", "-n", activity, "-a", startAction], timeout: 10)
             }
             appendLog(launch.output, source: "adb")
             if launch.output.contains("does not exist") {
@@ -301,7 +316,7 @@ final class BridgeController: ObservableObject {
             var found: String?
             for _ in 0..<25 {
                 let query = await background {
-                    Shell.run(adb, ["-d", "shell", "content", "query", "--uri", ticketURI], timeout: 10)
+                    Shell.run(adb, ["-s", usbSerial, "shell", "content", "query", "--uri", ticketURI], timeout: 10)
                 }
                 if query.output.contains("ready=1"), let t = Self.extractTicket(from: query.output) {
                     found = t
@@ -327,7 +342,7 @@ final class BridgeController: ObservableObject {
             // Lets the phone app switch USB debugging on/off by itself (see AdbToggle.kt).
             let package = BridgeController.phonePackage
             let grant = await background {
-                Shell.run(adb, ["-d", "shell", "pm", "grant", package,
+                Shell.run(adb, ["-s", usbSerial, "shell", "pm", "grant", package,
                                 "android.permission.WRITE_SECURE_SETTINGS"], timeout: 15)
             }
             if !grant.ok { appendLog(grant.output, source: "adb") }
@@ -340,24 +355,24 @@ final class BridgeController: ObservableObject {
             // so the "Allow USB debugging?" dialog appears for its key, then
             // straight back to USB-only.
             let keyKnown = await background {
-                Shell.run(adb, ["-d", "shell", "content", "query", "--uri", ticketURI], timeout: 10).output.contains("keyOk=1")
+                Shell.run(adb, ["-s", usbSerial, "shell", "content", "query", "--uri", ticketURI], timeout: 10).output.contains("keyOk=1")
             }
             if !keyKnown {
                 phase = .working("On the phone: tap \"Always allow\" for USB debugging…")
-                _ = await background { Shell.run(adb, ["-d", "tcpip", "5555"], timeout: 15) }
+                _ = await background { Shell.run(adb, ["-s", usbSerial, "tcpip", "5555"], timeout: 15) }
                 try? await Task.sleep(nanoseconds: 2_500_000_000)     // adbd restarts
                 _ = await background {
-                    Shell.run(adb, ["-d", "shell", "am", "start", "-n", activity, "-a", "com.bonevane.bridge.AUTHORIZE"], timeout: 10)
+                    Shell.run(adb, ["-s", usbSerial, "shell", "am", "start", "-n", activity, "-a", "com.bonevane.bridge.AUTHORIZE"], timeout: 10)
                 }
                 var accepted = false
                 for _ in 0..<60 {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     let q = await background {
-                        Shell.run(adb, ["-d", "shell", "content", "query", "--uri", ticketURI], timeout: 10).output
+                        Shell.run(adb, ["-s", usbSerial, "shell", "content", "query", "--uri", ticketURI], timeout: 10).output
                     }
                     if q.contains("keyOk=1") { accepted = true; break }
                 }
-                _ = await background { Shell.run(adb, ["-d", "usb"], timeout: 15) }     // back to USB-only
+                _ = await background { Shell.run(adb, ["-s", usbSerial, "usb"], timeout: 15) }     // back to USB-only
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
                 if accepted {
                     appendLog("The phone trusts its own key now; later restarts of the helper will work.")
@@ -374,7 +389,7 @@ final class BridgeController: ObservableObject {
             phase = .working("Starting the phone's helper over USB…")
             let secret = pairSecret
             let spawn = await background {
-                Shell.run(adb, ["-d", "shell",
+                Shell.run(adb, ["-s", usbSerial, "shell",
                     "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
                     "(BRIDGE_SECRET=\(secret) CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon " +
                     "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
@@ -386,6 +401,38 @@ final class BridgeController: ObservableObject {
                 : "Set up. Unplug and click Mirror Phone. After each session the phone locks down again; turn on \"Keep ready\" to skip that.")
                 + " The phone will now ask to pair over Bluetooth: accept it, that's the link for notifications and clipboard."
         }
+    }
+
+    struct USBPhone { let serial: String; let state: String; let name: String }
+
+    /// Parses `adb devices -l`, keeping only phones on USB (not TCP endpoints).
+    nonisolated static func usbDevices(in listing: String) -> [USBPhone] {
+        var out: [USBPhone] = []
+        for line in listing.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            // Skip the header and TCP endpoints like 127.0.0.1:7555.
+            guard parts.count >= 2, !parts[0].contains(":"), parts[0] != "List" else { continue }
+            var name = parts[0]
+            if let model = parts.first(where: { $0.hasPrefix("model:") }) {
+                name = String(model.dropFirst(6)).replacingOccurrences(of: "_", with: " ")
+            }
+            out.append(USBPhone(serial: parts[0], state: parts[1], name: name))
+        }
+        return out
+    }
+
+    /// Two or more phones plugged in: ask which one.
+    private func pickPhone(from phones: [USBPhone]) async -> USBPhone? {
+        let alert = NSAlert()
+        alert.messageText = "Which phone?"
+        alert.informativeText = "More than one phone is plugged in."
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
+        for phone in phones { popup.addItem(withTitle: "\(phone.name)  (\(phone.serial))") }
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Set Up")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn ? phones[popup.indexOfSelectedItem] : nil
     }
 
     // MARK: - Connect

@@ -194,8 +194,9 @@ impl Ble {
         if !l.verified && kind != Kind::Command {
             bail!("not linked");
         }
+        let verified = l.verified;
         let payload = match l.crypto.as_mut() {
-            Some(c) if l.verified => c.seal(text.as_bytes()),
+            Some(c) if verified => c.seal(text.as_bytes()),
             _ => text.as_bytes().to_vec(),
         };
         write_chunks(&l, kind, &payload)

@@ -157,11 +157,11 @@ pub struct SessionCrypto {
 impl SessionCrypto {
     pub fn new(secret: &str, phone_nonce: &str, our_nonce: &str) -> Self {
         use aes_gcm::KeyInit;
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("any key length");
-        mac.update(phone_nonce.as_bytes());
-        mac.update(our_nonce.as_bytes());
-        let key = mac.finalize().into_bytes();
-        SessionCrypto { cipher: aes_gcm::Aes256Gcm::new(&key), send_counter: 0 }
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()).expect("any key length");
+        Mac::update(&mut mac, phone_nonce.as_bytes());
+        Mac::update(&mut mac, our_nonce.as_bytes());
+        let key: [u8; 32] = mac.finalize().into_bytes().into();
+        SessionCrypto { cipher: <aes_gcm::Aes256Gcm as KeyInit>::new(&key.into()), send_counter: 0 }
     }
 
     pub fn seal(&mut self, plain: &[u8]) -> Vec<u8> {

@@ -289,9 +289,13 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     }
 
     // Encryption on the characteristics, so the subscribe goes over an
-    // encrypted link (the phone's descriptor insists).
-    tx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthenticationRequired)?;
-    rx.SetProtectionLevel(GattProtectionLevel::EncryptionAndAuthenticationRequired)?;
+    // encrypted link. *Encryption*, not "and authentication": the phone's
+    // descriptor asks for an encrypted link only, and asking Windows for an
+    // authenticated one makes it refuse to use an unauthenticated bond at
+    // all, so encryption never came up and the phone answered
+    // "insufficient authentication" (ATT error 5) to every subscribe.
+    tx.SetProtectionLevel(GattProtectionLevel::EncryptionRequired)?;
+    rx.SetProtectionLevel(GattProtectionLevel::EncryptionRequired)?;
 
     {
         let mut l = link.lock().unwrap();
@@ -344,9 +348,9 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
     for attempt in 1..=5 {
         let r = rx.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached)?.get()?;
         let st = r.Status()?;
-        crate::log!("bluetooth", "encrypted read {attempt}/5: {st:?} (connection {:?})", device.ConnectionStatus()?);
+        crate::log!("bluetooth", "link probe {attempt}/5: {st:?} (connection {:?})", device.ConnectionStatus()?);
         if st == GattCommunicationStatus::Success || st == GattCommunicationStatus::ProtocolError {
-            break; // ProtocolError here = encrypted but the phone forbids reads: fine, the link is up
+            break; // ProtocolError = the phone answered (it forbids reads of RX): the link is up
         }
         std::thread::sleep(Duration::from_millis(2000));
     }

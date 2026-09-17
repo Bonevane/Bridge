@@ -1,0 +1,48 @@
+[package]
+name = "bridge-windows"
+version = "0.1.0"
+edition = "2021"
+description = "Bridge for Windows: your Android phone on your PC"
+license = "Apache-2.0"
+
+[[bin]]
+name = "Bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Microsoft's own bindings. Only the namespaces we touch, to keep the build small.
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_Advertisement",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Enumeration",
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_DataExchange",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# The pairing handshake (HMAC-SHA256), same as the phone and the Mac.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+# Tray icon and its menu.
+tray-icon = "0.19"
+# Clipboard text, both directions.
+arboard = "3"
+# Windows toast notifications without a Start Menu shortcut dance.
+tauri-winrt-notification = "0.7"
+# Small conveniences.
+anyhow = "1"
+chrono = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

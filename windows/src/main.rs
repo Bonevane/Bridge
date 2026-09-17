@@ -104,6 +104,7 @@ impl App {
 
     fn unpair(&mut self) {
         let _ = store::clear();
+        ble::Ble::unpair_all();
         self.creds = store::Credentials::default();
         if let Some(b) = self.ble.as_mut() {
             b.stop();

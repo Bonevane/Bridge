@@ -136,6 +136,32 @@ impl Ble {
         }
     }
 
+    /// Removes the Windows bond with the phone, so the next attempt pairs afresh.
+    pub fn unpair_all() {
+        let Ok(selector) = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true) else { return };
+        let Ok(infos) = DeviceInformation::FindAllAsyncAqsFilter(&selector).and_then(|op| op.get()) else { return };
+        for i in 0..infos.Size().unwrap_or(0) {
+            let Ok(info) = infos.GetAt(i) else { continue };
+            let Ok(d) = BluetoothLEDevice::FromIdAsync(&info.Id().unwrap_or_default()).and_then(|op| op.get()) else { continue };
+            // Only phones running Bridge: the ones advertising our service.
+            let has_service = d
+                .GetGattServicesForUuidWithCacheModeAsync(SERVICE, BluetoothCacheMode::Cached)
+                .and_then(|op| op.get())
+                .and_then(|r| r.Services())
+                .and_then(|s| s.Size())
+                .map(|n| n > 0)
+                .unwrap_or(false);
+            if !has_service {
+                continue;
+            }
+            let name = d.Name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            match d.DeviceInformation().and_then(|i| i.Pairing()).and_then(|p| p.UnpairAsync()).and_then(|op| op.get()) {
+                Ok(r) => crate::log!("bluetooth", "unpaired {name}: {:?}", r.Status()),
+                Err(e) => crate::log!("bluetooth", "unpair {name} failed: {e}"),
+            }
+        }
+    }
+
     pub fn stop(&mut self) {
         self.stop_scan();
         let mut l = self.link.lock().unwrap();
@@ -213,6 +239,12 @@ fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Ev
         advertised
     };
     let pairing = device.DeviceInformation()?.Pairing()?;
+    if is_paired {
+        // What kind of bond Windows holds. An LE bond made with a passkey
+        // reports EncryptionAndAuthentication; a classic-only bond shows up
+        // differently here, which would explain encryption never coming up.
+        crate::log!("bluetooth", "bond protection level: {:?}", pairing.ProtectionLevel()?);
+    }
 
     // Discovery first, on whatever link we have. It needs no encryption, and
     // doing it *after* bonding hit a Windows quirk where the post-bond link

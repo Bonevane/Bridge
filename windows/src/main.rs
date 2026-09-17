@@ -43,6 +43,8 @@ struct App {
     last_twins: Option<BTreeSet<String>>,
     last_tick: Instant,
     status_item: MenuItem,
+    /// When to look for the phone again after a drop.
+    rescan_at: Option<Instant>,
 }
 
 impl App {
@@ -58,6 +60,7 @@ impl App {
             last_twins: None,
             last_tick: Instant::now(),
             status_item,
+            rescan_at: None,
         }
     }
 
@@ -134,6 +137,18 @@ impl App {
                 }
             }
         }
+        if let Some(at) = self.rescan_at {
+            if Instant::now() >= at {
+                self.rescan_at = None;
+                if let Some(b) = self.ble.as_mut() {
+                    if !b.is_linked() {
+                        if let Err(e) = b.start() {
+                            crate::log!("bluetooth", "rescan failed: {e:#}");
+                        }
+                    }
+                }
+            }
+        }
         if self.last_tick.elapsed() > Duration::from_secs(5) {
             self.last_tick = Instant::now();
             if let Some(b) = self.ble.as_mut() {
@@ -160,6 +175,9 @@ impl App {
                 self.linked = false;
                 self.set_status(&format!("Phone out of range ({why})"));
                 self.last_twins = None;
+                // Nothing else restarts the scan: the watcher stops the moment
+                // the phone is first seen, so a drop has to bring it back.
+                self.rescan_at = Some(Instant::now() + Duration::from_secs(3));
             }
             Event::Notification { app, title, body } => {
                 crate::log!("notify", "{app}: {title}");

@@ -1,6 +1,6 @@
 [package]
 name = "bridge-windows"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Bridge for Windows: your Android phone on your PC"
 license = "Apache-2.0"

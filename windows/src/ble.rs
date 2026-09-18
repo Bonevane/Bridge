@@ -69,6 +69,10 @@ struct Link {
     /// notifications then arrive at nothing.
     tx: Option<GattCharacteristic>,
     service: Option<GattDeviceService>,
+    /// Held with MaintainConnection on: Windows treats a link nobody holds a
+    /// session for as idle and lets it go after a while, which looked like
+    /// the phone dropping us every minute or two for no reason.
+    session: Option<GattSession>,
     inbox: Inbox,
     handshake: Handshake,
     verified: bool,
@@ -103,6 +107,7 @@ impl Ble {
                 rx: None,
                 tx: None,
                 service: None,
+                session: None,
                 inbox: Inbox::default(),
                 handshake: Handshake::new(secret),
                 verified: false,
@@ -224,6 +229,7 @@ impl Ble {
         l.rx = None;
         l.tx = None;
         l.service = None;
+        l.session = None;
         l.device = None; // dropping the device object lets WinRT close the link
     }
 
@@ -353,6 +359,7 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
                         l.rx = None;
                         l.tx = None;
                         l.service = None;
+                        l.session = None;
                         l.device = None;
                         l.crypto = None;
                         crate::log!("bluetooth", "disconnected");
@@ -390,14 +397,21 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
     // Chunk to the negotiated MTU rather than the 20-byte minimum: Windows
     // and Android usually agree on 500+, which makes long clipboard text and
     // notifications arrive in one or two chunks instead of dozens.
-    let mtu_payload = GattSession::FromDeviceIdAsync(&device.BluetoothDeviceId()?)
-        .and_then(|op| op.get())
-        .and_then(|session| session.MaxPduSize())
+    let session = GattSession::FromDeviceIdAsync(&device.BluetoothDeviceId()?).and_then(|op| op.get()).ok();
+    let mtu_payload = session
+        .as_ref()
+        .and_then(|s| s.MaxPduSize().ok())
         .map(|pdu| (pdu as usize).saturating_sub(3).clamp(20, 500))
         .unwrap_or(20);
+    if let Some(s) = &session {
+        if let Err(e) = s.SetMaintainConnection(true) {
+            crate::log!("bluetooth", "couldn't ask Windows to keep the link: {e}");
+        }
+    }
     {
         let mut l = link.lock().unwrap();
         l.mtu_payload = mtu_payload;
+        l.session = session;
         l.device = Some(device);
     }
     crate::log!("bluetooth", "subscribed (chunks of {mtu_payload} bytes); waiting for the phone's challenge");
@@ -487,6 +501,7 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
                 l.rx = None;
                 l.tx = None;
                 l.service = None;
+                l.session = None;
             }
             Step::Ignore => {}
         }

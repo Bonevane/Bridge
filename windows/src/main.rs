@@ -80,8 +80,9 @@ struct App {
     /// Bluetooth couldn't start (radio off, or not ready yet at login): try again then.
     retry_ble_at: Option<Instant>,
     usb_busy: bool,
-    /// Why the last USB setup stopped; the hero card offers to run it again.
-    usb_error: Option<String>,
+    /// The last failure (title, detail, from USB setup?). Stays on the hero
+    /// card until the next action, so a heartbeat can't wipe it before it's read.
+    error: Option<(String, String, bool)>,
     /// Packages whose icon we've already asked the phone for this link.
     icons_requested: BTreeSet<String>,
     log_lines: Vec<String>,
@@ -118,7 +119,7 @@ impl App {
             rescan_at: None,
             retry_ble_at: None,
             usb_busy: false,
-            usb_error: None,
+            error: None,
             icons_requested: BTreeSet::new(),
             log_lines: Vec::new(),
         }
@@ -147,9 +148,10 @@ impl App {
         ui.set_mirroring(self.mirroring);
         ui.set_version(VERSION.into());
 
-        ui.set_usb_retry(self.usb_error.is_some() && !self.usb_busy && !self.connecting && !self.mirroring);
-        let (title, detail, tint) = if let Some(e) = &self.usb_error {
-            ("USB setup didn't finish", e.as_str(), 3)
+        let usb_failed = matches!(&self.error, Some((_, _, true)));
+        ui.set_usb_retry(usb_failed && !self.usb_busy && !self.connecting && !self.mirroring);
+        let (title, detail, tint) = if let Some((title, detail, _)) = &self.error {
+            (title.as_str(), detail.as_str(), 3)
         } else if !self.creds.is_paired() {
             ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
         } else if self.usb_busy {
@@ -330,7 +332,7 @@ impl App {
             return;
         }
         self.usb_busy = true;
-        self.usb_error = None;
+        self.error = None;
         self.settings_window.global::<SettingsState>().set_usb_status("Looking for your phone on USB…".into());
         self.log("usb", "Set up over USB");
         usb::set_up(self.events_tx.clone());
@@ -345,6 +347,7 @@ impl App {
         }
         let same = creds.ticket == self.creds.ticket && creds.secret == self.creds.secret;
         self.creds = creds;
+        self.error = None;
         self.log("", &format!("paired {how}{}", if same { " (same ticket as before)" } else { "" }));
         if same && self.ble.is_some() {
             return true; // nothing to relink; a link in progress stays
@@ -395,7 +398,7 @@ impl App {
         use std::sync::atomic::Ordering;
         let attempt = self.attempt.fetch_add(1, Ordering::SeqCst) + 1;
         self.connecting = true;
-        self.usb_error = None;
+        self.error = None;
         self.woke_tunnel = false;
         self.window.global::<AppState>().set_busy(true);
         self.refresh();
@@ -578,23 +581,31 @@ impl App {
 
     fn fail(&mut self, message: String) {
         self.connecting = false;
-        let ui = self.window.global::<AppState>();
-        ui.set_busy(false);
-        ui.set_reach_title("Couldn't connect".into());
-        ui.set_reach_detail(message.into());
-        ui.set_reach_tint(3);
+        // We switched the phone's tunnel on for this; it costs battery and
+        // data all the while, so put it back if nothing came of it.
+        if self.woke_tunnel && self.linked {
+            if let Some(b) = &self.ble {
+                let _ = b.send_command("tunnel off");
+                self.log("bluetooth", "asked the phone to stop its tunnel again");
+            }
+        }
+        self.woke_tunnel = false;
+        self.window.global::<AppState>().set_busy(false);
+        self.error = Some(("Couldn't connect".into(), message, false));
         if let Some(mut t) = self.tunnel.take() {
             t.stop();
         }
+        self.refresh();
     }
 
     fn disconnect(&mut self) {
-        if !self.mirroring && self.tunnel.is_none() {
+        if !self.mirroring && !self.connecting && self.tunnel.is_none() {
             return;
         }
         let was_mirroring = self.mirroring || self.connecting;   // a cancelled connect may have STARTed the helper
         self.mirroring = false;
         self.connecting = false;
+        self.woke_tunnel = false;   // "session over" below settles the tunnel
         if let Some(sess) = self.session.take() {
             sess.stop();
         }
@@ -692,8 +703,11 @@ impl App {
                 if !t.is_running() {
                     self.log("tunnel", "dumbpipe exited");
                     self.tunnel = None;
-                    if self.mirroring {
-                        self.mirroring = false;
+                    if self.mirroring || self.connecting {
+                        // Close the session and its window properly (this used
+                        // to leave both up, with disconnect() then refusing to
+                        // run because it saw no tunnel and no mirroring).
+                        self.disconnect();
                         self.fail("the tunnel dropped".into());
                     }
                 }
@@ -804,7 +818,7 @@ impl App {
                     Err(e) => {
                         self.log("usb", &e);
                         self.settings_window.global::<SettingsState>().set_usb_status(e.clone().into());
-                        self.usb_error = Some(e);
+                        self.error = Some(("USB setup didn't finish".into(), e, true));
                     }
                 }
             }
@@ -837,18 +851,20 @@ impl App {
                     }
                     return;
                 }
-                self.connecting = false;
-                self.window.global::<AppState>().set_busy(false);
                 match result {
                     Ok(reply) => {
                         self.log("phone", &reply);
                         if let Err(e) = self.open_session() {
                             self.log("", &format!("couldn't start mirroring: {e:#}"));
+                            // Still "connecting" here, so disconnect() tells the phone
+                            // the session is over and the helper it started can stop.
                             self.disconnect();
                             self.fail(format!("{e:#}"));
                             return;
                         }
                         self.mirroring = true;
+                        self.connecting = false;
+                        self.window.global::<AppState>().set_busy(false);
                     }
                     Err(e) => {
                         self.log("", &format!("couldn't connect: {e}"));
@@ -912,7 +928,7 @@ fn main() {
             let busy = app.window.global::<AppState>().get_busy();
             if app.mirroring || busy {
                 app.disconnect();
-            } else if app.usb_error.is_some() {
+            } else if matches!(app.error, Some((_, _, true))) {
                 app.set_up_over_usb();
             } else if !app.creds.is_paired() {
                 app.pair_from_clipboard();

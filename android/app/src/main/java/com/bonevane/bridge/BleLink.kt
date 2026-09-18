@@ -85,6 +85,14 @@ class BleLink(private val context: Context) {
 
         /** Conservative: the default ATT MTU is 23, of which 3 bytes are overhead. */
         private const val MIN_PAYLOAD = 20
+        /**
+         * An attribute value is at most 512 bytes whatever the MTU says. Macs
+         * and PCs negotiate 517–527, and chunks cut to that size made the
+         * stack throw "Notification should not be longer than max length of
+         * an attribute value" on every message over 512 bytes: app icons never
+         * arrived, and each failed chunk was silently dropped.
+         */
+        private const val MAX_PAYLOAD = 512
     }
 
     private var server: BluetoothGattServer? = null
@@ -490,7 +498,7 @@ class BleLink(private val context: Context) {
             }
 
             override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
-                val payload = (mtu - 3).coerceAtLeast(MIN_PAYLOAD)
+                val payload = (mtu - 3).coerceIn(MIN_PAYLOAD, MAX_PAYLOAD)
                 mtus[device] = payload
                 peers[device]?.mtuPayload = payload
             }

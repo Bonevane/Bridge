@@ -82,6 +82,11 @@ impl Inbox {
         let more = chunk[1] == 1;
         self.buffer.extend_from_slice(&chunk[2..]);
         if more {
+            // Nothing legitimate is this big (an icon is ~20 KB); a stream that
+            // never ends is a bug or an attack, not a message.
+            if self.buffer.len() > 256 * 1024 {
+                self.buffer.clear();
+            }
             return None;
         }
         let out = std::mem::take(&mut self.buffer);

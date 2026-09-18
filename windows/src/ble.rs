@@ -221,13 +221,22 @@ impl Ble {
     }
 
     /// Called every few seconds by the app: notices a silent link and rescans.
+    /// A verified link gets 90 s (the phone's heartbeat is every 30 s); one
+    /// still waiting for the phone's challenge gets 20 s, like the Mac.
     pub fn tick(&mut self) {
-        let dead = {
+        let (dead, why) = {
             let l = self.link.lock().unwrap();
-            l.device.is_some() && l.last_heard.elapsed() > Duration::from_secs(90)
+            let silent = l.last_heard.elapsed();
+            if l.device.is_none() {
+                (false, "")
+            } else if l.verified {
+                (silent > Duration::from_secs(90), "phone stopped answering")
+            } else {
+                (silent > Duration::from_secs(20), "the phone never sent its challenge")
+            }
         };
         if dead {
-            crate::log!("bluetooth", "phone stopped answering, reconnecting");
+            crate::log!("bluetooth", "{why}, reconnecting");
             self.stop();
             let _ = self.events.send(Event::Dropped("no heartbeat".into()));
             let _ = self.start();

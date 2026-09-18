@@ -83,7 +83,13 @@ component CapabilityTile inherits Tile {
 
 export component MainWindow inherits Window {
     title: "Bridge";
-    width: 360px;
+    // Resizable: the content follows the window's width and scrolls when
+    // the window is shorter than it (a fixed `width` here made the layout
+    // stay at 360px in one corner whatever the window did).
+    preferred-width: 380px;
+    min-width: 300px;
+    preferred-height: 780px;
+    min-height: 360px;
     background: Theme.background;
     default-font-family: Theme.font;
     icon: @image-url("../assets/icon-256.png");
@@ -91,6 +97,8 @@ export component MainWindow inherits Window {
     property <color> hero-fill: AppState.reach-tint == 1 ? Theme.good-container : AppState.reach-tint == 2 ? Theme.warn-container : AppState.reach-tint == 3 ? Theme.bad-container : Theme.surface-high;
     property <color> hero-accent: AppState.reach-tint == 1 ? Theme.good : AppState.reach-tint == 2 ? Theme.warn : AppState.reach-tint == 3 ? Theme.bad : Theme.primary;
 
+    ScrollView {
+        content-width: self.visible-width;
     VerticalLayout {
         padding: 16px;
         spacing: 14px;
@@ -120,7 +128,7 @@ export component MainWindow inherits Window {
                 spacing: 6px;
                 HorizontalLayout {
                     spacing: 10px;
-                    Label { text: AppState.reach-title; font-size: 24px; font-weight: 700; color: hero-accent; horizontal-stretch: 1; }
+                    Label { text: AppState.reach-title; font-size: 24px; font-weight: 700; color: hero-accent; horizontal-stretch: 1; wrap: word-wrap; }
                     if AppState.busy || (AppState.searching && !AppState.linked && AppState.paired) : Icon {
                         source: @image-url("icons/bluetooth.svg"); tint: hero-accent; width: 22px; height: 22px;
                         opacity: 0.6;
@@ -211,6 +219,7 @@ export component MainWindow inherits Window {
 
         Muted { text: "Bridge " + AppState.version + "  ·  made by Bonevane"; horizontal-alignment: center; }
     }
+    }
 }
 
 component SettingRow inherits Tile {
@@ -238,8 +247,10 @@ component Choice inherits Rectangle {
 
 export component SettingsWindow inherits Window {
     title: "Bridge settings";
-    width: 480px;
-    height: 520px;
+    preferred-width: 480px;
+    min-width: 340px;
+    preferred-height: 540px;
+    min-height: 300px;
     background: Theme.background;
     default-font-family: Theme.font;
 

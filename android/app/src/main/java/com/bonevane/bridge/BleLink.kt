@@ -163,6 +163,21 @@ class BleLink(private val context: Context) {
             }
         }
         context.registerReceiver(adapterWatcher, IntentFilter(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED))
+        context.registerReceiver(bondWatcher, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+    }
+
+    /** A Mac pairing for the first time: pin its link as soon as bonding begins. */
+    private val bondWatcher = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(ctx: Context, intent: Intent) {
+            @Suppress("DEPRECATION")
+            val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+            val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+            if (state == BluetoothDevice.BOND_BONDING && paramGatt == null) {
+                TunnelState.log("Bluetooth: ${device.name ?: "a Mac"} is pairing; keeping the link stable")
+                pinConnectionParameters(device)
+            }
+        }
     }
 
     /** Forgets the (dead) server so start() can make a new one. Keeps the adapter watcher. */
@@ -245,6 +260,7 @@ class BleLink(private val context: Context) {
         teardown()
         adapterWatcher?.let { runCatching { context.unregisterReceiver(it) } }
         adapterWatcher = null
+        runCatching { context.unregisterReceiver(bondWatcher) }
     }
 
     /**
@@ -415,6 +431,15 @@ class BleLink(private val context: Context) {
         manager.openGattServer(context, object : BluetoothGattServerCallback() {
 
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+                // A Mac's link must be pinned *at connect*, as on main: a Mac
+                // pairing for the first time sits in the "pair?" dialog for
+                // seconds before it can subscribe, and with the 720 ms timeout
+                // unpinned the link died in there and it never got in. A Mac
+                // is the device that is (or is about to be) bonded; a fresh
+                // one is caught by the bond watcher below the moment bonding
+                // starts. Windows' plain door never bonds and is left alone.
+                if (newState == BluetoothProfile.STATE_CONNECTED &&
+                    device.bondState != BluetoothDevice.BOND_NONE) pinConnectionParameters(device)
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     mtus.remove(device)
                     val peer = peers.remove(device) ?: return   // a stranger leaving; not our link
@@ -466,7 +491,7 @@ class BleLink(private val context: Context) {
                     // pinConnectionParameters); Windows doesn't, and the
                     // client link it opens back to the PC is what made
                     // Windows offer to pair, which then broke the plain door.
-                    if (!plain) pinConnectionParameters(device)
+                    if (!plain && paramGatt == null) pinConnectionParameters(device)
                     TunnelState.log(if (plain) "Bluetooth: a PC subscribed (plain door); challenging it"
                                     else "Bluetooth: a paired Mac subscribed; challenging it")
                     val nonce = Pairing.nonce()

@@ -173,7 +173,7 @@ class BleLink(private val context: Context) {
             @Suppress("DEPRECATION")
             val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
             val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
-            if (state == BluetoothDevice.BOND_BONDING && paramGatt == null) {
+            if (state == BluetoothDevice.BOND_BONDING && !paramGatts.containsKey(device)) {
                 TunnelState.log("Bluetooth: ${device.name ?: "a Mac"} is pairing; keeping the link stable")
                 pinConnectionParameters(device)
             }
@@ -192,7 +192,7 @@ class BleLink(private val context: Context) {
         peers.clear()
         mtus.clear()
         connected = false
-        runCatching { paramGatt?.close() }; paramGatt = null
+        paramGatts.values.forEach { runCatching { it.close() } }; paramGatts.clear()
     }
 
     fun start() {
@@ -274,6 +274,7 @@ class BleLink(private val context: Context) {
         Thread({
             while (beating) {
                 Thread.sleep(30_000)
+                repinAll()
                 if (peers.isNotEmpty()) sendStatus()
             }
         }, "ble-heartbeat").apply { isDaemon = true }.start()
@@ -401,7 +402,20 @@ class BleLink(private val context: Context) {
 
     // MARK: - Connection parameters
 
-    private var paramGatt: BluetoothGatt? = null
+    /** One client handle per pinned (Mac) link, so two Macs, or a Mac plus a PC, each keep theirs. */
+    private val paramGatts = java.util.concurrent.ConcurrentHashMap<BluetoothDevice, BluetoothGatt>()
+
+    /**
+     * Asks for sane parameters again on every pinned link. The stack
+     * renegotiates parameters when *another* central connects (the Mac's
+     * link went to the 720 ms timeout again the moment Windows linked and
+     * dropped with "timed out" soon after), so this runs on each new
+     * connection and with every heartbeat.
+     */
+    @SuppressLint("MissingPermission")
+    private fun repinAll() {
+        paramGatts.values.forEach { runCatching { it.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) } }
+    }
 
     /**
      * Android's GATT subrate manager renegotiates every new link to a 720 ms
@@ -414,8 +428,8 @@ class BleLink(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     private fun pinConnectionParameters(device: BluetoothDevice) {
-        runCatching { paramGatt?.close() }
-        paramGatt = device.connectGatt(context, false, object : BluetoothGattCallback() {
+        paramGatts.remove(device)?.let { runCatching { it.close() } }
+        paramGatts[device] = device.connectGatt(context, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
@@ -438,12 +452,14 @@ class BleLink(private val context: Context) {
                 // is the device that is (or is about to be) bonded; a fresh
                 // one is caught by the bond watcher below the moment bonding
                 // starts. Windows' plain door never bonds and is left alone.
-                if (newState == BluetoothProfile.STATE_CONNECTED &&
-                    device.bondState != BluetoothDevice.BOND_NONE) pinConnectionParameters(device)
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    if (device.bondState != BluetoothDevice.BOND_NONE) pinConnectionParameters(device)
+                    repinAll()      // a new link resets the others' parameters
+                }
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     mtus.remove(device)
                     val peer = peers.remove(device) ?: return   // a stranger leaving; not our link
-                    if (!peer.plain) { runCatching { paramGatt?.close() }; paramGatt = null }
+                    paramGatts.remove(device)?.let { runCatching { it.close() } }
                     updateConnected()
                     TunnelState.log("Bluetooth: the ${peer.label} disconnected" +
                         if (peers.isNotEmpty()) " (${peers.size} still linked)" else "")
@@ -491,7 +507,7 @@ class BleLink(private val context: Context) {
                     // pinConnectionParameters); Windows doesn't, and the
                     // client link it opens back to the PC is what made
                     // Windows offer to pair, which then broke the plain door.
-                    if (!plain && paramGatt == null) pinConnectionParameters(device)
+                    if (!plain && !paramGatts.containsKey(device)) pinConnectionParameters(device)
                     TunnelState.log(if (plain) "Bluetooth: a PC subscribed (plain door); challenging it"
                                     else "Bluetooth: a paired Mac subscribed; challenging it")
                     val nonce = Pairing.nonce()

@@ -66,15 +66,22 @@ struct App {
     /// Last text we synced with the phone over the session, to stop ping-pong.
     last_synced: Option<String>,
     mirroring: bool,
-    /// Which Connect this is. A result from an earlier, cancelled attempt is ignored.
-    attempt: u32,
+    /// Which Connect this is. A result from an earlier, cancelled attempt is
+    /// ignored, and the thread behind it stops retrying as soon as it sees
+    /// the number move on (it used to keep hammering START, and once it got
+    /// through it would "undo" the helper the *current* attempt had started).
+    attempt: std::sync::Arc<std::sync::atomic::AtomicU32>,
     connecting: bool,
+    /// Whether this attempt has asked the phone for its tunnel yet.
+    woke_tunnel: bool,
     last_twins: Option<BTreeSet<String>>,
     last_tick: Instant,
     rescan_at: Option<Instant>,
     /// Bluetooth couldn't start (radio off, or not ready yet at login): try again then.
     retry_ble_at: Option<Instant>,
     usb_busy: bool,
+    /// Why the last USB setup stopped; the hero card offers to run it again.
+    usb_error: Option<String>,
     /// Packages whose icon we've already asked the phone for this link.
     icons_requested: BTreeSet<String>,
     log_lines: Vec<String>,
@@ -103,13 +110,15 @@ impl App {
             mirror_size: None,
             last_synced: None,
             mirroring: false,
-            attempt: 0,
+            attempt: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             connecting: false,
+            woke_tunnel: false,
             last_twins: None,
             last_tick: Instant::now(),
             rescan_at: None,
             retry_ble_at: None,
             usb_busy: false,
+            usb_error: None,
             icons_requested: BTreeSet::new(),
             log_lines: Vec::new(),
         }
@@ -138,7 +147,10 @@ impl App {
         ui.set_mirroring(self.mirroring);
         ui.set_version(VERSION.into());
 
-        let (title, detail, tint) = if !self.creds.is_paired() {
+        ui.set_usb_retry(self.usb_error.is_some() && !self.usb_busy && !self.connecting && !self.mirroring);
+        let (title, detail, tint) = if let Some(e) = &self.usb_error {
+            ("USB setup didn't finish", e.as_str(), 3)
+        } else if !self.creds.is_paired() {
             ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
         } else if self.usb_busy {
             ("Setting up over USB", "Follow the phone's prompts", 2)
@@ -318,6 +330,7 @@ impl App {
             return;
         }
         self.usb_busy = true;
+        self.usb_error = None;
         self.settings_window.global::<SettingsState>().set_usb_status("Looking for your phone on USB…".into());
         self.log("usb", "Set up over USB");
         usb::set_up(self.events_tx.clone());
@@ -330,8 +343,12 @@ impl App {
             self.log("", &format!("couldn't save credentials: {e:#}"));
             return false;
         }
+        let same = creds.ticket == self.creds.ticket && creds.secret == self.creds.secret;
         self.creds = creds;
-        self.log("", &format!("paired {how}"));
+        self.log("", &format!("paired {how}{}", if same { " (same ticket as before)" } else { "" }));
+        if same && self.ble.is_some() {
+            return true; // nothing to relink; a link in progress stays
+        }
         if let Some(b) = self.ble.as_mut() {
             b.stop();
         }
@@ -358,27 +375,39 @@ impl App {
         }
     }
 
+    fn wake_phone_tunnel(&mut self) {
+        if self.woke_tunnel {
+            return;
+        }
+        if let Some(b) = &self.ble {
+            if b.send_command("tunnel on").is_ok() {
+                self.woke_tunnel = true;
+                self.log("bluetooth", "waking the phone's tunnel");
+            }
+        }
+    }
+
     /// Mirror Phone: wake the tunnel if needed, connect, START.
     fn connect(&mut self) {
         if self.mirroring || self.tunnel.is_some() {
             return;
         }
-        self.attempt += 1;
-        let attempt = self.attempt;
+        use std::sync::atomic::Ordering;
+        let attempt = self.attempt.fetch_add(1, Ordering::SeqCst) + 1;
         self.connecting = true;
+        self.usb_error = None;
+        self.woke_tunnel = false;
         self.window.global::<AppState>().set_busy(true);
         self.refresh();
         let need_wake = self.linked && !self.phone_tunnel_on;
         if !self.linked {
             // We can't see the phone's state without Bluetooth; say what's needed
             // rather than waiting half a minute for a tunnel that may be off.
-            self.log("", "no Bluetooth link: mirroring needs the phone's tunnel to be on (Anywhere mode)");
+            // If the link comes up while we're trying, handle() wakes it then.
+            self.log("", "no Bluetooth link yet: mirroring needs the phone's tunnel, or Bluetooth to wake it");
         }
         if need_wake {
-            if let Some(b) = &self.ble {
-                let _ = b.send_command("tunnel on");
-            }
-            self.log("bluetooth", "waking the phone's tunnel");
+            self.wake_phone_tunnel();
         }
         let ticket = self.creds.ticket.clone();
         match tunnel::Tunnel::start(&ticket) {
@@ -392,17 +421,21 @@ impl App {
         // START over the tunnel, on a thread: dumbpipe needs a moment to find the phone.
         let secret = self.creds.secret.clone();
         let events = self.events_tx.clone();
+        let current = self.attempt.clone();
         std::thread::spawn(move || {
             if need_wake {
                 std::thread::sleep(Duration::from_secs(4)); // let the phone reach a relay
             }
             let mut result = Err("the phone didn't answer over the tunnel".to_string());
-            for attempt in 1..=12 {
+            for try_ in 1..=12 {
                 std::thread::sleep(Duration::from_secs(2));
+                if current.load(Ordering::SeqCst) != attempt {
+                    return; // cancelled, or superseded by a newer Connect
+                }
                 match tunnel::control(&secret, "START", Duration::from_secs(40)) {
                     Ok(r) if r.starts_with("OK") => { result = Ok(r); break; }
                     Ok(r) => { result = Err(r); break; }
-                    Err(e) => crate::log!("phone", "START {attempt}/12: {e:#}"),
+                    Err(e) => crate::log!("phone", "START {try_}/12: {e:#}"),
                 }
             }
             let _ = events.send(Event::Connected(attempt, result));
@@ -570,7 +603,7 @@ impl App {
             let _ = w.hide();
         }
         self.mirror_size = None;
-        self.attempt += 1;                                         // orphans any in-flight START
+        self.attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);   // stops any in-flight START thread
         self.window.global::<AppState>().set_busy(false);
         let tunnel = self.tunnel.take();
         if was_mirroring && self.linked {
@@ -771,12 +804,7 @@ impl App {
                     Err(e) => {
                         self.log("usb", &e);
                         self.settings_window.global::<SettingsState>().set_usb_status(e.clone().into());
-                        self.refresh();
-                        let ui = self.window.global::<AppState>();
-                        ui.set_reach_title("USB setup didn't finish".into());
-                        ui.set_reach_detail(e.into());
-                        ui.set_reach_tint(3);
-                        return;
+                        self.usb_error = Some(e);
                     }
                 }
             }
@@ -789,15 +817,21 @@ impl App {
             Event::Status(fields) => {
                 self.phone_tunnel_on = fields.get("tunnel").map(|v| v == "1").unwrap_or(false);
                 self.phone_paused = fields.get("paused").map(|v| v == "1").unwrap_or(false);
+                if self.connecting && !self.phone_tunnel_on {
+                    // Bluetooth came up after Mirror was clicked: now we can see
+                    // the tunnel is off, and switch it on.
+                    self.wake_phone_tunnel();
+                }
                 if let Some(keep) = fields.get("keep") {
                     let at = fields.get("keepAt").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
                     self.reconcile_keep_ready(keep == "1", at);
                 }
             }
             Event::Connected(attempt, result) => {
-                if attempt != self.attempt {
-                    // Cancelled while connecting. If it got through anyway, undo it.
-                    if result.is_ok() {
+                if attempt != self.attempt.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Cancelled while connecting. If it got through anyway and
+                    // nothing newer wants the helper, undo it.
+                    if result.is_ok() && !self.connecting && !self.mirroring {
                         self.log("phone", "a cancelled connect had started the helper; stopping it");
                         if let Some(b) = &self.ble { let _ = b.send_command("session over"); }
                     }
@@ -878,6 +912,8 @@ fn main() {
             let busy = app.window.global::<AppState>().get_busy();
             if app.mirroring || busy {
                 app.disconnect();
+            } else if app.usb_error.is_some() {
+                app.set_up_over_usb();
             } else if !app.creds.is_paired() {
                 app.pair_from_clipboard();
             } else {

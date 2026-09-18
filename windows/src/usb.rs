@@ -108,7 +108,7 @@ fn flow(events: &Sender<Event>) -> Result<Credentials> {
     };
     match phone.state.as_str() {
         "device" => {}
-        "unauthorized" => bail!("The phone is waiting for you: accept \"Allow USB debugging?\" on it (tick Always allow), then click again."),
+        "unauthorized" => bail!("The phone is waiting for you: accept \"Allow USB debugging?\" on it (tick Always allow), then run Set up over USB again."),
         other => bail!("The phone is {other}; unlock it and check USB debugging is on."),
     }
     let serial = phone.serial.as_str();

@@ -31,8 +31,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * a few hundred bytes.
  *
  * The phone is the peripheral: it advertises a Bridge service and pushes
- * messages to whichever Mac has subscribed. Characteristics require encryption,
- * so only a *bonded* (paired) Mac can read your notifications.
+ * messages to every computer that has subscribed and passed the handshake;
+ * a Mac and a PC can be linked at the same time. The Mac's characteristics
+ * require encryption, so only a *bonded* (paired) Mac can read your
+ * notifications; the PC's door is unbonded but AES-GCM encrypted (see TX_PLAIN).
  *
  * What this can and can't do:
  *  - notifications phone → Mac: needs no privileges at all
@@ -87,29 +89,40 @@ class BleLink(private val context: Context) {
 
     private var server: BluetoothGattServer? = null
     private var tx: BluetoothGattCharacteristic? = null
-    private val subscribers = HashSet<BluetoothDevice>()
-    private var mtuPayload = MIN_PAYLOAD
-
-    /** Chunks waiting to go out; BLE only allows one notification in flight. */
-    private val outbox = ArrayDeque<ByteArray>()
-    private val sending = AtomicBoolean(false)
-    /** When `sending` was last set, so a lost onNotificationSent can't wedge the queue for good. */
-    @Volatile private var sendingSince = 0L
-
-    /** Reassembly buffer for messages coming from the Mac. */
-    private val inbox = java.io.ByteArrayOutputStream()
-    /** True while the current subscriber came in through the plain (Windows) door. */
-    @Volatile private var plainDoor = false
     private var txPlain: BluetoothGattCharacteristic? = null
-    private var crypto: Pairing.SessionCrypto? = null
-    private var ourNonce: String? = null
+
+    /**
+     * One central that has subscribed: the Mac through the bonded door, a
+     * PC through the plain one, or both at once. Everything that used to be
+     * a single field lives here, per device, so two computers can be linked
+     * at the same time without treading on each other's handshake, cipher,
+     * or send queue.
+     */
+    private inner class Peer(val device: BluetoothDevice, val plain: Boolean) {
+        val label = if (plain) "PC" else "Mac"
+        val characteristic: BluetoothGattCharacteristic? get() = if (plain) txPlain else tx
+        @Volatile var verified = false
+        var pendingNonce: String? = null
+        var crypto: Pairing.SessionCrypto? = null
+        var mtuPayload = mtus[device] ?: MIN_PAYLOAD
+        /** Reassembly buffer for messages coming in. */
+        val inbox = java.io.ByteArrayOutputStream()
+        /** Chunks waiting to go out; BLE only allows one notification in flight per link. */
+        val outbox = ArrayDeque<ByteArray>()
+        val sending = AtomicBoolean(false)
+        /** When `sending` was last set, so a lost onNotificationSent can't wedge the queue for good. */
+        @Volatile var sendingSince = 0L
+    }
+
+    private val peers = java.util.concurrent.ConcurrentHashMap<BluetoothDevice, Peer>()
+    /** MTU per link; negotiated before the subscription that creates the Peer. */
+    private val mtus = java.util.concurrent.ConcurrentHashMap<BluetoothDevice, Int>()
 
     @Volatile var connected = false
         private set(value) { field = value; TunnelState.macLinked = value }
-    /** True once the subscribed Mac has answered the challenge. */
-    @Volatile private var verified = false
-    private var pendingNonce: String? = null
     @Volatile private var beating = false
+
+    private fun updateConnected() { connected = peers.values.any { it.verified } }
 
     private val notificationListener: (String) -> Unit = { line ->
         send(TYPE_NOTIFICATION, line)
@@ -153,12 +166,9 @@ class BleLink(private val context: Context) {
         server = null
         tx = null
         txPlain = null
-        subscribers.clear()
-        synchronized(outbox) { outbox.clear() }
-        sending.set(false)
-        verified = false
+        peers.clear()
+        mtus.clear()
         connected = false
-        crypto = null
         runCatching { paramGatt?.close() }; paramGatt = null
     }
 
@@ -240,7 +250,7 @@ class BleLink(private val context: Context) {
         Thread({
             while (beating) {
                 Thread.sleep(30_000)
-                if (subscribers.isNotEmpty()) sendStatus()
+                if (peers.isNotEmpty()) sendStatus()
             }
         }, "ble-heartbeat").apply { isDaemon = true }.start()
     }
@@ -275,7 +285,7 @@ class BleLink(private val context: Context) {
         // hasn't spoken over the tunnel. Without this the idle watchdog decides
         // it vanished and locks the phone down, which quietly kills the daemon
         // and drops the clipboard to Mac-to-phone only.
-        if (subscribers.isNotEmpty()) TunnelState.macSeen()
+        if (peers.isNotEmpty()) TunnelState.macSeen()
         val daemon = DaemonManager.isDaemonAlive()
         val paused = TunnelService.current?.policy?.isPaused == true
         // The phone owns these settings; the Mac mirrors whatever it reports here.
@@ -300,66 +310,68 @@ class BleLink(private val context: Context) {
             val out = java.io.ByteArrayOutputStream()
             bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
             out.toByteArray()
-        }.getOrNull() ?: return
+        }.onFailure { TunnelState.log("Bluetooth: no icon for $pkg: ${it.message}") }.getOrNull() ?: return
+        TunnelState.log("Bluetooth: sending the icon for $pkg (${png.size} bytes)")
         send(TYPE_ICON, pkg + "\t" + android.util.Base64.encodeToString(png, android.util.Base64.NO_WRAP))
     }
 
     // MARK: - Sending
 
-    /** Queues one message for the Mac, split into MTU-sized chunks. */
-    @SuppressLint("MissingPermission")
+    /** Queues one message for every verified computer (each gets its own cipher). */
     fun send(type: Byte, text: String) {
-        if (subscribers.isEmpty()) return
-        if (!verified && type != TYPE_AUTH) return      // strangers hear only the challenge
+        for (peer in peers.values) if (peer.verified) sendTo(peer, type, text)
+    }
+
+    /** Queues one message for one computer, split into MTU-sized chunks. */
+    private fun sendTo(peer: Peer, type: Byte, text: String) {
+        if (!peer.verified && type != TYPE_AUTH) return      // strangers hear only the challenge
         // Through the plain door, everything after the handshake is ciphertext.
-        val bytes = crypto?.takeIf { verified }?.seal(text.toByteArray()) ?: text.toByteArray()
-        val room = mtuPayload - 2      // type + "more" flag
-        synchronized(outbox) {
-            if (bytes.isEmpty()) outbox.add(byteArrayOf(type, 0))
+        val bytes = peer.crypto?.takeIf { peer.verified }?.seal(text.toByteArray()) ?: text.toByteArray()
+        val room = peer.mtuPayload - 2      // type + "more" flag
+        synchronized(peer.outbox) {
+            if (bytes.isEmpty()) peer.outbox.add(byteArrayOf(type, 0))
             var offset = 0
             while (offset < bytes.size) {
                 val size = minOf(room, bytes.size - offset)
                 val more = if (offset + size < bytes.size) 1.toByte() else 0.toByte()
-                outbox.add(byteArrayOf(type, more) + bytes.copyOfRange(offset, offset + size))
+                peer.outbox.add(byteArrayOf(type, more) + bytes.copyOfRange(offset, offset + size))
                 offset += size
             }
         }
-        pump()
+        pump(peer)
     }
 
     @SuppressLint("MissingPermission")
-    private fun pump() {
+    private fun pump(peer: Peer) {
         // The stack promises onNotificationSent for every notify, but if the
-        // Mac drops in between it never arrives. Without this guard `sending`
-        // stayed true forever, and every later message (heartbeats included)
-        // was queued and never sent: the Mac saw a link that never spoke,
-        // dropped it after 90 s, reconnected, and looped like that all night.
-        if (sending.get() && System.currentTimeMillis() - sendingSince > 3_000) {
-            TunnelState.log("BLE: send acknowledgement never came; resetting")
-            sending.set(false)
+        // computer drops in between it never arrives. Without this guard
+        // `sending` stayed true forever, and every later message (heartbeats
+        // included) was queued and never sent: the Mac saw a link that never
+        // spoke, dropped it after 90 s, reconnected, and looped like that all night.
+        if (peer.sending.get() && System.currentTimeMillis() - peer.sendingSince > 3_000) {
+            TunnelState.log("BLE: send acknowledgement never came from the ${peer.label}; resetting")
+            peer.sending.set(false)
         }
-        if (!sending.compareAndSet(false, true)) return
-        sendingSince = System.currentTimeMillis()
-        val chunk = synchronized(outbox) { outbox.poll() }
-        val characteristic = if (plainDoor) txPlain else tx
-        if (chunk == null || characteristic == null) { sending.set(false); return }
-        val device = subscribers.firstOrNull()
-        if (device == null) { sending.set(false); return }
+        if (!peer.sending.compareAndSet(false, true)) return
+        peer.sendingSince = System.currentTimeMillis()
+        val chunk = synchronized(peer.outbox) { peer.outbox.poll() }
+        val characteristic = peer.characteristic
+        if (chunk == null || characteristic == null) { peer.sending.set(false); return }
         val ok = runCatching {
             if (Build.VERSION.SDK_INT >= 33) {
-                server?.notifyCharacteristicChanged(device, characteristic, false, chunk) ==
+                server?.notifyCharacteristicChanged(peer.device, characteristic, false, chunk) ==
                     BluetoothGatt.GATT_SUCCESS
             } else {
                 @Suppress("DEPRECATION")
                 characteristic.value = chunk
                 @Suppress("DEPRECATION")
-                server?.notifyCharacteristicChanged(device, characteristic, false) == true
+                server?.notifyCharacteristicChanged(peer.device, characteristic, false) == true
             }
         }.onFailure { TunnelState.log("BLE notify threw: $it") }.getOrDefault(false)
         if (!ok) {
             // Couldn't hand it over; drop this chunk rather than wedge the queue.
-            sending.set(false)
-            if (synchronized(outbox) { outbox.isNotEmpty() }) pump()
+            peer.sending.set(false)
+            if (synchronized(peer.outbox) { peer.outbox.isNotEmpty() }) pump(peer)
         }
     }
 
@@ -396,16 +408,12 @@ class BleLink(private val context: Context) {
 
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    if (!subscribers.contains(device)) return   // an old central leaving; the link is someone else's
-                    runCatching { paramGatt?.close() }; paramGatt = null
-                    subscribers.remove(device)
-                    verified = false
-                    connected = false
-                    crypto = null
-                    // Anything queued was for a Mac that's gone; start clean.
-                    synchronized(outbox) { outbox.clear() }
-                    sending.set(false)
-                    TunnelState.log("Bluetooth: a Mac disconnected")
+                    mtus.remove(device)
+                    val peer = peers.remove(device) ?: return   // a stranger leaving; not our link
+                    if (!peer.plain) { runCatching { paramGatt?.close() }; paramGatt = null }
+                    updateConnected()
+                    TunnelState.log("Bluetooth: the ${peer.label} disconnected" +
+                        if (peers.isNotEmpty()) " (${peers.size} still linked)" else "")
                 }
             }
 
@@ -413,11 +421,10 @@ class BleLink(private val context: Context) {
                 device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
                 preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
             ) {
-                // The Mac subscribing (or unsubscribing) to notifications.
+                // A computer subscribing (or unsubscribing) to notifications.
                 if (descriptor.uuid == CCCD) {
                     val on = value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                     val plain = descriptor.characteristic.uuid == TX_PLAIN
-                    if (on) { plainDoor = plain; crypto = null }
                     // Through the bonded door the stack enforces encryption; the
                     // bond is checked here as well, because an encrypted-but-
                     // unbonded link is possible with some pairing modes. The
@@ -428,45 +435,35 @@ class BleLink(private val context: Context) {
                             BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION, 0, null)
                         return
                     }
-                    if (on) {
-                        // One central at a time, newest wins. With two (the Mac
-                        // and a laptop both in range) the phone used to keep
-                        // talking to whichever it picked first, and the other
-                        // never got its challenge and looked unpaired.
-                        val previous = subscribers.filter { it != device }
-                        subscribers.clear()
-                        subscribers.add(device)
-                        previous.forEach { old ->
-                            TunnelState.log("Bluetooth: dropping ${old.name ?: "the previous central"} for the new one")
-                            runCatching { server?.cancelConnection(old) }
-                        }
-                        synchronized(outbox) { outbox.clear() }
-                        sending.set(false)
-                    } else subscribers.remove(device)
-                    verified = false
-                    connected = false
                     if (responseNeeded) {
                         server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                     }
-                    if (on) {
-                        // Only now: doing this on the raw connect left the radio
-                        // *initiating* an outgoing link while Windows dropped and
-                        // re-dialled after bonding, and a controller can't accept
-                        // a connection while it's initiating one.
-                        // The Mac's link needs its parameters pinned (see
-                        // pinConnectionParameters); Windows doesn't, and the
-                        // client link it opens back to the PC is what made
-                        // Windows offer to pair, which then broke the plain door.
-                        if (!plain) pinConnectionParameters(device)
-                        TunnelState.log(if (plain) "Bluetooth: a device subscribed (plain door); challenging it"
-                                        else "Bluetooth: a paired device subscribed; challenging it")
-                        val nonce = Pairing.nonce()
-                        pendingNonce = nonce
-                        ourNonce = nonce
-                        send(TYPE_AUTH, "challenge $nonce")
-                    } else {
-                        TunnelState.log("Bluetooth: Mac left")
+                    if (!on) {
+                        val gone = peers.remove(device)
+                        updateConnected()
+                        if (gone != null) TunnelState.log("Bluetooth: the ${gone.label} left")
+                        return
                     }
+                    // A fresh subscription starts a fresh handshake, even from a
+                    // device we already knew. Other computers keep their links:
+                    // the Mac and a PC can both be linked at once.
+                    val peer = Peer(device, plain)
+                    peers[device] = peer
+                    updateConnected()
+                    // Only now: doing this on the raw connect left the radio
+                    // *initiating* an outgoing link while Windows dropped and
+                    // re-dialled after bonding, and a controller can't accept
+                    // a connection while it's initiating one.
+                    // The Mac's link needs its parameters pinned (see
+                    // pinConnectionParameters); Windows doesn't, and the
+                    // client link it opens back to the PC is what made
+                    // Windows offer to pair, which then broke the plain door.
+                    if (!plain) pinConnectionParameters(device)
+                    TunnelState.log(if (plain) "Bluetooth: a PC subscribed (plain door); challenging it"
+                                    else "Bluetooth: a paired Mac subscribed; challenging it")
+                    val nonce = Pairing.nonce()
+                    peer.pendingNonce = nonce
+                    sendTo(peer, TYPE_AUTH, "challenge $nonce")
                     return
                 }
                 if (responseNeeded) {
@@ -478,52 +475,57 @@ class BleLink(private val context: Context) {
                 device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
                 preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray,
             ) {
-                if (characteristic.uuid == RX || characteristic.uuid == RX_PLAIN) receive(value)
+                if (characteristic.uuid == RX || characteristic.uuid == RX_PLAIN) {
+                    peers[device]?.let { receive(it, value) }
+                }
                 if (responseNeeded) {
                     server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                 }
             }
 
             override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-                sending.set(false)
-                pump()      // next chunk, now that the stack is ready
+                val peer = peers[device] ?: return
+                peer.sending.set(false)
+                pump(peer)      // next chunk, now that the stack is ready
             }
 
             override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
-                mtuPayload = (mtu - 3).coerceAtLeast(MIN_PAYLOAD)
+                val payload = (mtu - 3).coerceAtLeast(MIN_PAYLOAD)
+                mtus[device] = payload
+                peers[device]?.mtuPayload = payload
             }
         })
 
-    /** Reassembles a message from the Mac and acts on it. */
-    private fun receive(chunk: ByteArray) {
+    /** Reassembles a message from one computer and acts on it. */
+    private fun receive(peer: Peer, chunk: ByteArray) {
         if (chunk.size < 2) return
         val type = chunk[0]
         val more = chunk[1] == 1.toByte()
-        inbox.write(chunk, 2, chunk.size - 2)
+        peer.inbox.write(chunk, 2, chunk.size - 2)
         if (more) return
-        val raw = inbox.toByteArray()
-        inbox.reset()
-        val message = if (verified && crypto != null) {
-            val plain = crypto?.open(raw)
+        val raw = peer.inbox.toByteArray()
+        peer.inbox.reset()
+        val message = if (peer.verified && peer.crypto != null) {
+            val plain = peer.crypto?.open(raw)
             if (plain == null) { TunnelState.log("Bluetooth: dropped a message that didn't decrypt"); return }
             String(plain)
         } else String(raw)
-        if (!verified) {
+        if (!peer.verified) {
             // Only the answer to our challenge gets through: "auth <hmac> <their nonce>".
             val words = message.trim().split(' ')
-            val nonce = pendingNonce
+            val nonce = peer.pendingNonce
             if (type == TYPE_COMMAND && words.size == 3 && words[0] == "auth" && nonce != null &&
                 Pairing.hmacMatches(Prefs.pairSecret(context), nonce, words[1])
             ) {
-                pendingNonce = null
+                peer.pendingNonce = null
                 // Prove ourselves back *before* switching on the cipher: the
                 // "ok" is the last plaintext message. On the plain door the
                 // session key comes from the secret and both nonces.
-                send(TYPE_AUTH, "ok " + Pairing.hmac(Prefs.pairSecret(context), words[2]))
-                if (plainDoor) crypto = Pairing.SessionCrypto(Prefs.pairSecret(context), nonce, words[2], phoneSide = true)
-                verified = true
-                connected = true
-                TunnelState.log(if (plainDoor) "Bluetooth: PC verified (encrypted session)" else "Bluetooth: Mac verified")
+                sendTo(peer, TYPE_AUTH, "ok " + Pairing.hmac(Prefs.pairSecret(context), words[2]))
+                if (peer.plain) peer.crypto = Pairing.SessionCrypto(Prefs.pairSecret(context), nonce, words[2], phoneSide = true)
+                peer.verified = true
+                updateConnected()
+                TunnelState.log(if (peer.plain) "Bluetooth: PC verified (encrypted session)" else "Bluetooth: Mac verified")
                 TunnelState.macSeen()
                 sendStatus()
             } else {

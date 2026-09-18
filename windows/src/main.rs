@@ -1034,6 +1034,21 @@ fn main() {
         let tray_clicks = tray_icon::TrayIconEvent::receiver();
         timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
             a.borrow_mut().poll();
+            // Minimise = to the tray, like close. Slint has no minimise
+            // callback, so watch the state: un-minimise (so a later show()
+            // brings a normal window back) and hide.
+            if let Some(w) = w.upgrade() {
+                if w.window().is_minimized() {
+                    w.window().set_minimized(false);
+                    let _ = w.hide();
+                }
+            }
+            if let Some(s) = sw.upgrade() {
+                if s.window().is_minimized() {
+                    s.window().set_minimized(false);
+                    let _ = s.hide();
+                }
+            }
             while let Ok(e) = tray_events.try_recv() {
                 if e.id == show.id() {
                     if let Some(w) = w.upgrade() {
@@ -1058,6 +1073,11 @@ fn main() {
         });
     }
 
-    window.run().expect("event loop");
+    // Started at login (--tray): stay in the tray until clicked. The loop
+    // must keep running with every window hidden, hence until_quit.
+    if !std::env::args().any(|a| a == "--tray") {
+        window.show().expect("window");
+    }
+    slint::run_event_loop_until_quit().expect("event loop");
     crate::log!("", "quit");
 }

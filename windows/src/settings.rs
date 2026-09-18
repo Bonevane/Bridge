@@ -92,7 +92,8 @@ impl Settings {
 /// HKCU\Software\Microsoft\Windows\CurrentVersion\Run, the per-user autostart list.
 fn apply_launch_at_login(on: bool) {
     let Ok(exe) = std::env::current_exe() else { return };
-    let value = format!("\"{}\"", exe.display());
+    // --tray: start in the tray without opening the window (see main.rs).
+    let value = format!("\"{}\" --tray", exe.display());
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     let mut cmd = std::process::Command::new("reg");
     if on {

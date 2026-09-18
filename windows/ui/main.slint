@@ -189,7 +189,7 @@ export component MainWindow inherits Window {
             Tile {
                 icon: @image-url("icons/folder.svg"); title: "Activity log"; clickable: true;
                 clicked => { AppState.show-log = !AppState.show-log; }
-                Icon { source: @image-url("icons/chevron-right.svg"); rotation-angle: AppState.show-log ? 90deg : 0deg; animate rotation-angle { duration: 120ms; } }
+                Icon { source: @image-url("icons/chevron-right.svg"); transform-rotation: AppState.show-log ? 90deg : 0deg; animate transform-rotation { duration: 120ms; } }
             }
             if AppState.show-log : VerticalLayout {
                 padding: 12px;
@@ -199,7 +199,7 @@ export component MainWindow inherits Window {
                     border-radius: 12px;
                     background: Theme.background;
                     ScrollView {
-                        viewport-width: self.visible-width;
+                        content-width: self.visible-width;
                         Text { text: AppState.log-text; font-family: "Cascadia Mono"; font-size: 10px; color: Theme.on-surface-variant; wrap: word-wrap; }
                     }
                 }
@@ -245,7 +245,7 @@ export component SettingsWindow inherits Window {
 
     ScrollView {
         x: 0; y: 72px; width: root.width; height: root.height - 72px;
-        viewport-width: self.visible-width;
+        content-width: self.visible-width;
         VerticalLayout {
             padding: 16px; padding-top: 0;
             spacing: 12px;

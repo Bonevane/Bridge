@@ -391,6 +391,11 @@ final class BridgeController: ObservableObject {
             // the setting promises.
             phase = .working("Starting the phone's helper over USB…")
             let secret = pairSecret
+            // A helper left over from an older install or pairing holds the
+            // port with the wrong secret; the new one couldn't bind beside it.
+            _ = await background {
+                Shell.run(adb, ["-s", usbSerial, "shell", "pkill -f 'bridge[.]Daemon'; sleep 0.5"], timeout: 10)
+            }
             let spawn = await background {
                 Shell.run(adb, ["-s", usbSerial, "shell",
                     "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
@@ -398,6 +403,22 @@ final class BridgeController: ObservableObject {
                     "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
             }
             if !spawn.ok { appendLog(spawn.output, source: "adb") }
+            var helperUp = false
+            for _ in 0..<12 {
+                let q = await background {
+                    Shell.run(adb, ["-s", usbSerial, "shell", "content", "query", "--uri", ticketURI], timeout: 10).output
+                }
+                if q.contains("daemon=1") { helperUp = true; break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            if helperUp {
+                appendLog("The helper is running.")
+            } else {
+                let tail = await background {
+                    Shell.run(adb, ["-s", usbSerial, "shell", "tail -n 3 /data/local/tmp/bridge-daemon.out"], timeout: 10).output
+                }
+                appendLog("The helper didn't come up; its log ends with: \(tail.trimmingCharacters(in: .whitespacesAndNewlines))", source: "adb")
+            }
             // Setup switched the phone's tunnel on to mint the ticket; hand it
             // back to whatever mode the user chose (Nearby by default).
             _ = await background {
@@ -823,7 +844,13 @@ final class BridgeController: ObservableObject {
                 guard let self = self else { return }
                 self.bluetoothState = state
                 // A fresh link: the phone has no idea what's open here yet.
-                if state == .linked { self.twins.report(force: true) }
+                if state == .linked { self.twins.report(force: true); self.iconsRequested.removeAll() }
+            }
+        }
+        bluetoothLink.onIcon = { [weak self] package, png in
+            Task { @MainActor in
+                NotificationBridge.cacheIcon(png, for: package)
+                self?.appendLog("Cached the icon for \(package).", source: "bluetooth")
             }
         }
         bluetoothLink.onStatus = { [weak self] fields in
@@ -864,11 +891,21 @@ final class BridgeController: ObservableObject {
         bluetoothLink.start()
     }
 
-    /// One notification from the phone: "app\ttitle\ttext".
+    /// Packages whose icon has been asked for over this Bluetooth link.
+    private var iconsRequested = Set<String>()
+
+    /// One notification from the phone: "app\ttitle\ttext\tpackage".
     func showPhoneNotification(_ line: String) {
         let parts = line.components(separatedBy: "\t")
         guard parts.count >= 3, mirrorNotifications else { return }
-        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2])
+        let package = parts.count > 3 ? parts[3] : ""
+        // First notification from an app: ask the phone for its icon (a small
+        // PNG over Bluetooth, cached for good). This one goes out without it.
+        if !package.isEmpty, !NotificationBridge.hasIcon(for: package), bluetoothLinked, !iconsRequested.contains(package) {
+            iconsRequested.insert(package)
+            bluetoothLink.requestIcon(package)
+        }
+        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2], package: package)
     }
 
     private lazy var notificationBridge = NotificationBridge(

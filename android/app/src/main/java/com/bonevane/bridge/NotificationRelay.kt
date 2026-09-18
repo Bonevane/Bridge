@@ -52,7 +52,7 @@ class NotificationService : NotificationListenerService() {
             ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
         if (title.isBlank() && text.isBlank()) return
 
-        NotificationRelay.post(app, title, text)
+        NotificationRelay.post(app, title, text, sbn.packageName)
     }
 }
 
@@ -63,9 +63,10 @@ object NotificationRelay {
     private val subscribers = CopyOnWriteArrayList<(String) -> Unit>()
 
     /** One notification as a single line: app, title and text, tab separated. */
-    fun post(app: String, title: String, text: String) {
+    /** app, title, text, and the package (so the receiver can ask for its icon). */
+    fun post(app: String, title: String, text: String, pkg: String = "") {
         fun clean(s: String) = s.replace('\t', ' ').replace('\n', ' ').trim()
-        val line = "${clean(app)}\t${clean(title)}\t${clean(text)}"
+        val line = "${clean(app)}\t${clean(title)}\t${clean(text)}\t${clean(pkg)}"
         subscribers.forEach { runCatching { it(line) } }
     }
 

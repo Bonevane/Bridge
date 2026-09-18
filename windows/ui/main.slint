@@ -1,0 +1,415 @@
+// Bridge's windows, in the same Material 3 shapes as the phone app.
+// Main window: is my phone reachable, what works right now, what can I do.
+// Settings window: the Mac's four tabs. Mirror window: the phone's screen.
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme, Icon, Label, Muted, SectionTitle, Card, PillButton, Toggle, Tile, Divider, Segmented } from "theme.slint";
+
+export struct Capability {
+    name: string,
+    detail: string,
+    state: int,   // 0 off · 1 limited · 2 working
+}
+
+export global AppState {
+    in-out property <string> reach-title: "Pair your phone first";
+    in-out property <string> reach-detail: "";
+    in-out property <int> reach-tint: 0;   // 0 neutral · 1 good · 2 warning · 3 error
+    in-out property <bool> busy: false;
+    in-out property <bool> searching: false;
+
+    in-out property <bool> paired: false;
+    in-out property <bool> linked: false;
+    in-out property <bool> phone-tunnel-on: false;
+    in-out property <bool> phone-paused: false;
+    in-out property <bool> mirroring: false;
+    /// The last USB setup stopped short; the hero button runs it again.
+    in-out property <bool> usb-retry: false;
+
+    in-out property <Capability> screen: { name: "Screen", detail: "", state: 0 };
+    in-out property <Capability> notifications: { name: "Notifications", detail: "", state: 0 };
+    in-out property <Capability> clipboard: { name: "Clipboard", detail: "", state: 0 };
+
+    in-out property <bool> show-log: false;
+    in-out property <string> log-text: "";
+    in-out property <string> version: "";
+
+    callback primary();
+    callback refresh();
+    callback pause-phone();
+    callback toggle-phone-tunnel();
+    callback set-up-over-usb();
+    callback open-settings();
+    callback open-log-folder();
+    callback quit();
+}
+
+export global SettingsState {
+    in-out property <bool> launch-at-login;
+    in-out property <bool> use-bluetooth;
+    in-out property <bool> mirror-notifications;
+    in-out property <bool> notifications-anywhere;
+    in-out property <bool> sync-clipboard;
+    in-out property <bool> background-clipboard;
+    in-out property <bool> keep-ready;
+    in-out property <int> max-size-index;
+    in-out property <int> bitrate-mbps;
+    in-out property <bool> turn-screen-off;
+    in-out property <bool> mute-phone;
+
+    in-out property <string> ticket-short: "Not paired";
+    in-out property <string> pasted: "";
+    in-out property <string> pasted-status: "";
+    in-out property <string> usb-status: "";
+    in-out property <bool> usb-busy: false;
+
+    callback changed();
+    callback copy-ticket();
+    callback paste-ticket();
+    callback apply-pasted();
+    callback set-up-over-usb();
+    callback unpair();
+}
+
+component CapabilityTile inherits Tile {
+    in property <Capability> cap;
+    title: cap.name;
+    subtitle: cap.detail;
+    Rectangle {
+        width: 10px; height: 10px; border-radius: 5px;
+       
+        background: cap.state == 2 ? Theme.good : cap.state == 1 ? Theme.warn : Theme.outline;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Bridge";
+    // Resizable: the content follows the window's width and scrolls when
+    // the window is shorter than it (a fixed `width` here made the layout
+    // stay at 360px in one corner whatever the window did).
+    preferred-width: 380px;
+    min-width: 300px;
+    preferred-height: 780px;
+    min-height: 360px;
+    background: Theme.background;
+    default-font-family: Theme.font;
+    icon: @image-url("../assets/icon-256.png");
+
+    property <color> hero-fill: AppState.reach-tint == 1 ? Theme.good-container : AppState.reach-tint == 2 ? Theme.warn-container : AppState.reach-tint == 3 ? Theme.bad-container : Theme.surface-high;
+    property <color> hero-accent: AppState.reach-tint == 1 ? Theme.good : AppState.reach-tint == 2 ? Theme.warn : AppState.reach-tint == 3 ? Theme.bad : Theme.primary;
+
+    ScrollView {
+        content-width: self.visible-width;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 14px;
+
+        // Header, centred like the phone's top bar, with refresh on the right.
+        Rectangle {
+            height: 28px;
+            Label { text: "Bridge"; width: 100%; height: 100%; font-size: 17px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+            HorizontalLayout {
+                alignment: end;
+                Rectangle {
+                    width: 28px;
+                    border-radius: 14px;
+                    background: rf.has-hover ? Theme.surface-high : transparent;
+                    Icon { source: @image-url("icons/refresh-cw.svg"); width: 18px; height: 18px; x: 5px; y: 5px; }
+                    rf := TouchArea { clicked => { AppState.refresh(); } }
+                }
+            }
+        }
+
+        // Hero: how the phone is reachable.
+        Card {
+            hero: true;
+            fill: hero-fill;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Label { text: AppState.reach-title; font-size: 24px; font-weight: 700; color: hero-accent; horizontal-stretch: 1; wrap: word-wrap; }
+                    if AppState.busy || (AppState.searching && !AppState.linked && AppState.paired) : Icon {
+                        source: @image-url("icons/bluetooth.svg"); tint: hero-accent; width: 22px; height: 22px;
+                        opacity: 0.6;
+                    }
+                }
+                Muted { text: AppState.reach-detail; font-size: 12px; color: Theme.on-surface; }
+                Rectangle { height: 8px; }
+                PillButton {
+                    text: AppState.mirroring || AppState.busy ? "Disconnect" : AppState.usb-retry ? "Set up over USB again" : AppState.paired ? "Mirror phone" : "Pair from clipboard";
+                    kind: "filled";
+                    icon: AppState.mirroring || AppState.busy ? @image-url("icons/x.svg") : AppState.usb-retry ? @image-url("icons/usb.svg") : AppState.paired ? @image-url("icons/screen-share.svg") : @image-url("icons/key-round.svg");
+                    clicked => { AppState.primary(); }
+                }
+            }
+        }
+
+        // What works right now.
+        SectionTitle { text: "Right now"; }
+        Card {
+            CapabilityTile { icon: @image-url("icons/smartphone.svg"); cap: AppState.screen; }
+            Divider {}
+            CapabilityTile { icon: @image-url("icons/bell.svg"); cap: AppState.notifications; }
+            Divider {}
+            CapabilityTile { icon: @image-url("icons/clipboard.svg"); cap: AppState.clipboard; }
+        }
+
+        // Actions.
+        SectionTitle { text: "Actions"; }
+        Card {
+            Tile {
+                icon: @image-url("icons/pause-circle.svg"); title: "Pause phone for banking"; subtitle: "USB debugging off for 15 minutes";
+                clickable: true; enabled: AppState.linked && !AppState.busy;
+                clicked => { AppState.pause-phone(); }
+                Icon { source: @image-url("icons/chevron-right.svg"); }
+            }
+            Divider {}
+            Tile {
+                icon: @image-url("icons/globe.svg");
+                title: AppState.phone-tunnel-on ? "Turn phone tunnel off" : "Turn phone tunnel on";
+                subtitle: "Switches the phone's internet tunnel over Bluetooth";
+                clickable: true; enabled: AppState.linked;
+                clicked => { AppState.toggle-phone-tunnel(); }
+                Icon { source: @image-url("icons/chevron-right.svg"); }
+            }
+            Divider {}
+            Tile {
+                icon: @image-url("icons/usb.svg"); title: "Set up over USB"; subtitle: "Pair a phone that's plugged in";
+                clickable: true; enabled: !AppState.busy && !AppState.mirroring;
+                clicked => { AppState.set-up-over-usb(); }
+                Icon { source: @image-url("icons/chevron-right.svg"); }
+            }
+            Divider {}
+            Tile {
+                icon: @image-url("icons/settings.svg"); title: "Settings"; clickable: true;
+                clicked => { AppState.open-settings(); }
+                Icon { source: @image-url("icons/chevron-right.svg"); }
+            }
+            Divider {}
+            Tile {
+                icon: @image-url("icons/power.svg"); title: "Quit Bridge"; clickable: true;
+                clicked => { AppState.quit(); }
+            }
+        }
+
+        // Activity log, collapsed by default.
+        SectionTitle { text: "Log"; }
+        Card {
+            Tile {
+                icon: @image-url("icons/folder.svg"); title: "Activity log"; clickable: true;
+                clicked => { AppState.show-log = !AppState.show-log; }
+                Icon { source: @image-url("icons/chevron-right.svg"); transform-rotation: AppState.show-log ? 90deg : 0deg; animate transform-rotation { duration: 120ms; } }
+            }
+            if AppState.show-log : VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                Rectangle {
+                    height: 150px;
+                    border-radius: 12px;
+                    background: Theme.background;
+                    ScrollView {
+                        content-width: self.visible-width;
+                        Text { text: AppState.log-text; font-family: "Cascadia Mono"; font-size: 10px; color: Theme.on-surface-variant; wrap: word-wrap; }
+                    }
+                }
+                PillButton { text: "Open log folder"; icon: @image-url("icons/folder.svg"); clicked => { AppState.open-log-folder(); } }
+            }
+        }
+
+        Muted { text: "Bridge " + AppState.version + "  ·  made by Bonevane"; horizontal-alignment: center; }
+    }
+    }
+}
+
+component SettingRow inherits Tile {
+    in-out property <bool> checked;
+    in property <bool> switch-enabled: true;
+    callback toggled();
+    Toggle { checked <=> root.checked; enabled: switch-enabled; toggled => { root.toggled(); } }
+}
+
+component Choice inherits Rectangle {
+    in property <[string]> items;
+    in-out property <int> current;
+    callback changed();
+    height: 36px;
+    HorizontalLayout {
+        spacing: 6px;
+        for item[i] in items : Rectangle {
+            border-radius: 18px;
+            background: i == current ? Theme.primary-container : Theme.surface-highest;
+            Text { text: item; color: i == current ? Theme.on-primary-container : Theme.on-surface-variant; font-family: Theme.font; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { clicked => { root.current = i; root.changed(); } }
+        }
+    }
+}
+
+export component SettingsWindow inherits Window {
+    title: "Bridge settings";
+    preferred-width: 480px;
+    min-width: 340px;
+    preferred-height: 540px;
+    min-height: 300px;
+    background: Theme.background;
+    default-font-family: Theme.font;
+
+    tabs := Segmented { items: ["General", "Phone", "Mirroring", "Pairing"]; x: 16px; y: 16px; width: root.width - 32px; }
+
+    ScrollView {
+        x: 0; y: 72px; width: root.width; height: root.height - 72px;
+        content-width: self.visible-width;
+        VerticalLayout {
+            padding: 16px; padding-top: 0;
+            spacing: 12px;
+
+            if tabs.current == 0 : VerticalLayout {
+                spacing: 12px;
+                SectionTitle { text: "Startup"; }
+                Card {
+                    SettingRow { icon: @image-url("icons/power.svg"); title: "Open Bridge at login"; subtitle: "Bridge lives in the system tray"; checked <=> SettingsState.launch-at-login; toggled => { SettingsState.changed(); } }
+                }
+                SectionTitle { text: "Short-range link"; }
+                Card {
+                    SettingRow { icon: @image-url("icons/bluetooth.svg"); title: "Use Bluetooth when the phone is nearby"; subtitle: "Notifications and clipboard for free, no internet needed"; checked <=> SettingsState.use-bluetooth; toggled => { SettingsState.changed(); } }
+                }
+                SectionTitle { text: "Notifications"; }
+                Card {
+                    SettingRow { icon: @image-url("icons/bell.svg"); title: "Show the phone's notifications"; subtitle: "Over Bluetooth: free"; checked <=> SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
+                    Divider {}
+                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "Keeps a tunnel open; costs the phone a little battery and data"; checked <=> SettingsState.notifications-anywhere; switch-enabled: SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
+                }
+                SectionTitle { text: "Clipboard"; }
+                Card {
+                    SettingRow { icon: @image-url("icons/clipboard.svg"); title: "Sync the clipboard"; subtitle: "Rides the session or Bluetooth: free"; checked <=> SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } }
+                    Divider {}
+                    SettingRow { icon: @image-url("icons/link-2.svg"); title: "Also with no phone window open"; subtitle: "Keeps the helper and a channel running; turns on Keep ready"; checked <=> SettingsState.background-clipboard; switch-enabled: SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } }
+                }
+            }
+
+            if tabs.current == 1 : VerticalLayout {
+                spacing: 12px;
+                SectionTitle { text: "Between sessions"; }
+                Card {
+                    SettingRow {
+                        icon: @image-url("icons/smartphone.svg"); title: "Keep the phone ready";
+                        subtitle: SettingsState.keep-ready ? "USB debugging stays on, so you can mirror from anywhere, including cellular. Pause it when a banking app complains." : "USB debugging is turned off after each session. The next one needs the phone on Wi-Fi.";
+                        checked <=> SettingsState.keep-ready; toggled => { SettingsState.changed(); }
+                    }
+                }
+            }
+
+            if tabs.current == 2 : VerticalLayout {
+                spacing: 12px;
+                SectionTitle { text: "Video"; }
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 10px;
+                        Label { text: "Resolution"; }
+                        Choice { items: ["720", "1024", "1280", "1600", "Full"]; current <=> SettingsState.max-size-index; changed => { SettingsState.changed(); } }
+                        Label { text: "Bitrate: " + SettingsState.bitrate-mbps + " Mbps"; }
+                        Choice { items: ["1", "2", "4", "8", "12", "16"]; current: SettingsState.bitrate-mbps == 1 ? 0 : SettingsState.bitrate-mbps == 2 ? 1 : SettingsState.bitrate-mbps == 4 ? 2 : SettingsState.bitrate-mbps == 8 ? 3 : SettingsState.bitrate-mbps == 12 ? 4 : 5;
+                            changed => { SettingsState.bitrate-mbps = self.current == 0 ? 1 : self.current == 1 ? 2 : self.current == 2 ? 4 : self.current == 3 ? 8 : self.current == 4 ? 12 : 16; SettingsState.changed(); } }
+                        Muted { text: "Bridge lowers the bitrate by itself when the connection can't keep up, and raises it again when it can."; }
+                    }
+                }
+                SectionTitle { text: "While mirroring"; }
+                Card {
+                    SettingRow { icon: @image-url("icons/monitor.svg"); title: "Turn the phone's screen off"; checked <=> SettingsState.turn-screen-off; toggled => { SettingsState.changed(); } }
+                    Divider {}
+                    SettingRow { icon: @image-url("icons/volume-off.svg"); title: "Mute the phone"; subtitle: "Audio plays here only"; checked <=> SettingsState.mute-phone; toggled => { SettingsState.changed(); } }
+                }
+            }
+
+            if tabs.current == 3 : VerticalLayout {
+                spacing: 12px;
+                SectionTitle { text: "This phone"; }
+                Card {
+                    Tile { icon: @image-url("icons/key-round.svg"); title: "Ticket"; subtitle: SettingsState.ticket-short;
+                        PillButton { text: "Copy"; height: 34px; clicked => { SettingsState.copy-ticket(); } }
+                    }
+                    Divider {}
+                    Tile { icon: @image-url("icons/usb.svg"); title: "Set up over USB"; subtitle: SettingsState.usb-status == "" ? "Plug the phone in with USB debugging on, then click" : SettingsState.usb-status;
+                        PillButton { text: SettingsState.usb-busy ? "Working…" : "Set up"; kind: "filled"; height: 34px; enabled: !SettingsState.usb-busy; clicked => { SettingsState.set-up-over-usb(); } }
+                    }
+                }
+                Muted { text: "Treat the ticket like a password: anyone who has it and the pairing secret can reach the phone."; horizontal-alignment: center; }
+                SectionTitle { text: "Pair without a cable"; }
+                Card {
+                    VerticalLayout {
+                        padding: 16px; spacing: 10px;
+                        LineEdit { placeholder-text: "endpoint… <secret>"; text <=> SettingsState.pasted; font-size: 12px; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            PillButton { text: "Paste"; clicked => { SettingsState.paste-ticket(); } }
+                            PillButton { text: "Pair"; kind: "filled"; enabled: SettingsState.pasted != ""; clicked => { SettingsState.apply-pasted(); } }
+                        }
+                        if SettingsState.pasted-status != "" : Muted { text: SettingsState.pasted-status; }
+                        Muted { text: "On the phone, tap Copy under Ticket and get it to this PC privately (a message to yourself, a note). Never post the ticket anywhere: it's a key, not an address."; }
+                    }
+                }
+                PillButton { text: "Unpair"; kind: "outlined"; icon: @image-url("icons/x.svg"); clicked => { SettingsState.unpair(); } }
+            }
+        }
+    }
+}
+
+// The phone's screen. Fills the window, keeps its aspect; every pointer and
+// key event goes to the phone as a scrcpy control message (see scrcpy.rs).
+export component MirrorWindow inherits Window {
+    title: "Phone";
+    background: black;
+    in-out property <image> frame;
+    in-out property <length> video-width: 1080px;
+    in-out property <length> video-height: 2400px;
+    preferred-height: 820px;
+    preferred-width: 820px * video-width / video-height;
+
+    callback pointer(int, int, int, int);
+    callback scroll(int, int, float, float);
+    callback key(string, int, bool);
+
+    property <float> scale: min(root.width / root.video-width, root.height / root.video-height);
+    property <length> shown-w: root.video-width * scale;
+    property <length> shown-h: root.video-height * scale;
+    property <length> off-x: (root.width - shown-w) / 2;
+    property <length> off-y: (root.height - shown-h) / 2;
+    pure function px(x: length) -> int { return (x - off-x) / scale / 1px; }
+    pure function py(y: length) -> int { return (y - off-y) / scale / 1px; }
+
+    Image {
+        source: root.frame;
+        image-fit: contain;
+        width: 100%;
+        height: 100%;
+        image-rendering: smooth;
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            root.key(event.text, (event.modifiers.control ? 1 : 0) + (event.modifiers.shift ? 2 : 0) + (event.modifiers.alt ? 4 : 0), true);
+            accept
+        }
+        key-released(event) => {
+            root.key(event.text, (event.modifiers.control ? 1 : 0) + (event.modifiers.shift ? 2 : 0) + (event.modifiers.alt ? 4 : 0), false);
+            accept
+        }
+        TouchArea {
+            mouse-cursor: default;
+            pointer-event(e) => {
+                focus.focus();
+                if (e.kind == PointerEventKind.down) {
+                    root.pointer(px(self.mouse-x), py(self.mouse-y), 0, e.button == PointerEventButton.right ? 1 : 0);
+                } else if (e.kind == PointerEventKind.up) {
+                    root.pointer(px(self.mouse-x), py(self.mouse-y), 1, e.button == PointerEventButton.right ? 1 : 0);
+                } else if (e.kind == PointerEventKind.move) {
+                    root.pointer(px(self.mouse-x), py(self.mouse-y), self.pressed ? 2 : 3, 0);
+                }
+            }
+            scroll-event(e) => {
+                root.scroll(px(self.mouse-x), py(self.mouse-y), e.delta-x / 1px, e.delta-y / 1px);
+                accept
+            }
+        }
+    }
+}

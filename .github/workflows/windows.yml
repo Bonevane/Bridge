@@ -1,0 +1,45 @@
+name: Windows
+
+on:
+  push:
+    branches: [windows, main]
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test --release
+      - name: Bundle dumbpipe
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/n0-computer/dumbpipe/releases/download/v0.39.0/dumbpipe-v0.39.0-windows-x86_64.zip -OutFile dp.zip
+          Expand-Archive dp.zip -DestinationPath dp
+          Copy-Item (Get-ChildItem dp -Recurse -Filter dumbpipe.exe).FullName target/release/dumbpipe.exe
+      - name: Bundle adb (Set up over USB)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://dl.google.com/android/repository/platform-tools-latest-windows.zip -OutFile pt.zip
+          Expand-Archive pt.zip -DestinationPath pt
+          foreach ($f in "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll") { Copy-Item pt/platform-tools/$f target/release/$f }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-windows
+          path: |
+            windows/target/release/Bridge.exe
+            windows/target/release/dumbpipe.exe
+            windows/target/release/adb.exe
+            windows/target/release/AdbWinApi.dll
+            windows/target/release/AdbWinUsbApi.dll

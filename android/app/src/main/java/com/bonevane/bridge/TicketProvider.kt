@@ -38,9 +38,12 @@ class TicketProvider : ContentProvider() {
         val ctx = context ?: throw IllegalStateException("No context")
         val ticket = TunnelState.ticket ?: Prefs.ticket(ctx) ?: ""
         // The pairing secret travels the same shell-only road as the ticket.
-        return MatrixCursor(arrayOf("ticket", "ready", "status", "secret", "keyOk")).apply {
+        // daemon=1 only if the helper answers *with this secret*: a leftover
+        // helper from an older install holds the port but is useless to us.
+        val daemon = DaemonManager.probe(DaemonManager.DAEMON_PORT) != null
+        return MatrixCursor(arrayOf("ticket", "ready", "status", "secret", "keyOk", "daemon")).apply {
             addRow(arrayOf<Any>(ticket, if (TunnelState.ready) 1 else 0, TunnelState.status,
-                                Prefs.pairSecret(ctx), if (Prefs.adbKeyAuthorized(ctx)) 1 else 0))
+                                Prefs.pairSecret(ctx), if (Prefs.adbKeyAuthorized(ctx)) 1 else 0, if (daemon) 1 else 0))
         }
     }
 

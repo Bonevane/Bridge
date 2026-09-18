@@ -1,0 +1,62 @@
+[package]
+name = "bridge-windows"
+version = "0.2.0"
+edition = "2021"
+description = "Bridge for Windows: your Android phone on your PC"
+license = "Apache-2.0"
+
+[[bin]]
+name = "Bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Microsoft's own bindings. Only the namespaces we touch, to keep the build small.
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_Advertisement",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Enumeration",
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_DataExchange",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
+# The pairing handshake (HMAC-SHA256), same as the phone and the Mac.
+hmac = "0.12"
+sha2 = "0.10"
+# App-layer encryption on the plain Bluetooth door (no bond needed).
+aes-gcm = "0.10"
+hex = "0.4"
+rand = "0.8"
+# Tray icon and its menu.
+tray-icon = "0.19"
+# Clipboard text, both directions.
+arboard = "3"
+# Windows toast notifications without a Start Menu shortcut dance.
+tauri-winrt-notification = "0.7"
+# The window, in Windows' own Fluent style.
+slint = { version = "1.8", default-features = false, features = ["std", "backend-winit", "renderer-skia", "compat-1-2"] }
+# Audio: AAC decoding in pure Rust, output through WASAPI.
+symphonia = { version = "0.5", default-features = false, features = ["aac"] }
+cpal = "0.15"
+# Small conveniences.
+image = { version = "0.25", default-features = false, features = ["png"] }
+anyhow = "1"
+chrono = "0.4"
+
+[build-dependencies]
+slint-build = "1.8"
+winresource = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

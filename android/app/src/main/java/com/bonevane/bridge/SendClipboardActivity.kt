@@ -72,8 +72,15 @@ class SendClipboardActivity : Activity() {
 
     /** Bluetooth if the Mac is nearby; that's the only path that needs nothing else. */
     private fun sendToMac(text: String): Boolean {
-        val ble = TunnelService.current?.ble ?: return false
-        if (!ble.connected) return false
+        val ble = TunnelService.current?.ble
+        if (ble == null) {
+            // Android restarts this process whenever it likes; the tile can
+            // outlive the service. Bring it back for next time and say so.
+            TunnelState.log("Send clipboard: Bridge's service wasn't running; starting it")
+            TunnelService.start(this)
+            return false
+        }
+        if (!ble.connected) { TunnelState.log("Send clipboard: no Mac/PC linked over Bluetooth"); return false }
         TunnelService.current?.clipboard?.lastValue = text
         ble.send(BleLink.TYPE_CLIPBOARD, text)
         return true

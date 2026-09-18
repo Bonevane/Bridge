@@ -823,7 +823,13 @@ final class BridgeController: ObservableObject {
                 guard let self = self else { return }
                 self.bluetoothState = state
                 // A fresh link: the phone has no idea what's open here yet.
-                if state == .linked { self.twins.report(force: true) }
+                if state == .linked { self.twins.report(force: true); self.iconsRequested.removeAll() }
+            }
+        }
+        bluetoothLink.onIcon = { [weak self] package, png in
+            Task { @MainActor in
+                NotificationBridge.cacheIcon(png, for: package)
+                self?.appendLog("Cached the icon for \(package).", source: "bluetooth")
             }
         }
         bluetoothLink.onStatus = { [weak self] fields in
@@ -864,11 +870,21 @@ final class BridgeController: ObservableObject {
         bluetoothLink.start()
     }
 
-    /// One notification from the phone: "app\ttitle\ttext".
+    /// Packages whose icon has been asked for over this Bluetooth link.
+    private var iconsRequested = Set<String>()
+
+    /// One notification from the phone: "app\ttitle\ttext\tpackage".
     func showPhoneNotification(_ line: String) {
         let parts = line.components(separatedBy: "\t")
         guard parts.count >= 3, mirrorNotifications else { return }
-        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2])
+        let package = parts.count > 3 ? parts[3] : ""
+        // First notification from an app: ask the phone for its icon (a small
+        // PNG over Bluetooth, cached for good). This one goes out without it.
+        if !package.isEmpty, !NotificationBridge.hasIcon(for: package), bluetoothLinked, !iconsRequested.contains(package) {
+            iconsRequested.insert(package)
+            bluetoothLink.requestIcon(package)
+        }
+        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2], package: package)
     }
 
     private lazy var notificationBridge = NotificationBridge(

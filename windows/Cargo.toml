@@ -47,11 +47,13 @@ slint = { version = "1.8", default-features = false, features = ["std", "backend
 symphonia = { version = "0.5", default-features = false, features = ["aac"] }
 cpal = "0.15"
 # Small conveniences.
+image = { version = "0.25", default-features = false, features = ["png"] }
 anyhow = "1"
 chrono = "0.4"
 
 [build-dependencies]
 slint-build = "1.8"
+winresource = "0.1"
 
 [profile.release]
 opt-level = "z"

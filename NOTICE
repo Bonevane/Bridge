@@ -13,3 +13,7 @@ Bridge includes code adapted from:
 - dumbpipe and iroh (https://github.com/n0-computer), MIT or Apache License 2.0
   Copyright n0, inc. The phone bundles an unmodified dumbpipe binary
   (android/scripts/fetch-dumbpipe.sh) for the tunnel.
+
+- Material Symbols (https://fonts.google.com/icons), Apache License 2.0
+  Copyright Google LLC. The Windows client's icons in windows/ui/icons are
+  the Rounded style, unmodified apart from a fill colour.

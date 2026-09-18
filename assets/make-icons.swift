@@ -10,13 +10,17 @@
 //              mipmap-*/ic_launcher_mono  same shape (themed icons; system tints it)
 //              drawable-*/ic_stat_bridge  white mark at 24 dp (notification small icon)
 //              values/ic_launcher_background.xml  the navy
+//   windows:   icon.ico (16/32/48/256, PNG entries) for the exe, icon-256.png
+//              for the window and icon-32.png for the tray, all the navy
+//              square with the white mark, filling the canvas like Windows 11
+//              app icons do
 import AppKit
 
 let args = CommandLine.arguments
-guard args.count == 4 else {
-    print("usage: make-icons <mark.png> <mac dir> <android res dir>"); exit(1)
+guard args.count == 5 else {
+    print("usage: make-icons <mark.png> <mac dir> <android res dir> <windows assets dir>"); exit(1)
 }
-let (source, macDir, resDir) = (args[1], args[2], args[3])
+let (source, macDir, resDir, winDir) = (args[1], args[2], args[3], args[4])
 
 // The brand navy: a gradient on the macOS icon, and its darker end as the flat
 // Android background (the launcher adds its own lighting). #122048 → #0A1432.
@@ -187,3 +191,40 @@ write(Data("""
 
 """.utf8), "\(resDir)/values/ic_launcher_background.xml")
 print("wrote Android icons into \(resDir)")
+
+// MARK: - Windows
+
+// Windows 11 app icons are rounded squares that fill the canvas (no macOS
+// inset); the mark sits a touch lower than centre, as on Android.
+func winIcon(_ c: CGContext, _ s: CGFloat) {
+    let square = CGRect(x: 0, y: 0, width: s, height: s)
+    c.saveGState()
+    c.addPath(CGPath(roundedRect: square, cornerWidth: s * 0.22, cornerHeight: s * 0.22, transform: nil))
+    c.clip()
+    let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                              colors: [navyTop.cgColor, navyBottom.cgColor] as CFArray, locations: [0, 1])!
+    c.drawLinearGradient(gradient, start: CGPoint(x: 0, y: s), end: CGPoint(x: 0, y: 0), options: [])
+    c.restoreGState()
+    let box = CGRect(x: 0, y: -s * 0.03, width: s, height: s)
+    drawMark(c, in: box.insetBy(dx: s * 0.20, dy: s * 0.20), color: .white)
+}
+
+write(png(256, winIcon), "\(winDir)/icon-256.png")
+write(png(32, winIcon), "\(winDir)/icon-32.png")
+
+// .ico: a directory of PNG-compressed entries (Vista and later read those).
+var ico = Data()
+let sizes = [16, 32, 48, 256]
+let pngs = sizes.map { png($0, winIcon) }
+func le16(_ v: Int) -> [UInt8] { [UInt8(v & 0xff), UInt8((v >> 8) & 0xff)] }
+func le32(_ v: Int) -> [UInt8] { [UInt8(v & 0xff), UInt8((v >> 8) & 0xff), UInt8((v >> 16) & 0xff), UInt8((v >> 24) & 0xff)] }
+ico.append(contentsOf: le16(0) + le16(1) + le16(sizes.count))
+var offset = 6 + 16 * sizes.count
+for (size, data) in zip(sizes, pngs) {
+    let dim = UInt8(size == 256 ? 0 : size)
+    ico.append(contentsOf: [dim, dim, 0, 0] + le16(1) + le16(32) + le32(data.count) + le32(offset))
+    offset += data.count
+}
+for data in pngs { ico.append(data) }
+write(ico, "\(winDir)/icon.ico")
+print("wrote windows icons")

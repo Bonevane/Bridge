@@ -28,7 +28,7 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
     GattDeviceService, GattOpenStatus, GattSession, GattSharingMode, GattValueChangedEventArgs, GattWriteOption,
 };
-use windows::Devices::Bluetooth::{BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
+use windows::Devices::Bluetooth::{BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter};
@@ -48,11 +48,16 @@ pub enum Event {
     Searching,
     Linked,
     Dropped(String),
-    Notification { app: String, title: String, body: String },
+    Notification { app: String, title: String, body: String, package: String },
+    /// An app icon the phone sent: package and PNG bytes.
+    Icon { package: String, png: Vec<u8> },
     Clipboard(String),
     Status(std::collections::HashMap<String, String>),
     /// From the tunnel thread: which Connect attempt, and START's reply or why it failed.
     Connected(u32, Result<String, String>),
+    /// Set up over USB (usb.rs): a step started, then the outcome.
+    UsbProgress(String),
+    UsbDone(Result<crate::store::Credentials, String>),
 }
 
 /// The live link, shared between the WinRT callbacks and the app.
@@ -142,6 +147,10 @@ impl Ble {
                 // One at a time: stop scanning while we try this one.
                 let _ = w.Stop();
                 let address = args.BluetoothAddress()?;
+                // Android advertises from a *random* address. Opening it as
+                // "public" (the default) connects to nothing, which was the
+                // string of Unreachable/Disconnected attempts in the log.
+                let addr_type = args.BluetoothAddressType()?;
                 let link = link.clone();
                 let events = events.clone();
                 let secret = secret.clone();
@@ -149,7 +158,7 @@ impl Ble {
                     return Ok(()); // an attempt is already running
                 }
                 std::thread::spawn(move || {
-                    if let Err(e) = connect(address, &secret, link, events.clone()) {
+                    if let Err(e) = connect(address, addr_type, &secret, link, events.clone()) {
                         crate::log!("bluetooth", "connect failed: {e:#}");
                         let _ = events.send(Event::Dropped(format!("{e:#}")));
                     }
@@ -161,7 +170,6 @@ impl Ble {
         watcher.Start()?;
         self.watcher = Some(watcher);
         let _ = self.events.send(Event::Searching);
-        crate::log!("bluetooth", "looking for the phone");
         Ok(())
     }
 
@@ -257,8 +265,10 @@ fn write_chunks(l: &Link, kind: Kind, payload: &[u8]) -> Result<()> {
 /// The whole connect sequence, on its own thread: device → pair → service →
 /// characteristics → subscribe. The handshake then runs in the ValueChanged
 /// callback.
-fn connect(address: u64, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Event>) -> Result<()> {
-    let device = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get().context("opening the device")?;
+fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Arc<Mutex<Link>>, events: Sender<Event>) -> Result<()> {
+    let device = BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(address, addr_type)?
+        .get()
+        .context("opening the device")?;
     let name = device.Name()?.to_string_lossy();
     let is_paired = device.DeviceInformation()?.Pairing()?.IsPaired()?;
     crate::log!("bluetooth", "found {name} (paired={is_paired})");
@@ -390,13 +400,13 @@ fn subscribe_direct(tx: &GattCharacteristic) -> Result<bool> {
 /// can come back Unreachable while the connection is still being set up.
 fn find_service(device: &BluetoothLEDevice) -> Result<GattDeviceService> {
     let mut last = GattCommunicationStatus::Unreachable;
-    for attempt in 1..=4 {
+    for attempt in 1..=2 {
         let r = device.GetGattServicesForUuidWithCacheModeAsync(SERVICE, BluetoothCacheMode::Uncached)?.get()?;
         last = r.Status()?;
         if last == GattCommunicationStatus::Success && r.Services()?.Size()? > 0 {
             return Ok(r.Services()?.GetAt(0)?);
         }
-        crate::log!("bluetooth", "service query {attempt}/4: {last:?} (connection {:?})", device.ConnectionStatus()?);
+        crate::log!("bluetooth", "service query {attempt}/2: {last:?} (connection {:?})", device.ConnectionStatus()?);
         std::thread::sleep(Duration::from_millis(1500));
     }
     bail!("Bridge service not found on the phone ({last:?})")
@@ -472,8 +482,15 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
     };
     match kind {
         Kind::Notification => {
-            if let Some((app, title, body)) = protocol::parse_notification(&text) {
-                let _ = events.send(Event::Notification { app, title, body });
+            if let Some((app, title, body, package)) = protocol::parse_notification(&text) {
+                let _ = events.send(Event::Notification { app, title, body, package });
+            }
+        }
+        Kind::Icon => {
+            if let Some((package, b64)) = text.split_once('\t') {
+                if let Ok(png) = base64_decode(b64) {
+                    let _ = events.send(Event::Icon { package: package.to_string(), png });
+                }
             }
         }
         Kind::Clipboard => {
@@ -484,6 +501,26 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
         }
         Kind::Ping | Kind::Command | Kind::Auth => {}
     }
+}
+
+/// Standard base64, no dependency needed for one use.
+fn base64_decode(text: &str) -> Result<Vec<u8>> {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for c in text.bytes() {
+        if c == b'=' { break; }
+        let v = T.iter().position(|&t| t == c).ok_or_else(|| anyhow!("bad base64"))? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Ok(out)
 }
 
 /// A name for the log, without the address (which is a stable identifier).

@@ -19,6 +19,7 @@ pub enum Kind {
     Status = 4,
     Command = 5,
     Auth = 6,
+    Icon = 7,
 }
 
 impl Kind {
@@ -30,6 +31,7 @@ impl Kind {
             4 => Kind::Status,
             5 => Kind::Command,
             6 => Kind::Auth,
+            7 => Kind::Icon,
             _ => return None,
         })
     }
@@ -193,11 +195,12 @@ pub fn parse_status(text: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
-/// A notification line from the phone: app, title, body, tab-separated.
-pub fn parse_notification(line: &str) -> Option<(String, String, String)> {
-    let mut parts = line.splitn(3, '\t');
+/// A notification line from the phone: app, title, body, package, tab-separated.
+pub fn parse_notification(line: &str) -> Option<(String, String, String, String)> {
+    let mut parts = line.splitn(4, '\t');
     Some((
         parts.next()?.to_string(),
+        parts.next().unwrap_or("").to_string(),
         parts.next().unwrap_or("").to_string(),
         parts.next().unwrap_or("").to_string(),
     ))

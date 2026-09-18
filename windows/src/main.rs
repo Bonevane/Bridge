@@ -3,9 +3,10 @@
 //! Milestone 1 (done): pair by copying the ticket from the phone; Bluetooth
 //! link with the handshake and app-layer encryption; notifications as
 //! toasts; clipboard both ways; open-app twins.
-//! Milestone 2a (this file): the tunnel (bundled dumbpipe) and the control
-//! protocol over it: Mirror wakes the phone's tunnel over Bluetooth, starts
-//! the helper, and Disconnect puts everything back. Video comes next.
+//! Milestone 2 (done): the tunnel (bundled dumbpipe), the control protocol
+//! over it, and mirroring with video, audio and input.
+//! Then: Set up over USB (usb.rs), notification icons fetched from the phone
+//! over Bluetooth, and a Material 3 look (ui/theme.slint).
 //!
 //! Structure: Slint owns the window and the event loop; the Bluetooth link
 //! and the tunnel run on their own threads and report back through a channel
@@ -25,6 +26,7 @@ mod settings;
 mod store;
 mod tunnel;
 mod twins;
+mod usb;
 mod video;
 
 use ble::Event;
@@ -70,6 +72,11 @@ struct App {
     last_twins: Option<BTreeSet<String>>,
     last_tick: Instant,
     rescan_at: Option<Instant>,
+    /// Bluetooth couldn't start (radio off, or not ready yet at login): try again then.
+    retry_ble_at: Option<Instant>,
+    usb_busy: bool,
+    /// Packages whose icon we've already asked the phone for this link.
+    icons_requested: BTreeSet<String>,
     log_lines: Vec<String>,
 }
 
@@ -101,6 +108,9 @@ impl App {
             last_twins: None,
             last_tick: Instant::now(),
             rescan_at: None,
+            retry_ble_at: None,
+            usb_busy: false,
+            icons_requested: BTreeSet::new(),
             log_lines: Vec::new(),
         }
     }
@@ -130,10 +140,12 @@ impl App {
 
         let (title, detail, tint) = if !self.creds.is_paired() {
             ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
+        } else if self.usb_busy {
+            ("Setting up over USB", "Follow the phone's prompts", 2)
         } else if self.connecting {
             ("Connecting", "Starting the tunnel and the phone's helper…", 2)
         } else if self.mirroring {
-            ("Mirroring", "The phone's helper is running (video comes in the next milestone)", 1)
+            ("Mirroring", "Video, audio and input over the tunnel", 1)
         } else if self.phone_paused {
             ("Phone paused", "USB debugging off for banking apps", 2)
         } else if self.linked {
@@ -148,7 +160,7 @@ impl App {
             ("Looking for your phone", "Searching over Bluetooth. Mirroring still works if its tunnel is on.", 0)
         };
         ui.set_reach_title(title.into());
-        ui.set_reach_detail(detail.into());
+        ui.set_reach_detail(if self.usb_busy { self.settings_window.global::<SettingsState>().get_usb_status() } else { detail.into() });
         ui.set_reach_tint(tint);
 
         ui.set_screen(Capability {
@@ -182,6 +194,7 @@ impl App {
         st.set_bitrate_mbps(self.settings.bitrate_mbps);
         st.set_turn_screen_off(self.settings.turn_screen_off);
         st.set_mute_phone(self.settings.mute_phone);
+        st.set_usb_busy(self.usb_busy);
         let t = &self.creds.ticket;
         st.set_ticket_short(if t.is_empty() { "Not paired".into() } else if t.len() > 28 { format!("{}…{}", &t[..14], &t[t.len() - 8..]).into() } else { t.clone().into() });
     }
@@ -248,8 +261,16 @@ impl App {
         }
         let mut link = ble::Ble::new(&self.creds.secret, self.events_tx.clone());
         match link.start() {
-            Ok(()) => self.ble = Some(link),
-            Err(e) => self.log("bluetooth", &format!("couldn't start: {e:#}")),
+            Ok(()) => {
+                self.ble = Some(link);
+                self.retry_ble_at = None;
+            }
+            Err(e) => {
+                // At login the radio can take a while to come up (0x800710DF,
+                // "the device is not ready"); don't give up on it.
+                self.log("bluetooth", &format!("couldn't start: {e:#}; trying again in 10 s"));
+                self.retry_ble_at = Some(Instant::now() + Duration::from_secs(10));
+            }
         }
         self.refresh();
     }
@@ -258,17 +279,7 @@ impl App {
         let text = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default();
         match store::Credentials::parse(&text) {
             Some(creds) => {
-                if let Err(e) = store::save(&creds) {
-                    self.log("", &format!("couldn't save credentials: {e:#}"));
-                    return;
-                }
-                self.creds = creds;
-                self.log("", "paired from the clipboard");
-                if let Some(b) = self.ble.as_mut() {
-                    b.stop();
-                }
-                self.ble = None;
-                self.start_bluetooth();
+                self.adopt(creds, "from the clipboard");
             }
             None => {
                 self.log("", "the clipboard doesn't hold a Bridge ticket (expected \"endpoint… <secret>\")");
@@ -300,6 +311,34 @@ impl App {
             }
             None => self.start_bluetooth(),
         }
+    }
+
+    fn set_up_over_usb(&mut self) {
+        if self.usb_busy || self.mirroring || self.connecting {
+            return;
+        }
+        self.usb_busy = true;
+        self.settings_window.global::<SettingsState>().set_usb_status("Looking for your phone on USB…".into());
+        self.log("usb", "Set up over USB");
+        usb::set_up(self.events_tx.clone());
+        self.refresh();
+    }
+
+    /// New credentials, from USB or a pasted ticket: store them and relink.
+    fn adopt(&mut self, creds: store::Credentials, how: &str) -> bool {
+        if let Err(e) = store::save(&creds) {
+            self.log("", &format!("couldn't save credentials: {e:#}"));
+            return false;
+        }
+        self.creds = creds;
+        self.log("", &format!("paired {how}"));
+        if let Some(b) = self.ble.as_mut() {
+            b.stop();
+        }
+        self.ble = None;
+        self.linked = false;
+        self.start_bluetooth();
+        true
     }
 
     // MARK: - Tunnel and mirroring
@@ -590,6 +629,12 @@ impl App {
                 }
             }
         }
+        if let Some(at) = self.retry_ble_at {
+            if Instant::now() >= at && self.ble.is_none() {
+                self.retry_ble_at = None;
+                self.start_bluetooth();
+            }
+        }
         if let Some(at) = self.rescan_at {
             if Instant::now() >= at {
                 self.rescan_at = None;
@@ -673,6 +718,7 @@ impl App {
             Event::Linked => {
                 self.linked = true;
                 self.searching = false;
+                self.icons_requested.clear();
                 self.log("bluetooth", "linked to the phone");
                 self.report_twins(true);
                 if let Some(b) = &self.ble {
@@ -685,10 +731,53 @@ impl App {
                 self.log("bluetooth", &format!("dropped ({why})"));
                 self.rescan_at = Some(Instant::now() + Duration::from_secs(3));
             }
-            Event::Notification { app, title, body } => {
+            Event::Notification { app, title, body, package } => {
                 if self.settings.mirror_notifications {
                     self.log("notify", &format!("{app}: {title}"));
-                    notify::show(&app, &title, &body);
+                    // First notification from an app: ask the phone for its
+                    // icon (96 px PNG over Bluetooth, cached for good). This
+                    // toast goes out without it; the next one has it.
+                    if !package.is_empty() && !notify::icon_path(&package).exists() && self.icons_requested.insert(package.clone()) {
+                        if let Some(b) = &self.ble {
+                            let _ = b.send_command(&format!("icon {package}"));
+                        }
+                    }
+                    notify::show_with_icon(&app, &title, &body, if package.is_empty() { None } else { Some(&package) });
+                }
+            }
+            Event::Icon { package, png } => {
+                let _ = std::fs::create_dir_all(notify::icon_dir());
+                match std::fs::write(notify::icon_path(&package), &png) {
+                    Ok(()) => self.log("notify", &format!("cached the icon for {package}")),
+                    Err(e) => self.log("notify", &format!("couldn't cache the icon for {package}: {e}")),
+                }
+            }
+            Event::UsbProgress(text) => {
+                self.settings_window.global::<SettingsState>().set_usb_status(text.into());
+            }
+            Event::UsbDone(result) => {
+                self.usb_busy = false;
+                match result {
+                    Ok(creds) => {
+                        self.adopt(creds, "over USB");
+                        let note = if self.settings.keep_ready {
+                            "Set up, and the helper is running. Unplug and click Mirror phone."
+                        } else {
+                            "Set up. Unplug and click Mirror phone. After each session the phone locks down again; turn on \"Keep the phone ready\" to skip that."
+                        };
+                        self.settings_window.global::<SettingsState>().set_usb_status(note.into());
+                        notify::show("Bridge", "Phone set up", note);
+                    }
+                    Err(e) => {
+                        self.log("usb", &e);
+                        self.settings_window.global::<SettingsState>().set_usb_status(e.clone().into());
+                        self.refresh();
+                        let ui = self.window.global::<AppState>();
+                        ui.set_reach_title("USB setup didn't finish".into());
+                        ui.set_reach_detail(e.into());
+                        ui.set_reach_tint(3);
+                        return;
+                    }
                 }
             }
             Event::Clipboard(text) => {
@@ -752,21 +841,11 @@ impl App {
     }
 }
 
+/// The navy square with the white mark (assets/icon-32.png, from make-icons.sh).
 fn tray_icon() -> tray_icon::Icon {
-    let size = 32u32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let i = ((y * size + x) * 4) as usize;
-            let (r, g, b) = if (10..=14).contains(&y) || ((15..=24).contains(&y) && (x % 12) < 4) {
-                (255, 255, 255)
-            } else {
-                (0x0a, 0x14, 0x32)
-            };
-            rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
-        }
-    }
-    tray_icon::Icon::from_rgba(rgba, size, size).expect("icon")
+    let img = image::load_from_memory(include_bytes!("../assets/icon-32.png")).expect("tray icon png").into_rgba8();
+    let (w, h) = img.dimensions();
+    tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("icon")
 }
 
 fn main() {
@@ -818,6 +897,8 @@ fn main() {
         ui.on_pause_phone(move || a.borrow_mut().pause_phone());
         let a = app.clone();
         ui.on_toggle_phone_tunnel(move || a.borrow_mut().toggle_phone_tunnel());
+        let a = app.clone();
+        ui.on_set_up_over_usb(move || a.borrow_mut().set_up_over_usb());
         let sw = settings_window.as_weak();
         ui.on_open_settings(move || { if let Some(w) = sw.upgrade() { let _ = w.show(); } });
         ui.on_open_log_folder(move || {
@@ -858,13 +939,7 @@ fn main() {
             let text = w.global::<SettingsState>().get_pasted().to_string();
             match store::Credentials::parse(&text) {
                 Some(creds) => {
-                    let mut app = a.borrow_mut();
-                    if store::save(&creds).is_ok() {
-                        app.creds = creds;
-                        app.log("", "paired from the pasted ticket");
-                        if let Some(b) = app.ble.as_mut() { b.stop(); }
-                        app.ble = None;
-                        app.start_bluetooth();
+                    if a.borrow_mut().adopt(creds, "from the pasted ticket") {
                         w.global::<SettingsState>().set_pasted("".into());
                         w.global::<SettingsState>().set_pasted_status("Paired".into());
                     }
@@ -872,6 +947,8 @@ fn main() {
                 None => w.global::<SettingsState>().set_pasted_status("Should be two words: endpoint… and the secret".into()),
             }
         });
+        let a = app.clone();
+        st.on_set_up_over_usb(move || a.borrow_mut().set_up_over_usb());
         let a = app.clone();
         st.on_unpair(move || a.borrow_mut().unpair());
         let sw = settings_window.as_weak();

@@ -1,0 +1,195 @@
+// Bridge's own Material 3 look on Windows: the phone app's shapes (28px hero,
+// pill buttons, section titles in the accent colour outside the cards, tiles)
+// in the brand's navy and sky. Fixed dark palette; there's no wallpaper to
+// take dynamic colour from on a PC.
+
+export global Theme {
+    // Surfaces
+    out property <color> background: #0F1526;
+    out property <color> surface: #161E33;
+    out property <color> surface-high: #1E2840;
+    out property <color> surface-highest: #263250;
+    out property <color> outline: #3A4666;
+    // Text
+    out property <color> on-surface: #E7ECF8;
+    out property <color> on-surface-variant: #A8B3CC;
+    // Accent: sky on navy
+    out property <color> primary: #8FC1FF;
+    out property <color> on-primary: #0A1432;
+    out property <color> primary-container: #2A4C7E;
+    out property <color> on-primary-container: #D6E6FF;
+    // Secondary (tonal buttons)
+    out property <color> secondary-container: #2B3652;
+    out property <color> on-secondary-container: #DCE3F5;
+    // States
+    out property <color> good: #7BD88F;
+    out property <color> good-container: #1E4A2E;
+    out property <color> warn: #FFB74D;
+    out property <color> warn-container: #5A3A12;
+    out property <color> bad: #FF8A80;
+    out property <color> bad-container: #5E2222;
+
+    out property <string> font: "Segoe UI Variable Text";
+}
+
+// A Material Symbol, tinted.
+export component Icon inherits Image {
+    in property <color> tint: Theme.on-surface-variant;
+    width: 20px;
+    height: 20px;
+    colorize: tint;
+}
+
+export component Label inherits Text {
+    color: Theme.on-surface;
+    font-family: Theme.font;
+    font-size: 13px;
+}
+
+export component Muted inherits Text {
+    color: Theme.on-surface-variant;
+    font-family: Theme.font;
+    font-size: 11px;
+    wrap: word-wrap;
+}
+
+// Section title: accent colour, outside the card, like the phone.
+export component SectionTitle inherits Text {
+    color: Theme.primary;
+    font-family: Theme.font;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+// A rounded card. `hero` uses the big radius and a filled container.
+export component Card inherits Rectangle {
+    in property <bool> hero: false;
+    in property <color> fill: Theme.surface;
+    border-radius: hero ? 24px : 16px;
+    background: fill;
+    clip: true;
+    VerticalLayout {
+        padding: 0;
+        @children
+    }
+}
+
+// Material 3 pill button: filled, tonal or outlined.
+export component PillButton inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "tonal";   // "filled" | "tonal" | "outlined"
+    in property <image> icon;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 40px;
+    border-radius: 20px;
+    background: kind == "filled" ? Theme.primary : kind == "tonal" ? Theme.secondary-container : transparent;
+    border-width: kind == "outlined" ? 1px : 0;
+    border-color: Theme.outline;
+    opacity: enabled ? 1 : 0.45;
+    property <color> fg: kind == "filled" ? Theme.on-primary : kind == "tonal" ? Theme.on-secondary-container : Theme.primary;
+    Rectangle {
+        border-radius: parent.border-radius;
+        background: area.pressed ? #ffffff22 : area.has-hover ? #ffffff12 : transparent;
+        animate background { duration: 120ms; }
+    }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        padding-left: 18px; padding-right: 18px;
+        if icon.width > 0 : VerticalLayout { alignment: center; Icon { source: icon; tint: fg; width: 18px; height: 18px; } }
+        Text { text: root.text; color: fg; font-family: Theme.font; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+    }
+    area := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
+// Material 3 switch.
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled();
+    width: 52px;
+    height: 32px;
+    border-radius: 16px;
+    background: checked ? Theme.primary : Theme.surface-highest;
+    border-width: checked ? 0 : 2px;
+    border-color: Theme.outline;
+    opacity: enabled ? 1 : 0.45;
+    animate background { duration: 150ms; }
+    thumb := Rectangle {
+        width: checked ? 24px : 16px;
+        height: self.width;
+        border-radius: self.width / 2;
+        x: checked ? root.width - self.width - 4px : 8px;
+        y: (root.height - self.height) / 2;
+        background: checked ? Theme.on-primary : Theme.on-surface-variant;
+        animate x, width, height { duration: 150ms; easing: ease-out; }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.checked = !root.checked; root.toggled(); }
+    }
+}
+
+// A list tile: icon, title, subtitle, optional trailing content.
+export component Tile inherits Rectangle {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> clickable: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    min-height: 56px;
+    background: clickable && area.has-hover && enabled ? Theme.surface-high : transparent;
+    opacity: enabled ? 1 : 0.45;
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 12px;
+        padding-top: 10px; padding-bottom: 10px;
+        spacing: 14px;
+        alignment: stretch;
+        if icon.width > 0 : VerticalLayout { alignment: center; Icon { source: icon; tint: Theme.primary; width: 22px; height: 22px; } }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Label { text: title; font-size: 14px; wrap: word-wrap; }
+            if subtitle != "" : Muted { text: subtitle; }
+        }
+        // Trailing content (a switch, a chevron, a button), centred vertically.
+        VerticalLayout { alignment: center; @children }
+    }
+    area := TouchArea { enabled: root.clickable && root.enabled; clicked => { root.clicked(); } }
+}
+
+// Thin divider between tiles in the same card.
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.surface-highest;
+}
+
+// Segmented control, for the Settings tabs.
+export component Segmented inherits Rectangle {
+    in property <[string]> items;
+    in-out property <int> current: 0;
+    height: 40px;
+    border-radius: 20px;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.outline;
+    HorizontalLayout {
+        padding: 3px;
+        for item[i] in items : Rectangle {
+            border-radius: 17px;
+            background: i == current ? Theme.secondary-container : transparent;
+            animate background { duration: 120ms; }
+            Text {
+                text: item;
+                color: i == current ? Theme.on-secondary-container : Theme.on-surface-variant;
+                font-family: Theme.font; font-size: 12px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            TouchArea { clicked => { root.current = i; } }
+        }
+    }
+}

@@ -78,6 +78,8 @@ class BleLink(private val context: Context) {
          * *your Mac*, the one that knows the pairing secret.
          */
         const val TYPE_AUTH: Byte = 6
+        /** An app's icon, on request: "<package>\t<base64 PNG>". Cached by the receiver. */
+        const val TYPE_ICON: Byte = 7
 
         /** Conservative: the default ATT MTU is 23, of which 3 bytes are overhead. */
         private const val MIN_PAYLOAD = 20
@@ -287,6 +289,21 @@ class BleLink(private val context: Context) {
         )
     }
 
+    private fun sendIcon(pkg: String) {
+        val png = runCatching {
+            val drawable = context.packageManager.getApplicationIcon(pkg)
+            val size = 96
+            val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            val out = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            out.toByteArray()
+        }.getOrNull() ?: return
+        send(TYPE_ICON, pkg + "\t" + android.util.Base64.encodeToString(png, android.util.Base64.NO_WRAP))
+    }
+
     // MARK: - Sending
 
     /** Queues one message for the Mac, split into MTU-sized chunks. */
@@ -379,6 +396,7 @@ class BleLink(private val context: Context) {
 
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    if (!subscribers.contains(device)) return   // an old central leaving; the link is someone else's
                     runCatching { paramGatt?.close() }; paramGatt = null
                     subscribers.remove(device)
                     verified = false
@@ -410,7 +428,21 @@ class BleLink(private val context: Context) {
                             BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION, 0, null)
                         return
                     }
-                    if (on) subscribers.add(device) else subscribers.remove(device)
+                    if (on) {
+                        // One central at a time, newest wins. With two (the Mac
+                        // and a laptop both in range) the phone used to keep
+                        // talking to whichever it picked first, and the other
+                        // never got its challenge and looked unpaired.
+                        val previous = subscribers.filter { it != device }
+                        subscribers.clear()
+                        subscribers.add(device)
+                        previous.forEach { old ->
+                            TunnelState.log("Bluetooth: dropping ${old.name ?: "the previous central"} for the new one")
+                            runCatching { server?.cancelConnection(old) }
+                        }
+                        synchronized(outbox) { outbox.clear() }
+                        sending.set(false)
+                    } else subscribers.remove(device)
                     verified = false
                     connected = false
                     if (responseNeeded) {
@@ -525,6 +557,10 @@ class BleLink(private val context: Context) {
                     message.startsWith("keep ") -> keepReady(message)
                     // "pause 15": USB debugging off for that many minutes, the
                     // same as the tunnel's PAUSE and the phone's own tile.
+                    // "icon com.whatsapp": the app's launcher icon as a small PNG,
+                    // so the Mac/PC can show it on the notification. Sent once;
+                    // the other side caches it.
+                    message.startsWith("icon ") -> sendIcon(message.removePrefix("icon ").trim())
                     message.startsWith("pause") -> {
                         val minutes = message.removePrefix("pause").trim().toIntOrNull() ?: 15
                         val policy = TunnelService.current?.policy

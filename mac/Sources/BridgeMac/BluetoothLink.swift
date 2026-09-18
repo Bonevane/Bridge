@@ -38,6 +38,8 @@ final class BluetoothLink: NSObject {
     private static let typeCommand: UInt8 = 5
     /// The pairing handshake (see BleLink.kt). Nothing is trusted before it.
     private static let typeAuth: UInt8 = 6
+    /// An app's icon, answering `icon <package>`: "package\t<base64 PNG>".
+    private static let typeIcon: UInt8 = 7
 
     private var central: CBCentralManager?
     private var phone: CBPeripheral?
@@ -57,6 +59,8 @@ final class BluetoothLink: NSObject {
     private let onClipboard: (String) -> Void
     /// What the phone says about itself: every field it reports, by name.
     var onStatus: (([String: String]) -> Void)?
+    /// An app icon from the phone (package name, PNG bytes).
+    var onIcon: ((String, Data) -> Void)?
 
     /// True while the phone is connected and subscribed.
     private(set) var isLinked = false {
@@ -176,6 +180,12 @@ final class BluetoothLink: NSObject {
              text: "keep \(on ? "on" : "off") at=\(Int64(changedAt))")
     }
 
+    /// Asks the phone for an app's icon, to show with its notifications.
+    /// Comes back once as a small PNG and is cached for good.
+    func requestIcon(_ package: String) {
+        send(type: Self.typeCommand, text: "icon \(package)")
+    }
+
     /// Tells the phone the session is over, so it can turn USB debugging off.
     /// Bluetooth is the right channel for this: the tunnel is often exactly what
     /// has just died.
@@ -258,6 +268,11 @@ final class BluetoothLink: NSObject {
         case Self.typeNotification: onNotification(text)
         case Self.typeClipboard: onClipboard(text)
         case Self.typePing: break        // liveness only
+        case Self.typeIcon:
+            let parts = text.split(separator: "\t", maxSplits: 1)
+            if parts.count == 2, let png = Data(base64Encoded: String(parts[1])) {
+                onIcon?(String(parts[0]), png)
+            }
         case Self.typeStatus:
             let fields = Dictionary(uniqueKeysWithValues: text.split(separator: " ").compactMap { field -> (String, String)? in
                 let parts = field.split(separator: "=", maxSplits: 1)

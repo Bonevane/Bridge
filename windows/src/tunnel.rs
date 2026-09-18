@@ -80,7 +80,7 @@ impl Drop for Tunnel {
 }
 
 /// Hides the console window a child process would otherwise flash open.
-trait NoWindow {
+pub(crate) trait NoWindow {
     fn creation_flags_no_window(&mut self) -> &mut Self;
 }
 impl NoWindow for Command {

@@ -90,20 +90,42 @@ final class NotificationBridge {
             if line.isEmpty { continue }                            // keepalive
             let parts = line.components(separatedBy: "\t")
             guard parts.count >= 3 else { continue }
-            show(app: parts[0], title: parts[1], body: parts[2])
+            show(app: parts[0], title: parts[1], body: parts[2], package: parts.count > 3 ? parts[3] : "")
         }
         s.closeStream()
         stream = nil
         return true
     }
 
-    private func show(app: String, title: String, body: String) {
-        Self.post(app: app, title: title, body: body)
+    private func show(app: String, title: String, body: String, package: String) {
+        Self.post(app: app, title: title, body: body, package: package)
+    }
+
+    /// Where the phone's app icons are cached, one PNG per package.
+    static var iconDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("Bridge/icons", isDirectory: true)
+    }
+
+    static func iconURL(for package: String) -> URL {
+        iconDirectory.appendingPathComponent("\(package).png")
+    }
+
+    static func hasIcon(for package: String) -> Bool {
+        !package.isEmpty && FileManager.default.fileExists(atPath: iconURL(for: package).path)
+    }
+
+    static func cacheIcon(_ png: Data, for package: String) {
+        try? FileManager.default.createDirectory(at: iconDirectory, withIntermediateDirectories: true)
+        try? png.write(to: iconURL(for: package))
     }
 
     /// Posts one phone notification on the Mac. Shared by both transports
     /// (Bluetooth when the phone is nearby, the tunnel when it isn't).
-    static func post(app: String, title: String, body: String) {
+    /// With a cached icon for the app, it rides along as the attachment
+    /// thumbnail: the app icon slot itself always belongs to Bridge, that's
+    /// how macOS works.
+    static func post(app: String, title: String, body: String, package: String = "") {
         let content = UNMutableNotificationContent()
         // The app name is the most useful thing to lead with; the phone's own
         // title goes in the subtitle so both are visible.
@@ -111,6 +133,15 @@ final class NotificationBridge {
         content.subtitle = title
         content.body = body
         content.sound = nil
+        if hasIcon(for: package) {
+            // UNNotificationAttachment takes the file over (it moves it), so
+            // hand it a copy and keep the cache.
+            let copy = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-\(UUID().uuidString).png")
+            if (try? FileManager.default.copyItem(at: iconURL(for: package), to: copy)) != nil,
+               let attachment = try? UNNotificationAttachment(identifier: package, url: copy, options: nil) {
+                content.attachments = [attachment]
+            }
+        }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }

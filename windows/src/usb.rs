@@ -172,7 +172,12 @@ fn flow(events: &Sender<Event>) -> Result<Credentials> {
     }
 
     // Start the helper over the cable so the first Mirror works right away.
+    // Any helper already there goes first: a leftover from an older install
+    // (or an older pairing) holds the port and knows the wrong secret, and
+    // the new one couldn't bind next to it. ([.] so pkill's own shell, whose
+    // command line contains the pattern, doesn't match itself.)
     progress(events, "Starting the phone's helper over USB…");
+    run(&adb, &["-s", serial, "shell", "pkill -f 'bridge[.]Daemon'; sleep 0.5"]);
     let spawn = format!(
         "apk=$(pm path {PACKAGE} | head -1 | cut -d: -f2); \
          (BRIDGE_SECRET={} CLASSPATH=$apk exec setsid app_process / com.bonevane.bridge.Daemon \
@@ -182,6 +187,22 @@ fn flow(events: &Sender<Event>) -> Result<Credentials> {
     let out = run(&adb, &["-s", serial, "shell", &spawn]);
     if !out.trim().is_empty() {
         crate::log!("usb", "helper: {}", out.trim());
+    }
+    // Make sure it's actually up and answering with this secret; "it printed
+    // nothing" told us nothing before.
+    let mut up = false;
+    for _ in 0..12 {
+        if run(&adb, &["-s", serial, "shell", "content", "query", "--uri", TICKET_URI]).contains("daemon=1") {
+            up = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    if up {
+        crate::log!("usb", "the helper is running");
+    } else {
+        let tail = run(&adb, &["-s", serial, "shell", "tail -n 3 /data/local/tmp/bridge-daemon.out"]);
+        crate::log!("usb", "the helper didn't come up; its log ends with: {}", tail.trim());
     }
     // Setup switched the phone's tunnel on to mint the ticket; back to Nearby.
     run(&adb, &["-s", serial, "shell", "am", "start", "-n", ACTIVITY, "-a", "com.bonevane.bridge.NEARBY"]);

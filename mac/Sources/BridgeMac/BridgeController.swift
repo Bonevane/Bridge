@@ -391,6 +391,11 @@ final class BridgeController: ObservableObject {
             // the setting promises.
             phase = .working("Starting the phone's helper over USB…")
             let secret = pairSecret
+            // A helper left over from an older install or pairing holds the
+            // port with the wrong secret; the new one couldn't bind beside it.
+            _ = await background {
+                Shell.run(adb, ["-s", usbSerial, "shell", "pkill -f 'bridge[.]Daemon'; sleep 0.5"], timeout: 10)
+            }
             let spawn = await background {
                 Shell.run(adb, ["-s", usbSerial, "shell",
                     "apk=$(pm path \(package) | head -1 | cut -d: -f2); " +
@@ -398,6 +403,22 @@ final class BridgeController: ObservableObject {
                     "</dev/null >/data/local/tmp/bridge-daemon.out 2>&1) & sleep 1"], timeout: 15)
             }
             if !spawn.ok { appendLog(spawn.output, source: "adb") }
+            var helperUp = false
+            for _ in 0..<12 {
+                let q = await background {
+                    Shell.run(adb, ["-s", usbSerial, "shell", "content", "query", "--uri", ticketURI], timeout: 10).output
+                }
+                if q.contains("daemon=1") { helperUp = true; break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            if helperUp {
+                appendLog("The helper is running.")
+            } else {
+                let tail = await background {
+                    Shell.run(adb, ["-s", usbSerial, "shell", "tail -n 3 /data/local/tmp/bridge-daemon.out"], timeout: 10).output
+                }
+                appendLog("The helper didn't come up; its log ends with: \(tail.trimmingCharacters(in: .whitespacesAndNewlines))", source: "adb")
+            }
             // Setup switched the phone's tunnel on to mint the ticket; hand it
             // back to whatever mode the user chose (Nearby by default).
             _ = await background {

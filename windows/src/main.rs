@@ -437,7 +437,7 @@ impl App {
                 }
                 match tunnel::control(&secret, "START", Duration::from_secs(40)) {
                     Ok(r) if r.starts_with("OK") => { result = Ok(r); break; }
-                    Ok(r) => { result = Err(r); break; }
+                    Ok(r) => { crate::log!("phone", "START: {r}"); result = Err(r); break; }
                     Err(e) => crate::log!("phone", "START {try_}/12: {e:#}"),
                 }
             }

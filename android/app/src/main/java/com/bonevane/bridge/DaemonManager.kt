@@ -43,6 +43,7 @@ object DaemonManager {
 
     /** Blocking; call from a background thread. Throws with a readable message on failure. */
     fun start(ctx: Context) {
+        val squatter = probe(DAEMON_PORT) == null && portOpen(DAEMON_PORT)
         probe(DAEMON_PORT)?.let { hello ->
             // A daemon from before an app update still runs the old code from a
             // directory that no longer exists; replace it.
@@ -68,6 +69,17 @@ object DaemonManager {
 
         if (!AdbToggle.isGranted(ctx)) {
             error("WRITE_SECURE_SETTINGS not granted yet; run \"Set up over USB\" once")
+        }
+        // Something holds the port but doesn't know our secret: a helper left
+        // over from a reinstall (the app's data went, the shell process didn't).
+        // It can't be told to quit, and a new helper can't bind while it's
+        // there, so every start would fail forever. Restarting USB debugging
+        // kills adbd's whole process group, the squatter included.
+        if (squatter && AdbToggle.isEnabled(ctx)) {
+            TunnelState.log("A helper that doesn't know the pairing secret holds port $DAEMON_PORT; clearing it")
+            AdbToggle.set(ctx, false)
+            for (i in 1..20) { if (!portOpen(DAEMON_PORT)) break; Thread.sleep(250) }
+            Thread.sleep(500)
         }
         if (!AdbToggle.isEnabled(ctx)) {
             AdbToggle.set(ctx, true)

@@ -75,6 +75,10 @@ struct Link {
     last_heard: Instant,
     mtu_payload: usize,
     crypto: Option<SessionCrypto>,
+    /// Set by stop(): a connect still running for this link must give up
+    /// rather than finish (it would subscribe and answer the challenge with
+    /// a secret that may since have changed, and hold CONNECTING meanwhile).
+    stopped: bool,
 }
 
 /// One connect attempt at a time: a rescan mid-attempt used to start a second.
@@ -105,6 +109,7 @@ impl Ble {
                 last_heard: Instant::now(),
                 mtu_payload: 20,
                 crypto: None,
+                stopped: false,
             }));
         let writer_link = link.clone();
         std::thread::spawn(move || {
@@ -133,6 +138,7 @@ impl Ble {
     /// Start looking for the phone. Safe to call again to rescan.
     pub fn start(&mut self) -> Result<()> {
         self.stop_scan();
+        self.link.lock().unwrap().stopped = false;
         let watcher = BluetoothLEAdvertisementWatcher::new()?;
         watcher.AdvertisementFilter()?.Advertisement()?.ServiceUuids()?.Append(SERVICE)?;
         let link = self.link.clone();
@@ -213,6 +219,7 @@ impl Ble {
     pub fn stop(&mut self) {
         self.stop_scan();
         let mut l = self.link.lock().unwrap();
+        l.stopped = true;
         l.verified = false;
         l.rx = None;
         l.tx = None;
@@ -287,7 +294,13 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
         crate::log!("bluetooth", "note: the phone is bonded in Windows settings; Bridge no longer needs that, and removing it avoids trouble");
     }
 
+    if link.lock().unwrap().stopped {
+        bail!("cancelled");
+    }
     let service = find_service(&device)?;
+    if link.lock().unwrap().stopped {
+        bail!("cancelled");
+    }
     let open = service.OpenAsync(GattSharingMode::SharedReadAndWrite)?.get()?;
     if open != GattOpenStatus::Success && open != GattOpenStatus::AlreadyOpened {
         bail!("couldn't open the Bridge service: {:?}", open);
@@ -298,6 +311,9 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
 
     {
         let mut l = link.lock().unwrap();
+        if l.stopped {
+            bail!("cancelled");
+        }
         l.rx = Some(rx.clone());
         l.tx = Some(tx.clone());
         l.service = Some(service.clone());

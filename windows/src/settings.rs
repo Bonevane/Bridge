@@ -18,6 +18,8 @@ pub struct Settings {
     pub bitrate_mbps: i32,
     pub turn_screen_off: bool,
     pub mute_phone: bool,
+    /// Clearing a notification on one side clears it on the other.
+    pub sync_dismiss: bool,
 }
 
 impl Default for Settings {
@@ -36,6 +38,7 @@ impl Default for Settings {
             bitrate_mbps: 4,
             turn_screen_off: false,
             mute_phone: false,
+            sync_dismiss: true,
         }
     }
 }
@@ -70,6 +73,7 @@ impl Settings {
                 "bitrate_mbps" => s.bitrate_mbps = n as i32,
                 "turn_screen_off" => s.turn_screen_off = b,
                 "mute_phone" => s.mute_phone = b,
+                "sync_dismiss" => s.sync_dismiss = b,
                 _ => {}
             }
         }
@@ -79,10 +83,10 @@ impl Settings {
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(crate::store::data_dir());
         let text = format!(
-            "{{\n  \"launch_at_login\": {},\n  \"use_bluetooth\": {},\n  \"mirror_notifications\": {},\n  \"notifications_anywhere\": {},\n  \"sync_clipboard\": {},\n  \"background_clipboard\": {},\n  \"keep_ready\": {},\n  \"keep_ready_changed_at\": {},\n  \"max_size\": {},\n  \"bitrate_mbps\": {},\n  \"turn_screen_off\": {},\n  \"mute_phone\": {}\n}}\n",
+            "{{\n  \"launch_at_login\": {},\n  \"use_bluetooth\": {},\n  \"mirror_notifications\": {},\n  \"notifications_anywhere\": {},\n  \"sync_clipboard\": {},\n  \"background_clipboard\": {},\n  \"keep_ready\": {},\n  \"keep_ready_changed_at\": {},\n  \"max_size\": {},\n  \"bitrate_mbps\": {},\n  \"turn_screen_off\": {},\n  \"mute_phone\": {},\n  \"sync_dismiss\": {}\n}}\n",
             self.launch_at_login, self.use_bluetooth, self.mirror_notifications, self.notifications_anywhere,
             self.sync_clipboard, self.background_clipboard, self.keep_ready, self.keep_ready_changed_at,
-            self.max_size, self.bitrate_mbps, self.turn_screen_off, self.mute_phone
+            self.max_size, self.bitrate_mbps, self.turn_screen_off, self.mute_phone, self.sync_dismiss
         );
         let _ = std::fs::write(path(), text);
         apply_launch_at_login(self.launch_at_login);

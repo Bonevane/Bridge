@@ -117,6 +117,11 @@ final class BridgeController: ObservableObject {
     }
 
     /// Show the phone's notifications on the Mac (works with USB debugging off).
+    /// Clearing a notification on one side clears it on the other.
+    @Published var syncDismissals: Bool = UserDefaults.standard.object(forKey: "syncDismissals") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(syncDismissals, forKey: "syncDismissals") }
+    }
+
     @Published var mirrorNotifications: Bool {
         didSet {
             UserDefaults.standard.set(mirrorNotifications, forKey: "mirrorNotifications")
@@ -898,8 +903,10 @@ final class BridgeController: ObservableObject {
                 if state == .linked { self.twins.report(force: true); self.iconsRequested.removeAll() }
             }
         }
-        bluetoothLink.onRemoved = { id in
-            Task { @MainActor in NotificationBridge.remove(id: id) }
+        bluetoothLink.onRemoved = { [weak self] id in
+            Task { @MainActor in
+                if self?.syncDismissals == true { NotificationBridge.remove(id: id) }
+            }
         }
         bluetoothLink.onMedia = { [weak self] fields in
             Task { @MainActor in
@@ -1002,7 +1009,7 @@ final class BridgeController: ObservableObject {
 
     /// Cleared here: clear it on the phone too.
     func dismissOnPhone(id: Int) {
-        if bluetoothLinked { bluetoothLink.dismiss(id: id) }
+        if syncDismissals, bluetoothLinked { bluetoothLink.dismiss(id: id) }
     }
 
     // MARK: - Phone status and Now Playing (shown in the menu)

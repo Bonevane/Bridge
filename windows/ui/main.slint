@@ -24,6 +24,8 @@ export global AppState {
     in-out property <bool> mirroring: false;
     /// The last USB setup stopped short; the hero button runs it again.
     in-out property <bool> usb-retry: false;
+    /// The phone is paired in Windows (which breaks the link); the hero button unpairs it.
+    in-out property <bool> windows-paired: false;
 
     in-out property <Capability> screen: { name: "Screen", detail: "", state: 0 };
     in-out property <Capability> notifications: { name: "Notifications", detail: "", state: 0 };
@@ -76,6 +78,7 @@ export global SettingsState {
     in-out property <int> bitrate-mbps;
     in-out property <bool> turn-screen-off;
     in-out property <bool> mute-phone;
+    in-out property <bool> sync-dismiss;
 
     in-out property <string> ticket-short: "Not paired";
     in-out property <string> pasted: "";
@@ -301,9 +304,9 @@ export component MainWindow inherits Window {
                 Muted { text: AppState.reach-detail; font-size: 12px; color: Theme.on-surface; }
                 Rectangle { height: 8px; }
                 PillButton {
-                    text: AppState.mirroring || AppState.busy ? "Disconnect" : AppState.usb-retry ? "Set up over USB again" : AppState.paired ? "Mirror phone" : "Pair from clipboard";
+                    text: AppState.mirroring || AppState.busy ? "Disconnect" : AppState.usb-retry ? "Set up over USB again" : AppState.windows-paired ? "Unpair it in Windows" : AppState.paired ? "Mirror phone" : "Pair from clipboard";
                     kind: "filled";
-                    icon: AppState.mirroring || AppState.busy ? @image-url("icons/x.svg") : AppState.usb-retry ? @image-url("icons/usb.svg") : AppState.paired ? @image-url("icons/screen-share.svg") : @image-url("icons/key-round.svg");
+                    icon: AppState.mirroring || AppState.busy ? @image-url("icons/x.svg") : AppState.usb-retry ? @image-url("icons/usb.svg") : AppState.windows-paired ? @image-url("icons/bluetooth-off.svg") : AppState.paired ? @image-url("icons/screen-share.svg") : @image-url("icons/key-round.svg");
                     clicked => { AppState.primary(); }
                 }
             }
@@ -453,6 +456,8 @@ export component SettingsWindow inherits Window {
                     SettingRow { icon: @image-url("icons/bell.svg"); title: "Show the phone's notifications"; subtitle: "Over Bluetooth: free"; checked <=> SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
                     Divider {}
                     SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "When the phone is out of Bluetooth range. Keeps a tunnel open; costs the phone a little battery and data"; checked <=> SettingsState.notifications-anywhere; switch-enabled: SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
+                    Divider {}
+                    SettingRow { icon: @image-url("icons/check.svg"); title: "Clear on both sides"; subtitle: "Dismissing a notification here clears it on the phone, and clearing it on the phone takes it off this PC"; checked <=> SettingsState.sync-dismiss; switch-enabled: SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
                 }
                 SectionTitle { text: "Clipboard"; }
                 Card {

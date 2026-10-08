@@ -144,6 +144,9 @@ struct SettingsView: View {
                 Toggle("Show the phone's notifications", isOn: $bridge.mirrorNotifications)
                 Toggle("Also over the internet, when the phone is far away", isOn: $bridge.notificationsAnywhere)
                     .disabled(!bridge.mirrorNotifications)
+                Toggle("Clear on both sides", isOn: $bridge.syncDismissals)
+                    .disabled(!bridge.mirrorNotifications)
+                    .help("Clearing a notification here clears it on the phone, and clearing it on the phone removes it from this Mac")
             } header: {
                 Text("Notifications")
             } footer: {

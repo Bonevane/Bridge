@@ -96,6 +96,8 @@ struct App {
     radio: Option<windows::Devices::Radios::Radio>,
     pc_bluetooth: Option<bool>,
     no_adapter: bool,
+    /// The phone is paired in Windows' Bluetooth settings: its name and address.
+    paired_in_windows: Option<(String, u64)>,
     /// Now Playing from the phone (see protocol::parse_media), when it came,
     /// and album art by key.
     media: std::collections::HashMap<String, String>,
@@ -150,6 +152,7 @@ impl App {
             radio: None,
             pc_bluetooth: None,
             no_adapter: false,
+            paired_in_windows: None,
             media: Default::default(),
             media_received: Instant::now(),
             art: Default::default(),
@@ -201,6 +204,7 @@ impl App {
 
         let usb_failed = matches!(&self.error, Some((_, _, true)));
         ui.set_usb_retry(usb_failed && !self.usb_busy && !self.connecting && !self.mirroring);
+        ui.set_windows_paired(self.paired_in_windows.is_some() && !self.linked && !self.mirroring && !self.connecting);
         let (title, detail, tint) = if let Some((title, detail, _)) = &self.error {
             (title.as_str(), detail.as_str(), 3)
         } else if !self.creds.is_paired() {
@@ -211,6 +215,8 @@ impl App {
             ("Connecting", "Starting the tunnel and the phone's helper…", 2)
         } else if self.mirroring {
             ("Mirroring", "Video, audio and input over the tunnel", 1)
+        } else if self.paired_in_windows.is_some() && !self.linked {
+            ("Unpair the phone in Windows", "It's paired in Windows' Bluetooth settings, and that stops Bridge's link working: Bridge connects without pairing and encrypts the link itself. Click below to unpair it (Bridge keeps working), or remove it in Settings › Bluetooth & devices.", 2)
         } else if self.files_session {
             ("Connected for files", "The tunnel and the phone's helper are up for Phone files. Closing that window ends it.", 1)
         } else if self.phone_paused {
@@ -265,6 +271,7 @@ impl App {
         st.set_bitrate_mbps(self.settings.bitrate_mbps);
         st.set_turn_screen_off(self.settings.turn_screen_off);
         st.set_mute_phone(self.settings.mute_phone);
+        st.set_sync_dismiss(self.settings.sync_dismiss);
         st.set_usb_busy(self.usb_busy);
         let t = &self.creds.ticket;
         st.set_ticket_short(if t.is_empty() { "Not paired".into() } else if t.len() > 28 { format!("{}…{}", &t[..14], &t[t.len() - 8..]).into() } else { t.clone().into() });
@@ -284,6 +291,7 @@ impl App {
         self.settings.bitrate_mbps = st.get_bitrate_mbps();
         self.settings.turn_screen_off = st.get_turn_screen_off();
         self.settings.mute_phone = st.get_mute_phone();
+        self.settings.sync_dismiss = st.get_sync_dismiss();
         let keep = st.get_keep_ready();
         if keep != self.settings.keep_ready {
             self.settings.keep_ready = keep;
@@ -1024,6 +1032,7 @@ impl App {
             Event::Linked => {
                 self.linked = true;
                 self.searching = false;
+                self.paired_in_windows = None;   // linked, so whatever it was, it's fine now
                 self.icons_requested.clear();
                 self.log("bluetooth", "linked to the phone");
                 self.report_twins(true);
@@ -1051,7 +1060,11 @@ impl App {
                     notify::show_phone(&n, self.events_tx.clone());
                 }
             }
-            Event::NotificationRemoved(id) => notify::remove(id),
+            Event::NotificationRemoved(id) => {
+                if self.settings.sync_dismiss {
+                    notify::remove(id);
+                }
+            }
             Event::ToastReply { id, text } => {
                 // One line: the phone reads the rest of the line as the reply.
                 let text = text.replace(['\r', '\n'], " ");
@@ -1067,6 +1080,9 @@ impl App {
                 }
             }
             Event::ToastDismissed(id) => {
+                if !self.settings.sync_dismiss {
+                    return;
+                }
                 if let Some(b) = &self.ble {
                     let _ = b.send_command(&format!("dismiss {id}"));
                 }
@@ -1110,6 +1126,28 @@ impl App {
                     }
                 }
                 return;
+            }
+            Event::PairedInWindows { name, address } => {
+                if self.paired_in_windows.is_none() {
+                    self.log("bluetooth", &format!("{name} is paired in Windows' Bluetooth settings; that breaks Bridge's link. Asking to unpair it."));
+                }
+                self.paired_in_windows = Some((name, address));
+            }
+            Event::UnpairedInWindows(result) => {
+                match result {
+                    Ok(name) => {
+                        self.log("bluetooth", &format!("unpaired {name} in Windows; looking for it again"));
+                        self.paired_in_windows = None;
+                        if let Some(mut b) = self.ble.take() {
+                            b.stop();
+                        }
+                        self.start_bluetooth();
+                    }
+                    Err(e) => {
+                        self.log("bluetooth", &format!("couldn't unpair: {e}"));
+                        self.error = Some(("Couldn't unpair the phone".into(), format!("{e}. Remove it in Settings › Bluetooth & devices instead."), false));
+                    }
+                }
             }
             Event::Radio(state) => {
                 self.no_adapter = state.is_none();
@@ -1367,6 +1405,9 @@ fn main() {
                 app.disconnect();
             } else if matches!(app.error, Some((_, _, true))) {
                 app.set_up_over_usb();
+            } else if let (Some((_, address)), false) = (app.paired_in_windows.clone(), app.linked) {
+                app.log("bluetooth", "unpairing the phone in Windows");
+                ble::Ble::unpair_device(address, app.events_tx.clone());
             } else if !app.creds.is_paired() {
                 app.pair_from_clipboard();
             } else {

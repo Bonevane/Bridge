@@ -75,6 +75,11 @@ pub enum Event {
     /// Transfer progress: what's moving, and how far (0.0 to 1.0).
     FileProgress(String, f32),
     FileDone(Result<String, String>),
+    /// The phone is paired (bonded) in Windows' Bluetooth settings, which
+    /// breaks the link: Bridge connects unpaired, and encrypts by itself.
+    PairedInWindows { name: String, address: u64 },
+    /// The outcome of unpairing it for the user.
+    UnpairedInWindows(Result<String, String>),
     /// This PC's Bluetooth radio: Some(on) when known, None if it has none.
     Radio(Option<bool>),
 }
@@ -245,6 +250,26 @@ impl Ble {
 
     /// Removes any Windows bond with a Bridge phone. Off the UI thread: each
     /// probe of a bonded-but-absent device can take a minute to time out.
+    /// Removes one device's Windows pairing, on its own thread; the result
+    /// comes back as an event.
+    pub fn unpair_device(address: u64, events: Sender<Event>) {
+        std::thread::spawn(move || {
+            let result = (|| -> Result<String> {
+                let d = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get()?;
+                let name = d.Name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                let r = d.DeviceInformation()?.Pairing()?.UnpairAsync()?.get()?;
+                let status = r.Status()?;
+                use windows::Devices::Enumeration::DeviceUnpairingResultStatus as S;
+                if status == S::Unpaired || status == S::AlreadyUnpaired {
+                    Ok(name)
+                } else {
+                    bail!("Windows said {status:?}")
+                }
+            })();
+            let _ = events.send(Event::UnpairedInWindows(result.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
     pub fn unpair_all() {
         std::thread::spawn(Self::unpair_all_now);
     }
@@ -369,6 +394,7 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
     let is_paired = device.DeviceInformation()?.Pairing()?.IsPaired()?;
     crate::log!("bluetooth", "found {name} (paired={is_paired})");
     if is_paired {
+        let _ = events.send(Event::PairedInWindows { name: name.clone(), address });
         // Not needed any more, and Windows behaves worse with one: the bonded
         // link came up "Connected" with no working ATT. Say so once.
         crate::log!("bluetooth", "note: the phone is bonded in Windows settings; Bridge no longer needs that, and removing it avoids trouble");

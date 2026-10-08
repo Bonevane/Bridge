@@ -535,7 +535,15 @@ class BleLink(private val context: Context) {
      * within seconds; that was the run of 15-second drops whenever another
      * device was trying to connect.
      */
+    @Volatile private var lastRepinBurst = 0L
+
     private fun repinSoon() {
+        // At most one burst per 10 s. With two computers dropping and
+        // reconnecting, a burst per event could pile up into a storm of
+        // parameter updates while the links are at their most fragile.
+        val now = System.currentTimeMillis()
+        if (now - lastRepinBurst < 10_000) return
+        lastRepinBurst = now
         repinAll()
         main.postDelayed({ repinAll() }, 1_500)
         main.postDelayed({ repinAll() }, 5_000)

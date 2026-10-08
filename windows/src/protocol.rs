@@ -20,6 +20,12 @@ pub enum Kind {
     Command = 5,
     Auth = 6,
     Icon = 7,
+    /// A mirrored notification left the phone: "<id>".
+    Removed = 8,
+    /// Now Playing: tab-separated key=value pairs, or "state=none".
+    Media = 9,
+    /// Album art: "<key>\t<base64 JPEG>".
+    Art = 10,
 }
 
 impl Kind {
@@ -32,6 +38,9 @@ impl Kind {
             5 => Kind::Command,
             6 => Kind::Auth,
             7 => Kind::Icon,
+            8 => Kind::Removed,
+            9 => Kind::Media,
+            10 => Kind::Art,
             _ => return None,
         })
     }
@@ -200,20 +209,61 @@ pub fn parse_status(text: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
-/// A notification line from the phone: app, title, body, package, tab-separated.
-pub fn parse_notification(line: &str) -> Option<(String, String, String, String)> {
-    let mut parts = line.splitn(4, '\t');
-    Some((
-        parts.next()?.to_string(),
-        parts.next().unwrap_or("").to_string(),
-        parts.next().unwrap_or("").to_string(),
-        parts.next().unwrap_or("").to_string(),
-    ))
+/// One phone notification. `id` (0 if the phone didn't send one) is what
+/// "reply <id> …" and "dismiss <id>" refer to; the same id again means the
+/// phone updated that notification (a chat's next message).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhoneNotification {
+    pub app: String,
+    pub title: String,
+    pub body: String,
+    pub package: String,
+    pub id: u32,
+    pub replyable: bool,
+    pub clearable: bool,
+}
+
+/// app, title, body, package, id, flags ("r" reply, "c" clearable), tab-separated.
+pub fn parse_notification(line: &str) -> Option<PhoneNotification> {
+    let mut parts = line.splitn(6, '\t');
+    let app = parts.next()?.to_string();
+    let title = parts.next().unwrap_or("").to_string();
+    let body = parts.next().unwrap_or("").to_string();
+    let package = parts.next().unwrap_or("").to_string();
+    let id = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let flags = parts.next().unwrap_or("c");
+    Some(PhoneNotification { app, title, body, package, id, replyable: flags.contains('r'), clearable: flags.contains('c') })
+}
+
+/// Now Playing from the phone (see MediaRelay.kt). Fields with tabs are split,
+/// so titles keep their spaces.
+pub fn parse_media(text: &str) -> std::collections::HashMap<String, String> {
+    text.split('\t')
+        .filter_map(|field| field.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_with_id_and_flags() {
+        let n = parse_notification("WhatsApp\tAnna\tOn my way\tcom.whatsapp\t12\trc").unwrap();
+        assert_eq!(n.id, 12);
+        assert!(n.replyable && n.clearable);
+        assert_eq!(n.package, "com.whatsapp");
+        let old = parse_notification("App\tT\tB\tpkg").unwrap();
+        assert_eq!((old.id, old.replyable), (0, false));
+    }
+
+    #[test]
+    fn media_fields_keep_spaces() {
+        let m = parse_media("state=playing\ttitle=Bohemian Rhapsody\tartist=Queen\tpos=1000");
+        assert_eq!(m["title"], "Bohemian Rhapsody");
+        assert_eq!(m["state"], "playing");
+    }
 
     #[test]
     fn chunks_round_trip() {

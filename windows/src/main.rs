@@ -96,6 +96,11 @@ struct App {
     radio: Option<windows::Devices::Radios::Radio>,
     pc_bluetooth: Option<bool>,
     no_adapter: bool,
+    /// Now Playing from the phone (see protocol::parse_media), when it came,
+    /// and album art by key.
+    media: std::collections::HashMap<String, String>,
+    media_received: Instant,
+    art: std::collections::HashMap<String, Vec<u8>>,
     usb_busy: bool,
     /// The last failure (title, detail, from USB setup?). Stays on the hero
     /// card until the next action, so a heartbeat can't wipe it before it's read.
@@ -143,6 +148,9 @@ impl App {
             radio: None,
             pc_bluetooth: None,
             no_adapter: false,
+            media: Default::default(),
+            media_received: Instant::now(),
+            art: Default::default(),
             usb_busy: false,
             error: None,
             icons_requested: BTreeSet::new(),
@@ -980,18 +988,50 @@ impl App {
                 self.log("bluetooth", &format!("dropped ({why})"));
                 self.rescan_at = Some(Instant::now() + Duration::from_secs(3));
             }
-            Event::Notification { app, title, body, package } => {
+            Event::Notification(n) => {
                 if self.settings.mirror_notifications {
-                    self.log("notify", &format!("{app}: {title}"));
+                    self.log("notify", &format!("{}: {}", n.app, n.title));
                     // First notification from an app: ask the phone for its
                     // icon (96 px PNG over Bluetooth, cached for good). This
                     // toast goes out without it; the next one has it.
-                    if !package.is_empty() && !notify::icon_path(&package).exists() && self.icons_requested.insert(package.clone()) {
+                    if !n.package.is_empty() && !notify::icon_path(&n.package).exists() && self.icons_requested.insert(n.package.clone()) {
                         if let Some(b) = &self.ble {
-                            let _ = b.send_command(&format!("icon {package}"));
+                            let _ = b.send_command(&format!("icon {}", n.package));
                         }
                     }
-                    notify::show_with_icon(&app, &title, &body, if package.is_empty() { None } else { Some(&package) });
+                    notify::show_phone(&n, self.events_tx.clone());
+                }
+            }
+            Event::NotificationRemoved(id) => notify::remove(id),
+            Event::ToastReply { id, text } => {
+                // One line: the phone reads the rest of the line as the reply.
+                let text = text.replace(['\r', '\n'], " ");
+                match &self.ble {
+                    Some(b) if self.linked => {
+                        let _ = b.send_command(&format!("reply {id} {text}"));
+                        self.log("notify", "reply sent to the phone");
+                    }
+                    _ => {
+                        self.log("notify", "couldn't reply: the phone isn't linked over Bluetooth");
+                        notify::show("Bridge", "Reply not sent", "The phone isn't linked over Bluetooth right now.");
+                    }
+                }
+            }
+            Event::ToastDismissed(id) => {
+                if let Some(b) = &self.ble {
+                    let _ = b.send_command(&format!("dismiss {id}"));
+                }
+            }
+            Event::Media(fields) => {
+                self.media = fields;
+                self.media_received = Instant::now();
+            }
+            Event::Art { key, jpeg } => {
+                self.art.insert(key, jpeg);
+                if self.art.len() > 30 {
+                    // Keep the current one; drop the rest.
+                    let keep = self.media.get("art").cloned().unwrap_or_default();
+                    self.art.retain(|k, _| *k == keep);
                 }
             }
             Event::Icon { package, png } => {

@@ -51,7 +51,16 @@ pub enum Event {
     Searching,
     Linked,
     Dropped(String),
-    Notification { app: String, title: String, body: String, package: String },
+    Notification(protocol::PhoneNotification),
+    /// A mirrored notification left the phone (read, swiped, answered there).
+    NotificationRemoved(u32),
+    /// Now Playing changed (see protocol::parse_media).
+    Media(std::collections::HashMap<String, String>),
+    /// Album art: key and JPEG bytes.
+    Art { key: String, jpeg: Vec<u8> },
+    /// From a toast (notify.rs): reply typed, or swiped away.
+    ToastReply { id: u32, text: String },
+    ToastDismissed(u32),
     /// An app icon the phone sent: package and PNG bytes.
     Icon { package: String, png: Vec<u8> },
     Clipboard(String),
@@ -646,8 +655,23 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
     };
     match kind {
         Kind::Notification => {
-            if let Some((app, title, body, package)) = protocol::parse_notification(&text) {
-                let _ = events.send(Event::Notification { app, title, body, package });
+            if let Some(n) = protocol::parse_notification(&text) {
+                let _ = events.send(Event::Notification(n));
+            }
+        }
+        Kind::Removed => {
+            if let Ok(id) = text.trim().parse() {
+                let _ = events.send(Event::NotificationRemoved(id));
+            }
+        }
+        Kind::Media => {
+            let _ = events.send(Event::Media(protocol::parse_media(&text)));
+        }
+        Kind::Art => {
+            if let Some((key, b64)) = text.split_once('\t') {
+                if let Ok(jpeg) = base64_decode(b64) {
+                    let _ = events.send(Event::Art { key: key.to_string(), jpeg });
+                }
             }
         }
         Kind::Icon => {

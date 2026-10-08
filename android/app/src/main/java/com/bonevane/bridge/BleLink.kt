@@ -82,6 +82,12 @@ class BleLink(private val context: Context) {
         const val TYPE_AUTH: Byte = 6
         /** An app's icon, on request: "<package>\t<base64 PNG>". Cached by the receiver. */
         const val TYPE_ICON: Byte = 7
+        /** A mirrored notification left the phone: "<id>". The computer removes its copy. */
+        const val TYPE_REMOVED: Byte = 8
+        /** Now Playing, see [MediaRelay]: tab-separated key=value pairs, or "state=none". */
+        const val TYPE_MEDIA: Byte = 9
+        /** Album art for Now Playing: "<key>\t<base64 JPEG>". */
+        const val TYPE_ART: Byte = 10
 
         /** Conservative: the default ATT MTU is 23, of which 3 bytes are overhead. */
         private const val MIN_PAYLOAD = 20
@@ -142,6 +148,43 @@ class BleLink(private val context: Context) {
 
     private val notificationListener: (String) -> Unit = { line ->
         send(TYPE_NOTIFICATION, line)
+    }
+    private val removalListener: (Int) -> Unit = { id -> send(TYPE_REMOVED, id.toString()) }
+    private val mediaListener: (String) -> Unit = { line -> send(TYPE_MEDIA, line) }
+    private val artListener: (String) -> Unit = { art -> send(TYPE_ART, art) }
+
+    /**
+     * Battery and network go out with the status. The battery broadcast fires
+     * for every tenth of a degree too, so only a change of level or charging
+     * counts as news.
+     */
+    private var lastBattery = -1 to false
+    private val batteryWatcher = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            val now = batteryOf(intent)
+            if (now != lastBattery) {
+                lastBattery = now
+                if (peers.isNotEmpty()) sendStatus()
+            }
+        }
+    }
+
+    private fun batteryOf(intent: Intent?): Pair<Int, Boolean> {
+        val level = intent?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
+        val plugged = (intent?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        return (if (level >= 0 && scale > 0) level * 100 / scale else -1) to plugged
+    }
+
+    private fun network(): String {
+        val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+        val caps = cm?.getNetworkCapabilities(cm.activeNetwork) ?: return "none"
+        return when {
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
     }
 
     // MARK: - Lifecycle
@@ -230,6 +273,9 @@ class BleLink(private val context: Context) {
         serviceReady = false
         advertisingOk = false
         NotificationRelay.unsubscribe(notificationListener)
+        NotificationRelay.unsubscribeRemovals(removalListener)
+        MediaRelay.unsubscribe(mediaListener, artListener)
+        runCatching { context.unregisterReceiver(batteryWatcher) }
         runCatching { stopAdvertising() }
         runCatching { server?.close() }
         server = null
@@ -302,6 +348,9 @@ class BleLink(private val context: Context) {
         txPlain = characteristicTxPlain
         advertise(adapter)
         NotificationRelay.subscribe(notificationListener)
+        NotificationRelay.subscribeRemovals(removalListener)
+        MediaRelay.subscribe(mediaListener, artListener)
+        lastBattery = batteryOf(context.registerReceiver(batteryWatcher, IntentFilter(Intent.ACTION_BATTERY_CHANGED)))
         startHeartbeat()
         TunnelState.log("Bluetooth: advertising")
     }
@@ -376,7 +425,11 @@ class BleLink(private val context: Context) {
                 " tunnel=${if (TunnelState.tunnelOn) 1 else 0}" +
                 " keep=${if (Prefs.keepReady(context)) 1 else 0}" +
                 " keepAt=${Prefs.keepReadyAt(context)}" +
-                " paused=${if (paused) 1 else 0}"
+                " paused=${if (paused) 1 else 0}" +
+                // What the computers show in their phone status line.
+                " battery=${lastBattery.first} charging=${if (lastBattery.second) 1 else 0}" +
+                " net=${network()}" +
+                " model=${android.os.Build.MODEL.replace(' ', '_')}"
         )
     }
 
@@ -666,6 +719,10 @@ class BleLink(private val context: Context) {
                 TunnelState.log(if (peer.plain) "Bluetooth: PC verified (encrypted session)" else "Bluetooth: Mac verified")
                 TunnelState.macSeen()
                 sendStatus()
+                // A computer that just linked should see what's playing now.
+                val (media, art) = MediaRelay.snapshot()
+                art?.let { sendTo(peer, TYPE_ART, it) }
+                sendTo(peer, TYPE_MEDIA, media)
             } else {
                 TunnelState.log("Bluetooth: ignored a message from an unverified device")
             }
@@ -699,6 +756,30 @@ class BleLink(private val context: Context) {
                     // so the Mac/PC can show it on the notification. Sent once;
                     // the other side caches it.
                     message.startsWith("icon ") -> sendIcon(message.removePrefix("icon ").trim())
+                    // "reply 12 On my way": answer notification 12 through its
+                    // own Reply action. The text is the rest of the line.
+                    message.startsWith("reply ") -> {
+                        val rest = message.removePrefix("reply ")
+                        val id = rest.substringBefore(' ').toIntOrNull()
+                        val text = rest.substringAfter(' ', "")
+                        val key = id?.let { NotificationRelay.keyFor(it) }
+                        val why = when {
+                            key == null -> "unknown notification"
+                            text.isBlank() -> "empty reply"
+                            else -> NotificationService.current.let { svc ->
+                                if (svc == null) "notification access is off" else svc.reply(key, text)
+                            }
+                        }
+                        TunnelState.log(if (why == null) "Replied from the ${peer.label}" else "Couldn't reply from the ${peer.label}: $why")
+                    }
+                    // "dismiss 12": cleared on the computer, so clear it here.
+                    message.startsWith("dismiss ") -> {
+                        message.removePrefix("dismiss ").trim().toIntOrNull()
+                            ?.let { NotificationRelay.keyFor(it) }
+                            ?.let { NotificationService.current?.dismiss(it) }
+                    }
+                    // "media play|pause|toggle|next|prev|seek <ms>"
+                    message.startsWith("media ") -> MediaRelay.command(message.removePrefix("media "))
                     message.startsWith("pause") -> {
                         val minutes = message.removePrefix("pause").trim().toIntOrNull() ?: 15
                         val policy = TunnelService.current?.policy

@@ -17,6 +17,7 @@
 mod audio;
 mod ble;
 mod clipboard;
+mod files;
 mod log;
 mod notify;
 mod protocol;
@@ -47,6 +48,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 struct App {
     window: MainWindow,
     settings_window: SettingsWindow,
+    files_window: FilesWindow,
+    /// The phone folder the files window shows, as the phone resolved it.
+    files_path: String,
+    files_entries: Vec<files::Entry>,
+    /// One transfer at a time: dropping ten files queues them rather than
+    /// opening ten streams at once.
+    transfer_lock: std::sync::Arc<std::sync::Mutex<()>>,
     settings: settings::Settings,
     creds: store::Credentials,
     ble: Option<ble::Ble>,
@@ -89,11 +97,15 @@ struct App {
 }
 
 impl App {
-    fn new(window: MainWindow, settings_window: SettingsWindow) -> Self {
+    fn new(window: MainWindow, settings_window: SettingsWindow, files_window: FilesWindow) -> Self {
         let (events_tx, events) = mpsc::channel();
         App {
             window,
             settings_window,
+            files_window,
+            files_path: String::new(),
+            files_entries: Vec::new(),
+            transfer_lock: Default::default(),
             settings: settings::Settings::load(),
             creds: store::load().unwrap_or_default(),
             ble: None,
@@ -361,6 +373,90 @@ impl App {
         true
     }
 
+    // MARK: - Phone files
+
+    fn open_files(&mut self) {
+        let _ = self.files_window.show();
+        let path = self.files_path.clone();
+        self.list_files(&path);
+    }
+
+    fn list_files(&mut self, path: &str) {
+        let fw = &self.files_window;
+        if !self.mirroring {
+            fw.set_status("Phone files need a mirroring session: click Mirror phone first.".into());
+            return;
+        }
+        fw.set_loading(true);
+        fw.set_status("Loading…".into());
+        let (secret, tx, path) = (self.creds.secret.clone(), self.events_tx.clone(), path.to_string());
+        std::thread::spawn(move || {
+            let _ = tx.send(Event::FilesListed(files::list(&secret, &path).map_err(|e| format!("{e:#}"))));
+        });
+    }
+
+    fn files_open(&mut self, index: usize) {
+        let Some(entry) = self.files_entries.get(index).cloned() else { return };
+        let full = format!("{}/{}", self.files_path.trim_end_matches('/'), entry.name);
+        if entry.dir {
+            self.list_files(&full);
+        } else {
+            self.files_window.set_status(format!("Downloading {}…", entry.name).into());
+            let (secret, tx, lock) = (self.creds.secret.clone(), self.events_tx.clone(), self.transfer_lock.clone());
+            std::thread::spawn(move || {
+                let _guard = lock.lock();
+                let name = entry.name.clone();
+                let ptx = tx.clone();
+                let result = files::pull(&secret, &full, |done, total| {
+                    let pct = if total > 0 { done * 100 / total } else { 100 };
+                    let _ = ptx.send(Event::FileProgress(format!("Downloading {name}… {pct}% of {}", files::human_size(total))));
+                });
+                let _ = tx.send(Event::FileDone(
+                    result.map(|p| format!("Saved {} to Downloads", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())).map_err(|e| format!("{e:#}")),
+                ));
+            });
+        }
+    }
+
+    fn files_up(&mut self) {
+        if let Some((parent, _)) = self.files_path.rsplit_once('/') {
+            if !parent.is_empty() {
+                let parent = parent.to_string();
+                self.list_files(&parent);
+            }
+        }
+    }
+
+    fn show_listing(&mut self, resolved: String, entries: Vec<files::Entry>) {
+        const ROOT: &str = "/storage/emulated/0";
+        let fw = &self.files_window;
+        fw.set_loading(false);
+        let shown = match resolved.strip_prefix(ROOT) {
+            Some("") => "Phone storage".to_string(),
+            Some(rest) => format!("Phone storage{rest}").replace('/', " › "),
+            None => resolved.clone(),
+        };
+        fw.set_path(shown.into());
+        fw.set_at_top(resolved == ROOT);
+        let rows: Vec<FileEntry> = entries
+            .iter()
+            .map(|e| {
+                let when = chrono::DateTime::from_timestamp_millis(e.modified_ms)
+                    .map(|d| d.with_timezone(&chrono::Local).format("%-d %b %Y, %H:%M").to_string())
+                    .unwrap_or_default();
+                FileEntry {
+                    name: e.name.clone().into(),
+                    detail: if e.dir { when.into() } else { format!("{} · {when}", files::human_size(e.size)).into() },
+                    is_dir: e.dir,
+                }
+            })
+            .collect();
+        fw.set_entries(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+        fw.set_status(if entries.is_empty() { "Empty folder".into() } else { format!("{} items", entries.len()).into() });
+        self.files_path = resolved;
+        self.files_entries = entries;
+    }
+
     // MARK: - Tunnel and mirroring
 
     fn toggle_phone_tunnel(&mut self) {
@@ -491,10 +587,17 @@ impl App {
         *s.borrow_mut() = Some(session.clone());
         let size = Rc::new(RefCell::new((0u16, 0u16)));
         let (s1, z1) = (s.clone(), size.clone());
+        let first_input = Rc::new(std::cell::Cell::new(true));
         window.on_pointer(move |x, y, kind, button| {
             let Some(sess) = s1.borrow().clone() else { return };
             let (w, h) = *z1.borrow();
-            if w == 0 { return; }
+            if first_input.replace(false) {
+                crate::log!("input", "first pointer event at ({x}, {y}) on a {w}×{h} video");
+            }
+            if w == 0 {
+                crate::log!("input", "pointer dropped: the video size isn't known yet");
+                return;
+            }
             let p = scrcpy::Position { x, y, width: w, height: h };
             let msg = match (kind, button) {
                 (0, 1) => scrcpy::back(true),
@@ -570,6 +673,7 @@ impl App {
             let _ = closer.send(SessionEvent::Ended("window closed".into()));
             slint::CloseRequestResponse::HideWindow
         });
+        accept_drops(window.window(), self.creds.secret.clone(), self.events_tx.clone(), self.transfer_lock.clone());
         let _ = window.show();
         self.session_events = Some(rx);
         self.session = Some(session);
@@ -606,6 +710,7 @@ impl App {
         self.mirroring = false;
         self.connecting = false;
         self.woke_tunnel = false;   // "session over" below settles the tunnel
+        self.files_window.set_status("Mirroring ended; phone files need a session.".into());
         if let Some(sess) = self.session.take() {
             sess.stop();
         }
@@ -799,6 +904,42 @@ impl App {
                     Err(e) => self.log("notify", &format!("couldn't cache the icon for {package}: {e}")),
                 }
             }
+            Event::FilesListed(result) => {
+                match result {
+                    Ok((resolved, entries)) => self.show_listing(resolved, entries),
+                    Err(e) => {
+                        self.files_window.set_loading(false);
+                        self.files_window.set_status(format!("Couldn't list: {e}").into());
+                        self.log("files", &e);
+                    }
+                }
+                return;
+            }
+            Event::FileProgress(text) => {
+                self.files_window.set_status(text.into());
+                return;
+            }
+            Event::FileDone(result) => {
+                match result {
+                    Ok(msg) => {
+                        self.log("files", &msg);
+                        self.files_window.set_status(msg.clone().into());
+                        notify::show("Bridge", "File transfer", &msg);
+                        // A drop went into the phone's Download folder; if that's
+                        // what's on screen, show it.
+                        if self.files_path.ends_with("/Download") {
+                            let p = self.files_path.clone();
+                            self.list_files(&p);
+                        }
+                    }
+                    Err(e) => {
+                        self.log("files", &format!("transfer failed: {e}"));
+                        self.files_window.set_status(format!("Failed: {e}").into());
+                        notify::show("Bridge", "File transfer failed", &e);
+                    }
+                }
+                return;
+            }
             Event::UsbProgress(text) => {
                 self.settings_window.global::<SettingsState>().set_usb_status(text.into());
             }
@@ -891,6 +1032,38 @@ impl App {
     }
 }
 
+/// Sends a dropped file to the phone's Download folder, on its own thread,
+/// one transfer at a time. Used by the mirror window and the files window.
+fn start_push(secret: String, tx: mpsc::Sender<Event>, lock: std::sync::Arc<std::sync::Mutex<()>>, path: std::path::PathBuf) {
+    if path.is_dir() {
+        let _ = tx.send(Event::FileDone(Err(format!("{} is a folder; drop files, not folders", path.display()))));
+        return;
+    }
+    std::thread::spawn(move || {
+        let _guard = lock.lock();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let ptx = tx.clone();
+        let result = files::push(&secret, &path, |done, total| {
+            let pct = if total > 0 { done * 100 / total } else { 100 };
+            let _ = ptx.send(Event::FileProgress(format!("Sending {name}… {pct}% of {}", files::human_size(total))));
+        });
+        let _ = tx.send(Event::FileDone(result.map(|r| format!("{name}: {r}")).map_err(|e| format!("{name}: {e:#}"))));
+    });
+}
+
+/// Files dragged from Explorer onto a window go to the phone. Slint has no
+/// drop event of its own; winit does.
+fn accept_drops(window: &slint::Window, secret: String, tx: mpsc::Sender<Event>, lock: std::sync::Arc<std::sync::Mutex<()>>) {
+    use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+    window.on_winit_window_event(move |_, event| {
+        if let WindowEvent::DroppedFile(path) = event {
+            crate::log!("files", "dropped {}", path.display());
+            start_push(secret.clone(), tx.clone(), lock.clone(), path.clone());
+        }
+        EventResult::Propagate
+    });
+}
+
 /// The navy square with the white mark (assets/icon-32.png, from make-icons.sh).
 fn tray_icon() -> tray_icon::Icon {
     let img = image::load_from_memory(include_bytes!("../assets/icon-32.png")).expect("tray icon png").into_rgba8();
@@ -904,7 +1077,8 @@ fn main() {
 
     let window = MainWindow::new().expect("window");
     let settings_window = SettingsWindow::new().expect("settings window");
-    let app = Rc::new(RefCell::new(App::new(window.clone_strong(), settings_window.clone_strong())));
+    let files_window = FilesWindow::new().expect("files window");
+    let app = Rc::new(RefCell::new(App::new(window.clone_strong(), settings_window.clone_strong(), files_window.clone_strong())));
 
     // Tray: left-click shows the window; the menu has Open, Settings and Quit.
     let menu = tray_icon::menu::Menu::new();
@@ -951,6 +1125,8 @@ fn main() {
         ui.on_toggle_phone_tunnel(move || a.borrow_mut().toggle_phone_tunnel());
         let a = app.clone();
         ui.on_set_up_over_usb(move || a.borrow_mut().set_up_over_usb());
+        let a = app.clone();
+        ui.on_open_files(move || a.borrow_mut().open_files());
         let sw = settings_window.as_weak();
         ui.on_open_settings(move || { if let Some(w) = sw.upgrade() { let _ = w.show(); } });
         ui.on_open_log_folder(move || {
@@ -1006,6 +1182,46 @@ fn main() {
         let sw = settings_window.as_weak();
         settings_window.window().on_close_requested(move || {
             if let Some(w) = sw.upgrade() { let _ = w.hide(); }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+
+    // Files window callbacks. Closing it just hides it.
+    {
+        let a = app.clone();
+        files_window.on_open(move |i| a.borrow_mut().files_open(i as usize));
+        let a = app.clone();
+        files_window.on_up(move || a.borrow_mut().files_up());
+        let a = app.clone();
+        files_window.on_refresh(move || {
+            let mut app = a.borrow_mut();
+            let p = app.files_path.clone();
+            app.list_files(&p);
+        });
+        files_window.on_open_downloads(|| {
+            let _ = std::process::Command::new("explorer").arg(files::downloads_dir()).spawn();
+        });
+        // Drops need the secret at drop time (it changes on re-pairing), so
+        // read it from the app then rather than capturing it now.
+        let a = app.clone();
+        {
+            use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+            files_window.window().on_winit_window_event(move |_, event| {
+                if let WindowEvent::DroppedFile(path) = event {
+                    if let Ok(app) = a.try_borrow() {
+                        if app.mirroring {
+                            start_push(app.creds.secret.clone(), app.events_tx.clone(), app.transfer_lock.clone(), path.clone());
+                        } else {
+                            app.files_window.set_status("Sending files needs a mirroring session.".into());
+                        }
+                    }
+                }
+                EventResult::Propagate
+            });
+        }
+        let fw = files_window.as_weak();
+        files_window.window().on_close_requested(move || {
+            if let Some(w) = fw.upgrade() { let _ = w.hide(); }
             slint::CloseRequestResponse::HideWindow
         });
     }

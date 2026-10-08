@@ -129,6 +129,15 @@ impl Stream {
         Ok(String::from_utf8_lossy(&line).into_owned())
     }
 
+    /// Whatever is available, up to `buf.len()`; 0 means the phone closed it.
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        Ok(self.inner.read(buf)?)
+    }
+
+    pub fn set_timeout(&self, timeout: Duration) {
+        let _ = self.inner.set_read_timeout(Some(timeout));
+    }
+
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
         Ok(self.inner.read_exact(buf)?)
     }

@@ -24,6 +24,8 @@ import java.util.concurrent.ConcurrentHashMap
  *                             connection then carries its raw video stream
  *   AUDIO <scid>              attach to that session's audio stream (AAC)
  *   CTRL <scid>               attach to that session's control stream
+ *   LIST <dir>                a folder in shared storage, one entry per line
+ *   PULL <file>               a file from shared storage: "OK <size>" + bytes
  *   CLIP                      a standalone clipboard channel: a control-only
  *                             scrcpy-server (no video), relayed both ways, so
  *                             the clipboard syncs without a mirroring window
@@ -100,6 +102,8 @@ object Daemon {
             "CTRL" -> control(s, rest.trim())
             "CLIP" -> clip(s)
             "PUSH" -> push(s, rest)
+            "LIST" -> list(s, rest.trim())
+            "PULL" -> pull(s, rest.trim())
             "INSTALL" -> install(s, rest.trim().toLongOrNull() ?: 0)
             "QUIT" -> { log("quit requested"); reply(s, "OK bye"); System.exit(0) }
             else -> s.getOutputStream().write("ERR unknown command\n".toByteArray())
@@ -177,7 +181,7 @@ object Daemon {
         // Keep the name a plain file name: never let it escape the folder.
         val name = File(rawName).name.ifEmpty { "bridge-file" }
         if (size <= 0 || size > MAX_PUSH) { reply(s, "ERR size"); return }
-        val target = File("/sdcard/Download", name)
+        val target = freeName(File("/sdcard/Download"), name)
         runCatching {
             target.outputStream().use { out ->
                 val buf = ByteArray(64 * 1024)
@@ -197,7 +201,69 @@ object Daemon {
             ).start().waitFor()
         }
         log("pushed ${target.absolutePath} (${target.length()} bytes)")
-        reply(s, "OK saved to Download/$name")
+        reply(s, "OK saved to Download/${target.name}")
+    }
+
+    /** "photo.jpg" → "photo (1).jpg" … so a drop never overwrites what's there. */
+    private fun freeName(dir: File, name: String): File {
+        var f = File(dir, name)
+        if (!f.exists()) return f
+        val dot = name.lastIndexOf('.').takeIf { it > 0 } ?: name.length
+        val (stem, ext) = name.substring(0, dot) to name.substring(dot)
+        var i = 1
+        while (f.exists()) f = File(dir, "$stem (${i++})$ext")
+        return f
+    }
+
+    /** Shared storage only: what the Files app shows. Never the app-private or system dirs. */
+    private const val STORAGE_ROOT = "/storage/emulated/0"
+
+    private fun inStorage(path: String): File? {
+        val raw = path.ifEmpty { STORAGE_ROOT }.replaceFirst(Regex("^/sdcard"), STORAGE_ROOT)
+        val f = runCatching { File(raw).canonicalFile }.getOrNull() ?: return null
+        return f.takeIf { it.path == STORAGE_ROOT || it.path.startsWith("$STORAGE_ROOT/") }
+    }
+
+    /**
+     * LIST <dir>: "OK", then one line per entry, "d|f <tab> size <tab>
+     * modified-ms <tab> name", then an empty line. Names with a tab or
+     * newline in them are skipped (they'd break the framing, and are rare).
+     */
+    private fun list(s: Socket, path: String) {
+        val dir = inStorage(path)?.takeIf { it.isDirectory }
+            ?: run { reply(s, "ERR not a folder in shared storage"); return }
+        val entries = dir.listFiles() ?: run { reply(s, "ERR can't read ${dir.path}"); return }
+        val out = StringBuilder("OK ${dir.path}\n")
+        entries.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })).forEach { f ->
+            if ('\t' in f.name || '\n' in f.name) return@forEach
+            out.append(if (f.isDirectory) 'd' else 'f').append('\t')
+                .append(if (f.isDirectory) 0 else f.length()).append('\t')
+                .append(f.lastModified()).append('\t').append(f.name).append('\n')
+        }
+        out.append('\n')
+        s.getOutputStream().write(out.toString().toByteArray()); s.getOutputStream().flush()
+    }
+
+    /** PULL <file>: "OK <size>", then exactly that many bytes. */
+    private fun pull(s: Socket, path: String) {
+        val f = inStorage(path)?.takeIf { it.isFile && it.canRead() }
+            ?: run { reply(s, "ERR not a readable file in shared storage"); return }
+        val size = f.length()
+        reply(s, "OK $size")
+        runCatching {
+            f.inputStream().use { input ->
+                val buf = ByteArray(128 * 1024)
+                val out = s.getOutputStream()
+                var left = size
+                while (left > 0) {
+                    val r = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                    if (r < 0) break
+                    out.write(buf, 0, r); left -= r
+                }
+                out.flush()
+            }
+        }
+        log("sent ${f.path} ($size bytes)")
     }
 
     private const val MAX_APK = 200L * 1024 * 1024
@@ -254,16 +320,19 @@ object Daemon {
         }
     }
 
-    @Volatile private var clipProcess: Process? = null
-
     /**
      * A control-only scrcpy-server (video=false audio=false control=true) whose
      * single control socket is relayed to [s]. scrcpy's clipboard autosync then
-     * works with no encoder running. One at a time; a new CLIP replaces the old.
+     * works with no encoder running.
+     *
+     * Each CLIP gets its own server, ended when its socket closes. It used to be
+     * "a new CLIP replaces the old", which with two users (the phone's own
+     * clipboard watcher and a Mac's background sync) meant they kicked each
+     * other out forever: a fresh JVM every few seconds, each one switching the
+     * screen on (see power_on below).
      */
     private fun clip(s: Socket) {
         val jar = findJar() ?: run { reply(s, "ERR scrcpy jar not found"); return }
-        clipProcess?.destroy()
         // Must fit a *signed* 32-bit int: scrcpy does Integer.parseInt(scid, 16).
         val scid = "%08x".format((Math.random() * 0x7fffffff).toInt())
         val args = listOf(
@@ -272,13 +341,16 @@ object Daemon {
             // With video off the control socket is the *first* socket, and scrcpy
             // would prefix it with its 64-byte device-name header; we don't want that.
             "control=true", "send_dummy_byte=false", "send_device_meta=false",
+            // scrcpy turns the screen on when its controller starts (power_on
+            // defaults to true). Right for a mirroring session; for a silent
+            // clipboard channel it lit the phone up in your pocket at every start.
+            "power_on=false",
             "cleanup=false", "log_level=info"
         )
         val process = ProcessBuilder(args).apply {
             environment()["CLASSPATH"] = jar
             redirectErrorStream(true); redirectOutput(File("/data/local/tmp/clip.log"))
         }.start()
-        clipProcess = process
         log("clip channel $scid started")
         val ctl = connectLocal("scrcpy_$scid") ?: run { process.destroy(); reply(s, "ERR clip server"); return }
         reply(s, "OK")
@@ -286,7 +358,6 @@ object Daemon {
         t.start()
         pump(s.getInputStream(), ctl.outputStream)
         runCatching { ctl.close() }; t.join(); process.destroy()
-        if (clipProcess === process) clipProcess = null
         log("clip channel ended")
     }
 

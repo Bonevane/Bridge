@@ -130,7 +130,19 @@ class BleLink(private val context: Context) {
         private set(value) { field = value; TunnelState.macLinked = value }
     @Volatile private var beating = false
 
-    private fun updateConnected() { connected = peers.values.any { it.verified } }
+    private fun updateConnected() {
+        connected = peers.values.any { it.verified }
+        // Advertising every 250 ms is only worth it while nobody is linked;
+        // once a computer is, once a second still lets a second one find the
+        // phone in a moment, at a quarter of the radio time.
+        val mode = if (connected) AdvertiseSettings.ADVERTISE_MODE_LOW_POWER else AdvertiseSettings.ADVERTISE_MODE_BALANCED
+        if (mode != advertiseMode && server != null) {
+            advertiseMode = mode
+            context.getSystemService(BluetoothManager::class.java)?.adapter?.let { adapter ->
+                runCatching { stopAdvertising(); advertise(adapter) }
+            }
+        }
+    }
 
     private val notificationListener: (String) -> Unit = { line ->
         send(TYPE_NOTIFICATION, line)
@@ -192,6 +204,7 @@ class BleLink(private val context: Context) {
         peers.clear()
         mtus.clear()
         connected = false
+        advertiseMode = AdvertiseSettings.ADVERTISE_MODE_BALANCED
         paramGatts.values.forEach { runCatching { it.close() } }; paramGatts.clear()
     }
 
@@ -272,9 +285,14 @@ class BleLink(private val context: Context) {
         if (beating) return
         beating = true
         Thread({
+            var beats = 0
             while (beating) {
                 Thread.sleep(30_000)
-                repinAll()
+                // Each re-pin is a link-layer parameter update on every Mac
+                // link. New connections already trigger one (that's when the
+                // stack renegotiates the others); this is only a safety net,
+                // so every 5 minutes rather than every beat.
+                if (++beats % 10 == 0) repinAll()
                 if (peers.isNotEmpty()) sendStatus()
             }
         }, "ble-heartbeat").apply { isDaemon = true }.start()
@@ -410,7 +428,11 @@ class BleLink(private val context: Context) {
      * renegotiates parameters when *another* central connects (the Mac's
      * link went to the 720 ms timeout again the moment Windows linked and
      * dropped with "timed out" soon after), so this runs on each new
-     * connection and with every heartbeat.
+     * connection and every 5 minutes.
+     *
+     * BALANCED, not LOW_POWER, even though LOW_POWER would save more: its 20 s
+     * supervision timeout is outside Apple's accessory limits (2–6 s), so
+     * macOS rejects the update and the link stays on the 720 ms timeout.
      */
     @SuppressLint("MissingPermission")
     private fun repinAll() {
@@ -461,7 +483,17 @@ class BleLink(private val context: Context) {
                     val peer = peers.remove(device) ?: return   // a stranger leaving; not our link
                     paramGatts.remove(device)?.let { runCatching { it.close() } }
                     updateConnected()
-                    TunnelState.log("Bluetooth: the ${peer.label} disconnected" +
+                    // The HCI reason says who ended it: 8 = supervision timeout
+                    // (radio/parameters), 19 = the computer hung up, 22 = this
+                    // phone did. Without it every drop looked the same.
+                    val why = when (status) {
+                        8 -> "link timed out"
+                        19 -> "the ${peer.label} closed it"
+                        22 -> "this phone closed it"
+                        62 -> "couldn't establish the link"
+                        else -> "status $status"
+                    }
+                    TunnelState.log("Bluetooth: the ${peer.label} disconnected ($why)" +
                         if (peers.isNotEmpty()) " (${peers.size} still linked)" else "")
                 }
             }
@@ -646,6 +678,7 @@ class BleLink(private val context: Context) {
     // MARK: - Advertising
 
     private var advertiseCallback: AdvertiseCallback? = null
+    @Volatile private var advertiseMode = AdvertiseSettings.ADVERTISE_MODE_BALANCED
 
     @SuppressLint("MissingPermission")
     private fun advertise(adapter: android.bluetooth.BluetoothAdapter) {
@@ -654,7 +687,7 @@ class BleLink(private val context: Context) {
             return
         }
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            .setAdvertiseMode(advertiseMode)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
             .setConnectable(true)
             .setTimeout(0)          // keep advertising

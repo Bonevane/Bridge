@@ -28,7 +28,10 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
     GattDeviceService, GattOpenStatus, GattSession, GattSharingMode, GattValueChangedEventArgs, GattWriteOption,
 };
-use windows::Devices::Bluetooth::{BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
+use windows::Devices::Bluetooth::{
+    BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice,
+    BluetoothLEPreferredConnectionParameters, BluetoothLEPreferredConnectionParametersRequest,
+};
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter};
@@ -58,6 +61,10 @@ pub enum Event {
     /// Set up over USB (usb.rs): a step started, then the outcome.
     UsbProgress(String),
     UsbDone(Result<crate::store::Credentials, String>),
+    /// Phone files (files.rs): a folder listing, transfer progress, and the outcome.
+    FilesListed(Result<(String, Vec<crate::files::Entry>), String>),
+    FileProgress(String),
+    FileDone(Result<String, String>),
 }
 
 /// The live link, shared between the WinRT callbacks and the app.
@@ -73,6 +80,9 @@ struct Link {
     /// session for as idle and lets it go after a while, which looked like
     /// the phone dropping us every minute or two for no reason.
     session: Option<GattSession>,
+    /// Our request for relaxed link parameters; Windows keeps it in force
+    /// only while this object lives (see request_relaxed_link).
+    params: Option<BluetoothLEPreferredConnectionParametersRequest>,
     inbox: Inbox,
     handshake: Handshake,
     verified: bool,
@@ -108,6 +118,7 @@ impl Ble {
                 tx: None,
                 service: None,
                 session: None,
+                params: None,
                 inbox: Inbox::default(),
                 handshake: Handshake::new(secret),
                 verified: false,
@@ -230,6 +241,7 @@ impl Ble {
         l.tx = None;
         l.service = None;
         l.session = None;
+        l.params = None;
         l.device = None; // dropping the device object lets WinRT close the link
     }
 
@@ -360,6 +372,7 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
                         l.tx = None;
                         l.service = None;
                         l.session = None;
+        l.params = None;
                         l.device = None;
                         l.crypto = None;
                         crate::log!("bluetooth", "disconnected");
@@ -408,14 +421,71 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
             crate::log!("bluetooth", "couldn't ask Windows to keep the link: {e}");
         }
     }
+    describe_params(&device, "at connect");
+    let params = request_relaxed_link(&device);
+    // If the phone's stack tightens the link again later (it renegotiates
+    // whenever another computer connects), ask again.
+    let link_pc = link.clone();
+    let _ = device.ConnectionParametersChanged(&TypedEventHandler::new(
+        move |d: &Option<BluetoothLEDevice>, _: &Option<windows::core::IInspectable>| {
+            if let Some(d) = d {
+                describe_params(d, "changed");
+                let tight = d.GetConnectionParameters().and_then(|p| p.LinkTimeout()).map(|t| t < 200).unwrap_or(false);
+                if tight {
+                    let fresh = request_relaxed_link(d);
+                    if let Ok(mut l) = link_pc.lock() {
+                        if l.device.is_some() {
+                            l.params = fresh;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        },
+    ));
     {
         let mut l = link.lock().unwrap();
         l.mtu_payload = mtu_payload;
         l.session = session;
+        l.params = params;
         l.device = Some(device);
     }
     crate::log!("bluetooth", "subscribed (chunks of {mtu_payload} bytes); waiting for the phone's challenge");
     Ok(())
+}
+
+/// Logs the link's actual parameters. The phone's Bluetooth stack puts new
+/// links on a 720 ms supervision timeout (the Mac's drops every few minutes
+/// were exactly that); this line is how to see whether the PC's link is too.
+fn describe_params(device: &BluetoothLEDevice, when: &str) {
+    match device.GetConnectionParameters() {
+        Ok(p) => crate::log!(
+            "bluetooth",
+            "link parameters {when}: interval {:.1} ms, latency {}, supervision timeout {} ms",
+            p.ConnectionInterval().unwrap_or(0) as f32 * 1.25,
+            p.ConnectionLatency().unwrap_or(0),
+            p.LinkTimeout().unwrap_or(0) as u32 * 10
+        ),
+        Err(_) => {} // Windows 10 doesn't have this API
+    }
+}
+
+/// Asks for "balanced" parameters (a supervision timeout of seconds, not
+/// 720 ms), from our side as the central. The phone does the same for the
+/// Mac's link from its side; for the PC it can't without opening a link back,
+/// which made Windows offer to pair. Windows 11 only; on 10 this is a no-op.
+fn request_relaxed_link(device: &BluetoothLEDevice) -> Option<BluetoothLEPreferredConnectionParametersRequest> {
+    let balanced = BluetoothLEPreferredConnectionParameters::Balanced().ok()?;
+    match device.RequestPreferredConnectionParameters(&balanced) {
+        Ok(r) => {
+            crate::log!("bluetooth", "asked for relaxed link parameters: {:?}", r.Status().ok());
+            Some(r)
+        }
+        Err(e) => {
+            crate::log!("bluetooth", "couldn't ask for link parameters: {e}");
+            None
+        }
+    }
 }
 
 /// Writes the Client Characteristic Configuration descriptor (0x2902) by hand.
@@ -502,6 +572,7 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
                 l.tx = None;
                 l.service = None;
                 l.session = None;
+        l.params = None;
             }
             Step::Ignore => {}
         }

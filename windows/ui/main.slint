@@ -1,7 +1,7 @@
 // Bridge's windows, in the same Material 3 shapes as the phone app.
 // Main window: is my phone reachable, what works right now, what can I do.
 // Settings window: the Mac's four tabs. Mirror window: the phone's screen.
-import { ScrollView, LineEdit } from "std-widgets.slint";
+import { ScrollView, LineEdit, ListView } from "std-widgets.slint";
 import { Theme, Icon, Label, Muted, SectionTitle, Card, PillButton, Toggle, Tile, Divider, Segmented } from "theme.slint";
 
 export struct Capability {
@@ -38,6 +38,7 @@ export global AppState {
     callback pause-phone();
     callback toggle-phone-tunnel();
     callback set-up-over-usb();
+    callback open-files();
     callback open-settings();
     callback open-log-folder();
     callback quit();
@@ -171,6 +172,14 @@ export component MainWindow inherits Window {
                 subtitle: "Switches the phone's internet tunnel over Bluetooth";
                 clickable: true; enabled: AppState.linked;
                 clicked => { AppState.toggle-phone-tunnel(); }
+                Icon { source: @image-url("icons/chevron-right.svg"); }
+            }
+            Divider {}
+            Tile {
+                icon: @image-url("icons/folder-open.svg"); title: "Phone files";
+                subtitle: AppState.mirroring ? "Browse and download, or drop files on the phone window" : "While mirroring";
+                clickable: true; enabled: AppState.mirroring;
+                clicked => { AppState.open-files(); }
                 Icon { source: @image-url("icons/chevron-right.svg"); }
             }
             Divider {}
@@ -410,6 +419,71 @@ export component MirrorWindow inherits Window {
                 root.scroll(px(self.mouse-x), py(self.mouse-y), e.delta-x / 1px, e.delta-y / 1px);
                 accept
             }
+        }
+    }
+}
+
+export struct FileEntry {
+    name: string,
+    detail: string,
+    is-dir: bool,
+}
+
+// The phone's shared storage (what its Files app shows). Click a folder to
+// open it, a file to download it into this PC's Downloads folder. Files
+// dropped on this window go to the phone's Download folder.
+export component FilesWindow inherits Window {
+    title: "Phone files";
+    preferred-width: 520px;
+    min-width: 340px;
+    preferred-height: 620px;
+    min-height: 320px;
+    background: Theme.background;
+    default-font-family: Theme.font;
+    icon: @image-url("../assets/icon-256.png");
+
+    in-out property <string> path: "";
+    in-out property <bool> at-top: true;
+    in-out property <[FileEntry]> entries: [];
+    in-out property <string> status: "";
+    in-out property <bool> loading: false;
+
+    callback open(int);
+    callback up();
+    callback refresh();
+    callback open-downloads();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            PillButton { text: "Up"; icon: @image-url("icons/arrow-up.svg"); enabled: !root.at-top && !root.loading; clicked => { root.up(); } }
+            Label { text: root.path; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; color: Theme.on-surface-variant; }
+            PillButton { text: "Refresh"; icon: @image-url("icons/refresh-cw.svg"); enabled: !root.loading; clicked => { root.refresh(); } }
+        }
+
+        Card {
+            vertical-stretch: 1;
+            ListView {
+                for e[i] in root.entries : Tile {
+                    icon: e.is-dir ? @image-url("icons/folder.svg") : @image-url("icons/file.svg");
+                    title: e.name;
+                    subtitle: e.detail;
+                    clickable: true;
+                    enabled: !root.loading;
+                    clicked => { root.open(i); }
+                    if !e.is-dir : Icon { source: @image-url("icons/download.svg"); }
+                    if e.is-dir : Icon { source: @image-url("icons/chevron-right.svg"); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Muted { text: root.status; vertical-alignment: center; horizontal-stretch: 1; }
+            PillButton { text: "Open Downloads"; kind: "outlined"; icon: @image-url("icons/folder.svg"); clicked => { root.open-downloads(); } }
         }
     }
 }

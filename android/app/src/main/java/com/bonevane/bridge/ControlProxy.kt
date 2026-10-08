@@ -18,7 +18,7 @@ import java.net.Socket
  *    "MODE keep|lock" sets the keep-ready choice; "STATUS".
  *
  * Careful: streams are matched on their first four bytes, so no control command
- * may begin with VIDE, AUDI, CTRL, CLIP, INST, PUSH or NOTI.
+ * may begin with VIDE, AUDI, CTRL, CLIP, INST, PUSH, LIST, PULL or NOTI.
  *    Replies are one line: "OK …" or "ERR …".
  *
  * One ticket and one port carry everything, so the Mac's Connect button can
@@ -66,7 +66,7 @@ class ControlProxy(private val ctx: Context) {
                 n += r
             }
             when (String(head)) {
-                "VIDE", "AUDI", "CTRL", "CLIP", "INST", "PUSH" -> pipeToDaemon(it, head)   // daemon streams
+                "VIDE", "AUDI", "CTRL", "CLIP", "INST", "PUSH", "LIST", "PULL" -> pipeToDaemon(it, head)   // daemon streams
                 "NOTI" -> notifications(it)
                 else -> control(it, head)
             }

@@ -36,6 +36,8 @@ struct Shared {
     target_bitrate: i64,
     level: Mutex<i32>,
     video_size: Mutex<(u16, u16)>,
+    /// One "couldn't send input" line per session, not one per mouse move.
+    send_failed_logged: AtomicBool,
 }
 
 pub struct Session {
@@ -62,6 +64,7 @@ impl Session {
             target_bitrate: target,
             level: Mutex::new(0),
             video_size: Mutex::new((0, 0)),
+            send_failed_logged: AtomicBool::new(false),
         });
         open(&shared)?;
         Ok(Session { shared })
@@ -72,9 +75,19 @@ impl Session {
     }
 
     /// Sends one control message; drops it if the control stream is gone.
+    /// Says so in the log the first time, so "input does nothing" is never silent.
     pub fn send(&self, message: &[u8]) {
-        if let Some(c) = self.shared.control.lock().unwrap().as_mut() {
-            let _ = c.write_all(message);
+        let result = match self.shared.control.lock().unwrap().as_mut() {
+            Some(c) => c.write_all(message).map_err(|e| format!("{e:#}")),
+            None => Err("no control stream (restarting?)".into()),
+        };
+        match result {
+            Ok(()) => self.shared.send_failed_logged.store(false, Ordering::SeqCst),
+            Err(e) => {
+                if !self.shared.send_failed_logged.swap(true, Ordering::SeqCst) {
+                    let _ = self.shared.events.send(SessionEvent::Log(format!("input not sent: {e}")));
+                }
+            }
         }
     }
 
@@ -198,6 +211,16 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
             match decoder.handle(&data, is_config, is_key, pts) {
                 Ok(frames) => {
                     for f in frames {
+                        // Input coordinates are scaled against the video size.
+                        // If the server's size packet never came (or didn't
+                        // parse), take it from the picture itself rather than
+                        // dropping every click as "size unknown".
+                        // Only when unknown: the decoder may pad to a multiple of 16,
+                        // and the server's own figure is the exact one.
+                        if *shared.video_size.lock().unwrap() == (0, 0) {
+                            *shared.video_size.lock().unwrap() = (f.width as u16, f.height as u16);
+                            let _ = shared.events.send(SessionEvent::Size(f.width, f.height));
+                        }
                         (shared.frames)(f);
                     }
                 }

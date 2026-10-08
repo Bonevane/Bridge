@@ -135,6 +135,13 @@ struct MenuView: View {
                 }
             }
 
+            if bridge.isConnected {
+                MenuRow("Phone Files…", systemImage: "folder",
+                        help: "Browse the phone's storage and download files; drop files on the phone window to send them") {
+                    bridge.openPhoneFiles()
+                }
+            }
+
             MenuRow("Set Up Over USB…", systemImage: "cable.connector",
                     help: "Pair a phone that's plugged in") {
                 bridge.setUpOverUSB()

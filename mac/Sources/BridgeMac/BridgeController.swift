@@ -615,6 +615,21 @@ final class BridgeController: ObservableObject {
         }
     }
 
+    // MARK: - Phone files
+
+    private var filesWindow: PhoneFilesWindow?
+
+    /// Browse the phone's shared storage. Needs the session's tunnel and helper.
+    func openPhoneFiles() {
+        guard isConnected else { return }
+        let window = filesWindow ?? PhoneFilesWindow(port: localPort)
+        filesWindow = window
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.model.list(window.model.path)
+    }
+
     // MARK: - Disconnect
 
     // MARK: - Session liveness
@@ -1085,6 +1100,7 @@ final class BridgeController: ObservableObject {
         session?.stop()
         session = nil
         if let w = sessionWindow { sessionWindow = nil; w.onClose = nil; w.close() }
+        filesWindow?.close()   // it needs the session's tunnel
         NSApp.setActivationPolicy(.accessory)   // back to menu-bar only
         if let m = oldMirror, m.isRunning { m.terminate() }
         if let adb = Shell.find("adb") {

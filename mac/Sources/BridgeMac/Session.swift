@@ -134,24 +134,15 @@ final class Session {
 
     /// Sends a dropped file to the phone's Download folder over its own stream.
     /// Runs on a background thread; `completion` gets the phone's reply line.
+    /// Streams from disk (it used to read the whole file into memory first,
+    /// which a multi-gigabyte video could not survive).
     func pushFile(_ url: URL, completion: @escaping (String) -> Void) {
         let port = self.port
         Thread {
-            // One command per line: keep line breaks and other control
-            // characters out of the name.
-            let name = String(url.lastPathComponent.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 })
-            guard let data = try? Data(contentsOf: url) else {
-                completion("Couldn't read \(name)"); return
-            }
             do {
-                let s = try TCPStream(port: port, timeout: 120)
-                try s.write("PUSH \(data.count) \(name)\n")
-                try s.write([UInt8](data))
-                let reply = try s.readLine()
-                s.closeStream()
-                completion(reply.hasPrefix("OK ") ? String(reply.dropFirst(3)) : reply)
+                completion(try PhoneFiles.push(port: port, url: url) { _, _ in })
             } catch {
-                completion("Couldn't send \(name): \(error.localizedDescription)")
+                completion("Couldn't send \(url.lastPathComponent): \(error.localizedDescription)")
             }
         }.start()
     }

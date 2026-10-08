@@ -472,6 +472,19 @@ class BleLink(private val context: Context) {
      * supervision timeout is outside Apple's accessory limits (2–6 s), so
      * macOS rejects the update and the link stays on the 720 ms timeout.
      */
+    /**
+     * Re-pins now and again a little later. The stack tightens the existing
+     * links *after* a new central connects (or drops), so pinning only at
+     * that instant got overwritten a moment later and the Mac then timed out
+     * within seconds; that was the run of 15-second drops whenever another
+     * device was trying to connect.
+     */
+    private fun repinSoon() {
+        repinAll()
+        main.postDelayed({ repinAll() }, 1_500)
+        main.postDelayed({ repinAll() }, 5_000)
+    }
+
     @SuppressLint("MissingPermission")
     private fun repinAll() {
         paramGatts.values.forEach { runCatching { it.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) } }
@@ -514,9 +527,10 @@ class BleLink(private val context: Context) {
                 // starts. Windows' plain door never bonds and is left alone.
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     if (device.bondState != BluetoothDevice.BOND_NONE) pinConnectionParameters(device)
-                    repinAll()      // a new link resets the others' parameters
+                    repinSoon()     // a new link resets the others' parameters
                 }
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    repinSoon()     // a link going away renegotiates the rest too
                     mtus.remove(device)
                     val peer = peers.remove(device) ?: return   // a stranger leaving; not our link
                     paramGatts.remove(device)?.let { runCatching { it.close() } }
@@ -711,7 +725,15 @@ class BleLink(private val context: Context) {
                 TunnelService.current?.clipboard?.lastValue = message
                 context.getSystemService(android.content.ClipboardManager::class.java)
                     .setPrimaryClip(android.content.ClipData.newPlainText("Bridge", message))
-                TunnelState.log("Clipboard from the Mac over Bluetooth")
+                TunnelState.log("Clipboard from the ${peer.label} over Bluetooth")
+            }
+            // Pass it on to every other linked computer, so a copy on the Mac
+            // reaches the PC too (and the other way round). Before, it stopped
+            // at the phone: the watcher deliberately doesn't echo what a
+            // computer sent, so the other computer never saw it.
+            peers.values.filter { it !== peer && it.verified }.forEach { other ->
+                sendTo(other, TYPE_CLIPBOARD, message)
+                TunnelState.log("Clipboard passed on to the ${other.label}")
             }
         }
     }

@@ -181,6 +181,24 @@ fun BridgeScreen(
             )
 
             val setupDone = Prefs.setupDone(context)
+            if (mode != Mode.OFF && TunnelState.bluetoothOff) {
+                // Say it plainly: with Bluetooth off nothing reaches the
+                // computer and it can't wake the tunnel for mirroring.
+                Notice(
+                    icon = Icons.Rounded.BluetoothDisabled,
+                    title = "Bluetooth is off",
+                    body = "Notifications and clipboard can't reach your computer, and it can't wake the " +
+                        "phone for mirroring unless the mode is Anywhere.",
+                    action = "Turn on" to {
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    },
+                )
+            }
             if (!setupDone) {
                 GettingStarted(accessItems = accessItems, ticket = ticket, onGrantAccess = onGrantAccess)
             } else if (keepReady && helperAlive == false) {
@@ -343,7 +361,7 @@ private fun HeroCard(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatusChip(
                         icon = Icons.Rounded.Laptop,
-                        text = if (macLinked) "Mac linked" else "No Mac nearby",
+                        text = if (macLinked) "Computer linked" else "No computer nearby",
                         on = macLinked,
                     )
                     if (mode == Mode.ANYWHERE) StatusChip(

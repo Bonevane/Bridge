@@ -19,6 +19,10 @@ object TunnelState {
     @Volatile var macLinked = false
         set(value) { if (field != value) { field = value; notifyListeners() } }
 
+    /** The phone's own Bluetooth is switched off, so no computer can link. */
+    @Volatile var bluetoothOff = false
+        set(value) { if (field != value) { field = value; notifyListeners() } }
+
     /** When the Mac last said anything, and how many streams it has open now. */
     @Volatile var lastMacContact = 0L
     val openStreams = java.util.concurrent.atomic.AtomicInteger(0)

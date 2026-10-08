@@ -65,6 +65,35 @@ pub enum Event {
     FilesListed(Result<(String, Vec<crate::files::Entry>), String>),
     FileProgress(String),
     FileDone(Result<String, String>),
+    /// This PC's Bluetooth radio: Some(on) when known, None if it has none.
+    Radio(Option<bool>),
+}
+
+/// Watches this PC's Bluetooth radio, so the app can say "Bluetooth is off"
+/// instead of "looking for your phone" forever, and start the link the
+/// moment it's switched back on. Keep the returned Radio alive: dropping it
+/// drops the subscription.
+pub fn watch_radio(events: Sender<Event>) -> Option<windows::Devices::Radios::Radio> {
+    use windows::Devices::Radios::{Radio, RadioState};
+    let adapter = match windows::Devices::Bluetooth::BluetoothAdapter::GetDefaultAsync().and_then(|op| op.get()) {
+        Ok(a) => a,
+        Err(_) => {
+            let _ = events.send(Event::Radio(None));
+            return None;
+        }
+    };
+    let radio = adapter.GetRadioAsync().and_then(|op| op.get()).ok()?;
+    let _ = events.send(Event::Radio(Some(radio.State().map(|s| s == RadioState::On).unwrap_or(true))));
+    let tx = events.clone();
+    radio
+        .StateChanged(&TypedEventHandler::new(move |r: &Option<Radio>, _: &Option<windows::core::IInspectable>| {
+            if let Some(r) = r {
+                let _ = tx.send(Event::Radio(Some(r.State()? == RadioState::On)));
+            }
+            Ok(())
+        }))
+        .ok()?;
+    Some(radio)
 }
 
 /// The live link, shared between the WinRT callbacks and the app.

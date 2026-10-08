@@ -152,10 +152,12 @@ class BleLink(private val context: Context) {
             override fun onReceive(ctx: Context, intent: Intent) {
                 when (intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1)) {
                     android.bluetooth.BluetoothAdapter.STATE_OFF -> {
+                        TunnelState.bluetoothOff = true
                         TunnelState.log("Bluetooth: turned off; link closed")
                         teardown()
                     }
                     android.bluetooth.BluetoothAdapter.STATE_ON -> {
+                        TunnelState.bluetoothOff = false
                         TunnelState.log("Bluetooth: back on; restarting the link")
                         restartWhenReady(1)
                     }
@@ -238,9 +240,11 @@ class BleLink(private val context: Context) {
         val manager = context.getSystemService(BluetoothManager::class.java)
         val adapter = manager?.adapter
         if (adapter == null || !adapter.isEnabled) {
+            TunnelState.bluetoothOff = adapter != null
             TunnelState.log("Bluetooth: turned off")
             return
         }
+        TunnelState.bluetoothOff = false
 
         val characteristicTx = BluetoothGattCharacteristic(
             TX,

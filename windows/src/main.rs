@@ -87,6 +87,11 @@ struct App {
     rescan_at: Option<Instant>,
     /// Bluetooth couldn't start (radio off, or not ready yet at login): try again then.
     retry_ble_at: Option<Instant>,
+    /// This PC's Bluetooth radio (kept alive for its change events) and
+    /// whether it's on: None until known, or if there's no adapter at all.
+    radio: Option<windows::Devices::Radios::Radio>,
+    pc_bluetooth: Option<bool>,
+    no_adapter: bool,
     usb_busy: bool,
     /// The last failure (title, detail, from USB setup?). Stays on the hero
     /// card until the next action, so a heartbeat can't wipe it before it's read.
@@ -130,6 +135,9 @@ impl App {
             last_tick: Instant::now(),
             rescan_at: None,
             retry_ble_at: None,
+            radio: None,
+            pc_bluetooth: None,
+            no_adapter: false,
             usb_busy: false,
             error: None,
             icons_requested: BTreeSet::new(),
@@ -186,6 +194,10 @@ impl App {
             )
         } else if !self.settings.use_bluetooth {
             ("Phone not nearby", "Bluetooth is switched off in Bridge's settings.", 0)
+        } else if self.no_adapter {
+            ("No Bluetooth on this PC", "Notifications and clipboard need Bluetooth. Mirroring still works if the phone's tunnel is on (Anywhere).", 2)
+        } else if self.pc_bluetooth == Some(false) {
+            ("Bluetooth is off", "Turn it on in Quick Settings (Win+A) for notifications and clipboard. Mirroring still works if the phone's tunnel is on.", 2)
         } else {
             ("Looking for your phone", "Searching over Bluetooth. Mirroring still works if its tunnel is on.", 0)
         };
@@ -201,13 +213,13 @@ impl App {
         let notif_on = self.settings.mirror_notifications;
         ui.set_notifications(Capability {
             name: "Notifications".into(),
-            detail: if !notif_on { "Off in Settings" } else if self.linked { "Over Bluetooth" } else { "When the phone is nearby" }.into(),
+            detail: if !notif_on { "Off in Settings" } else if self.linked { "Over Bluetooth" } else if self.pc_bluetooth == Some(false) { "Bluetooth is off on this PC" } else { "When the phone is nearby" }.into(),
             state: if notif_on && self.linked { 2 } else { 0 },
         });
         let clip_on = self.settings.sync_clipboard;
         ui.set_clipboard(Capability {
             name: "Clipboard".into(),
-            detail: if !clip_on { "Off in Settings" } else if self.linked { "Both ways, over Bluetooth" } else { "When the phone is nearby" }.into(),
+            detail: if !clip_on { "Off in Settings" } else if self.linked { "Both ways, over Bluetooth" } else if self.pc_bluetooth == Some(false) { "Bluetooth is off on this PC" } else { "When the phone is nearby" }.into(),
             state: if clip_on && self.linked { 2 } else { 0 },
         });
 
@@ -296,10 +308,15 @@ impl App {
                 self.retry_ble_at = None;
             }
             Err(e) => {
-                // At login the radio can take a while to come up (0x800710DF,
-                // "the device is not ready"); don't give up on it.
-                self.log("bluetooth", &format!("couldn't start: {e:#}; trying again in 10 s"));
-                self.retry_ble_at = Some(Instant::now() + Duration::from_secs(10));
+                if self.pc_bluetooth == Some(false) {
+                    // Off: the radio watcher starts the link when it's switched on.
+                    self.log("bluetooth", "Bluetooth is off on this PC; waiting for it to be turned on");
+                } else {
+                    // At login the radio can take a while to come up (0x800710DF,
+                    // "the device is not ready"); don't give up on it.
+                    self.log("bluetooth", &format!("couldn't start: {e:#}; trying again in 10 s"));
+                    self.retry_ble_at = Some(Instant::now() + Duration::from_secs(10));
+                }
             }
         }
         self.refresh();
@@ -919,6 +936,27 @@ impl App {
                 }
                 return;
             }
+            Event::Radio(state) => {
+                self.no_adapter = state.is_none();
+                let was = self.pc_bluetooth;
+                self.pc_bluetooth = state;
+                match state {
+                    Some(false) if was != Some(false) => {
+                        self.log("bluetooth", "Bluetooth was turned off on this PC");
+                        self.linked = false;
+                        self.retry_ble_at = None;
+                    }
+                    Some(true) if was == Some(false) => {
+                        self.log("bluetooth", "Bluetooth is back on; reconnecting");
+                        if let Some(mut b) = self.ble.take() {
+                            b.stop();
+                        }
+                        self.start_bluetooth();
+                    }
+                    None => self.log("bluetooth", "this PC has no Bluetooth adapter"),
+                    _ => {}
+                }
+            }
             Event::FileProgress(text) => {
                 self.files_window.set_status(text.into());
                 return;
@@ -1241,8 +1279,12 @@ fn main() {
         });
     }
 
-    app.borrow_mut().start_bluetooth();
-    app.borrow_mut().refresh();
+    {
+        let mut a = app.borrow_mut();
+        a.radio = ble::watch_radio(a.events_tx.clone());
+        a.start_bluetooth();
+        a.refresh();
+    }
 
     // Drain events, the clipboard and the tray on the UI thread.
     let timer = Timer::default();

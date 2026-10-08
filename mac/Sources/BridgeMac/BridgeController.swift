@@ -770,11 +770,14 @@ final class BridgeController: ObservableObject {
         return .working("Ready to connect")
     }
 
+    /// The Mac's own radio is off (not just "phone out of range").
+    var macBluetoothOff: Bool { useBluetooth && isPaired && bluetoothState == .off }
+
     var notificationCapability: Capability {
         if !mirrorNotifications { return .off("Switched off") }
         if bluetoothLinked { return .working("Over Bluetooth") }
         if notificationsAnywhere { return .limited("Phone is far: using the tunnel") }
-        return .off("Phone out of Bluetooth range")
+        return .off(macBluetoothOff ? "Bluetooth is off on this Mac" : "Phone out of Bluetooth range")
     }
 
     var clipboardCapability: Capability {
@@ -785,7 +788,7 @@ final class BridgeController: ObservableObject {
                 ? .working("Both ways, over Bluetooth")
                 : .limited("Mac to phone only — turn on \"Keep the phone ready\" for both")
         }
-        return .off("Phone out of Bluetooth range")
+        return .off(macBluetoothOff ? "Bluetooth is off on this Mac" : "Phone out of Bluetooth range")
     }
 
     // MARK: - Settings sync with the phone

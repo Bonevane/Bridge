@@ -249,11 +249,13 @@ struct MenuView: View {
                          detail: "Allow Bridge to use Bluetooth in System Settings › Privacy & Security.",
                          symbol: "exclamationmark.triangle.fill", tint: .orange)
         case .off:
-            return Reach(title: "Phone not nearby",
-                         detail: bridge.useBluetooth
-                            ? "Bluetooth is off on this Mac."
-                            : "Bluetooth is switched off in Bridge's settings.",
-                         symbol: "iphone.slash", tint: .secondary)
+            return bridge.useBluetooth
+                ? Reach(title: "Bluetooth is off",
+                        detail: "Turn Bluetooth on in Control Center for notifications and clipboard. Mirroring still works if the phone's tunnel is on.",
+                        symbol: "exclamationmark.triangle.fill", tint: .orange)
+                : Reach(title: "Phone not nearby",
+                        detail: "Bluetooth is switched off in Bridge's settings.",
+                        symbol: "iphone.slash", tint: .secondary)
         case .linked:
             break   // handled above
         }

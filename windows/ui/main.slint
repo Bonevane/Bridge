@@ -1,8 +1,8 @@
 // Bridge's windows, in the same Material 3 shapes as the phone app.
 // Main window: is my phone reachable, what works right now, what can I do.
 // Settings window: the Mac's four tabs. Mirror window: the phone's screen.
-import { ScrollView, LineEdit, ListView, TextEdit, ProgressBar } from "std-widgets.slint";
-import { Theme, Icon, Label, Muted, SectionTitle, Card, PillButton, Toggle, Tile, Divider, Segmented } from "theme.slint";
+import { ScrollView, LineEdit, ListView, TextEdit } from "std-widgets.slint";
+import { Theme, Icon, Label, Muted, SectionTitle, Card, PillButton, Toggle, Tile, Divider, Segmented, LinearProgress } from "theme.slint";
 
 export struct Capability {
     name: string,
@@ -440,7 +440,7 @@ export component MirrorWindow inherits Window {
             padding: 12px;
             spacing: 6px;
             Text { text: root.transfer-text; color: white; font-size: 12px; overflow: elide; }
-            ProgressBar { value: root.transfer-progress; }
+            LinearProgress { value: root.transfer-progress; }
         }
     }
 }
@@ -504,7 +504,7 @@ export component FilesWindow inherits Window {
             }
         }
 
-        if root.progress >= 0 : ProgressBar { value: root.progress; }
+        if root.progress >= 0 : LinearProgress { value: root.progress; }
         HorizontalLayout {
             spacing: 8px;
             Muted { text: root.status; vertical-alignment: center; horizontal-stretch: 1; }

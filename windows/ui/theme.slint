@@ -193,3 +193,19 @@ export component Segmented inherits Rectangle {
         }
     }
 }
+
+// Material 3 linear progress indicator.
+export component LinearProgress inherits Rectangle {
+    in property <float> value;
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.surface-highest;
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.value, 0, 1);
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: Theme.primary;
+        animate width { duration: 200ms; }
+    }
+}

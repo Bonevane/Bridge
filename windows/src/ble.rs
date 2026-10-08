@@ -87,6 +87,8 @@ struct Link {
     handshake: Handshake,
     verified: bool,
     last_heard: Instant,
+    /// When we last asked a quiet phone to speak (see tick).
+    probed_at: Option<Instant>,
     mtu_payload: usize,
     crypto: Option<SessionCrypto>,
     /// Set by stop(): a connect still running for this link must give up
@@ -123,6 +125,7 @@ impl Ble {
                 handshake: Handshake::new(secret),
                 verified: false,
                 last_heard: Instant::now(),
+                probed_at: None,
                 mtu_payload: 20,
                 crypto: None,
                 stopped: false,
@@ -246,22 +249,42 @@ impl Ble {
     }
 
     /// Called every few seconds by the app: notices a silent link and rescans.
-    /// A verified link gets 90 s (the phone's heartbeat is every 30 s); one
-    /// still waiting for the phone's challenge gets 20 s, like the Mac.
+    /// A link still waiting for the phone's challenge gets 20 s, like the Mac.
+    /// A verified one that goes quiet for 60 s is *asked* for its status
+    /// first: an idle phone's CPU sleeps and its 30 s heartbeat timer with it,
+    /// while the link itself is fine. A write from us wakes its app, which
+    /// answers. Only no answer within 20 s counts as dead (dropping on silence
+    /// alone redialled a healthy link every ~100 s whenever the phone idled).
     pub fn tick(&mut self) {
+        let mut probe = false;
         let (dead, why) = {
-            let l = self.link.lock().unwrap();
+            let mut l = self.link.lock().unwrap();
             let silent = l.last_heard.elapsed();
             if l.device.is_none() {
                 (false, "")
             } else if l.verified {
-                (silent > Duration::from_secs(90), "phone stopped answering")
+                if silent > Duration::from_secs(60) {
+                    match l.probed_at {
+                        Some(at) if at > l.last_heard => (at.elapsed() > Duration::from_secs(20), "phone didn't answer"),
+                        _ => {
+                            l.probed_at = Some(Instant::now());
+                            probe = true;
+                            (false, "")
+                        }
+                    }
+                } else {
+                    (false, "")
+                }
             } else {
                 (silent > Duration::from_secs(20), "the phone never sent its challenge")
             }
         };
+        if probe {
+            let _ = self.send_command("status");
+        }
         if dead {
             crate::log!("bluetooth", "{why}, reconnecting");
+            self.link.lock().unwrap().probed_at = None;
             self.stop();
             let _ = self.events.send(Event::Dropped("no heartbeat".into()));
             let _ = self.start();

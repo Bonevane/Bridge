@@ -49,6 +49,8 @@ final class BluetoothLink: NSObject {
     private var watchdog: Timer?
     /// When the phone last said anything. Its heartbeat arrives every 30 s.
     private var lastHeard = Date.distantPast
+    /// When we last asked a quiet phone to speak (see ensureScanning).
+    private var probedAt: Date?
     /// Our half of the handshake: the nonce the phone must sign back.
     private var ourNonce: String?
     /// Set once the phone has proved it knows the pairing secret.
@@ -131,9 +133,24 @@ final class BluetoothLink: NSObject {
         // A link can look alive long after the phone's app was replaced: the
         // Bluetooth connection survives even though the service behind it is
         // gone. Missing two heartbeats means it's really finished.
-        if isLinked, Date().timeIntervalSince(lastHeard) > 90 {
-            log("Bluetooth: phone stopped answering, reconnecting")
-            isLinked = false
+        // The phone's 30 s heartbeat is a timer, and an idle phone's CPU
+        // sleeps, timers with it: the radio keeps the link but the app goes
+        // quiet. Dropping it after 90 s of silence meant tearing down a
+        // healthy link and redialling every ~100 s all night (and waking the
+        // phone each time). So ask first: a write from us wakes the phone's
+        // app, which answers with its status. Only no answer to that is dead.
+        let silent = Date().timeIntervalSince(lastHeard)
+        if isLinked, silent > 60 {
+            if let asked = probedAt, asked > lastHeard {
+                if Date().timeIntervalSince(asked) > 20 {
+                    log("Bluetooth: phone didn't answer, reconnecting")
+                    probedAt = nil
+                    isLinked = false
+                }
+            } else {
+                probedAt = Date()
+                requestStatus()
+            }
         }
         guard !isLinked else { return }
         // A connection that's mid-handshake is not stale: give it the tick

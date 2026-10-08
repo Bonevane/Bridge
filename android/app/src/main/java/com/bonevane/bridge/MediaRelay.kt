@@ -208,7 +208,13 @@ object MediaRelay {
                     "prev" -> t.skipToPrevious()
                     "seek" -> words.getOrNull(1)?.toLongOrNull()?.let { t.seekTo(it) }
                 }
-            }.onSuccess { TunnelState.log("Media: ${words.firstOrNull()} sent to ${c.packageName}") }
+            }.onSuccess {
+                // State and where it plays, to tell "Spotify Connect: playing on
+                // another device" (remote) from "playing on this phone".
+                val remote = c.playbackInfo?.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE
+                TunnelState.log("Media: ${words.firstOrNull()} sent to ${c.packageName} " +
+                    "(its state ${c.playbackState?.state}, ${if (remote) "playing on another device" else "playing on this phone"})")
+            }
                 .onFailure { TunnelState.log("Media: ${words.firstOrNull()} failed: ${it.message}") }
         }
     }

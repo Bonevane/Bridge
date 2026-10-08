@@ -31,9 +31,6 @@ impl Tunnel {
     }
 
     pub fn start(ticket: &str) -> Result<Tunnel> {
-        // A previous Bridge that was killed leaves its dumbpipe holding the
-        // port; the new one would then fail with "address in use".
-        Self::reap_stale();
         let exe = Self::dumbpipe()?;
         let mut child = Command::new(&exe)
             .args(["connect-tcp", "--addr", &format!("127.0.0.1:{LOCAL_PORT}"), ticket])
@@ -43,6 +40,7 @@ impl Tunnel {
             .creation_flags_no_window()
             .spawn()
             .with_context(|| format!("starting {}", exe.display()))?;
+        tie_to_this_process(&child);
         crate::log!("tunnel", "dumbpipe started");
         if let Some(stderr) = child.stderr.take() {
             std::thread::spawn(move || {
@@ -65,17 +63,48 @@ impl Tunnel {
         let _ = self.child.wait();
         crate::log!("tunnel", "dumbpipe stopped");
     }
-
-    fn reap_stale() {
-        // Only dumbpipe processes; never someone else's server on the port.
-        let _ = Command::new("taskkill").args(["/F", "/IM", "dumbpipe.exe"]).stdout(Stdio::null()).stderr(Stdio::null())
-            .creation_flags_no_window().status();
-    }
 }
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+/// Puts a child in a job object that Windows kills when Bridge exits, for
+/// whatever reason (quit, crash, Task Manager). That's what keeps a stray
+/// dumbpipe from holding the port after a crash. It replaces running
+/// `taskkill /F /IM dumbpipe.exe` before every start, which is the kind of
+/// "kill processes by name" behaviour antivirus heuristics flag.
+fn tie_to_this_process(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    // One job for the app's lifetime; its handle closes when the process ends.
+    static JOB: OnceLock<Option<usize>> = OnceLock::new();
+    let job = JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(None, windows::core::PCWSTR::null()).ok()?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .ok()?;
+        Some(job.0 as usize)
+    });
+    if let Some(job) = job {
+        unsafe {
+            if let Err(e) = AssignProcessToJobObject(HANDLE(*job as *mut _), HANDLE(child.as_raw_handle() as *mut _)) {
+                crate::log!("tunnel", "couldn't tie dumbpipe to Bridge's lifetime: {e}");
+            }
+        }
     }
 }
 

@@ -5,6 +5,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -175,7 +177,7 @@ fun BridgeScreen(
             HeroCard(
                 mode = mode,
                 status = TunnelState.status,
-                macLinked = TunnelState.macLinked,
+                linked = TunnelState.linkedComputers,
                 helperAlive = helperAlive,
                 onModeChange = onModeChange,
             )
@@ -311,11 +313,12 @@ fun BridgeScreen(
 
 // MARK: - Hero
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HeroCard(
     mode: Mode,
     status: String,
-    macLinked: Boolean,
+    linked: List<String>,
     helperAlive: Boolean?,
     onModeChange: (Mode) -> Unit,
 ) {
@@ -358,12 +361,15 @@ private fun HeroCard(
             )
             if (mode != Mode.OFF) {
                 Spacer(Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusChip(
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // One chip per linked computer, so a Mac and a PC both show.
+                    if (linked.isEmpty()) StatusChip(
                         icon = Icons.Rounded.Laptop,
-                        text = if (macLinked) "Computer linked" else "No computer nearby",
-                        on = macLinked,
-                    )
+                        text = "No computer nearby",
+                        on = false,
+                    ) else linked.forEach { name ->
+                        StatusChip(icon = Icons.Rounded.Laptop, text = name, on = true)
+                    }
                     if (mode == Mode.ANYWHERE) StatusChip(
                         icon = Icons.Rounded.Bolt,
                         text = when (helperAlive) { true -> "Helper running"; false -> "Helper off"; null -> "Checking…" },

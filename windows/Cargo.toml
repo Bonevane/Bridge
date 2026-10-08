@@ -28,6 +28,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_System_JobObjects",
 ] }
 # The pairing handshake (HMAC-SHA256), same as the phone and the Mac.
 hmac = "0.12"

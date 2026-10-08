@@ -130,7 +130,15 @@ class BleLink(private val context: Context) {
         private set(value) { field = value; TunnelState.macLinked = value }
     @Volatile private var beating = false
 
-    private fun updateConnected() { connected = peers.values.any { it.verified } }
+    @SuppressLint("MissingPermission")
+    private fun updateConnected() {
+        val linked = peers.values.filter { it.verified }
+        connected = linked.isNotEmpty()
+        // Each linked computer by its Bluetooth name, falling back to Mac/PC.
+        TunnelState.linkedComputers = linked.map { p ->
+            runCatching { p.device.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: p.label
+        }.sorted()
+    }
 
     private val notificationListener: (String) -> Unit = { line ->
         send(TYPE_NOTIFICATION, line)
@@ -227,6 +235,7 @@ class BleLink(private val context: Context) {
         peers.clear()
         mtus.clear()
         connected = false
+        TunnelState.linkedComputers = emptyList()
         paramGatts.values.forEach { runCatching { it.close() } }; paramGatts.clear()
     }
 

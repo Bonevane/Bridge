@@ -15,8 +15,12 @@ object TunnelState {
     @Volatile var ready = false
     @Volatile var status = "Stopped"
     @Volatile var ticket: String? = null
-    /** A Mac is subscribed over Bluetooth right now. */
+    /** A computer is linked (verified) over Bluetooth right now. */
     @Volatile var macLinked = false
+        set(value) { if (field != value) { field = value; notifyListeners() } }
+
+    /** Every computer linked right now, by name ("Bonevane's MacBook Pro", "PC"). */
+    @Volatile var linkedComputers: List<String> = emptyList()
         set(value) { if (field != value) { field = value; notifyListeners() } }
 
     /** The phone's own Bluetooth is switched off, so no computer can link. */

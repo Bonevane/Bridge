@@ -90,17 +90,38 @@ impl Settings {
 }
 
 /// HKCU\Software\Microsoft\Windows\CurrentVersion\Run, the per-user autostart list.
+///
+/// Written with the registry API, and only when the choice changes. It used
+/// to run a hidden `reg.exe add …\Run` on every settings save: exactly the
+/// "spawns a hidden process to install itself at startup" pattern antivirus
+/// heuristics look for, and part of why Bridge.exe was flagged.
 fn apply_launch_at_login(on: bool) {
-    let Ok(exe) = std::env::current_exe() else { return };
-    // --tray: start in the tray without opening the window (see main.rs).
-    let value = format!("\"{}\" --tray", exe.display());
-    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    let mut cmd = std::process::Command::new("reg");
-    if on {
-        cmd.args(["add", key, "/v", "Bridge", "/t", "REG_SZ", "/d", &value, "/f"]);
-    } else {
-        cmd.args(["delete", key, "/v", "Bridge", "/f"]);
+    use std::sync::Mutex;
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+    static APPLIED: Mutex<Option<bool>> = Mutex::new(None);
+    let mut applied = APPLIED.lock().unwrap();
+    if *applied == Some(on) {
+        return;
     }
-    use std::os::windows::process::CommandExt;
-    let _ = cmd.creation_flags(0x0800_0000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    let key = HSTRING::from(r"Software\Microsoft\Windows\CurrentVersion\Run");
+    let name = HSTRING::from("Bridge");
+    unsafe {
+        if on {
+            let Ok(exe) = std::env::current_exe() else { return };
+            // --tray: start in the tray without opening the window (see main.rs).
+            let value: Vec<u16> = format!("\"{}\" --tray", exe.display()).encode_utf16().chain(Some(0)).collect();
+            let _ = RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                REG_SZ.0,
+                Some(value.as_ptr() as *const _),
+                (value.len() * 2) as u32,
+            );
+        } else {
+            let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, PCWSTR(key.as_ptr()), PCWSTR(name.as_ptr()));
+        }
+    }
+    *applied = Some(on);
 }

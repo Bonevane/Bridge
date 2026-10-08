@@ -23,6 +23,13 @@ object TunnelState {
     @Volatile var linkedComputers: List<String> = emptyList()
         set(value) { if (field != value) { field = value; notifyListeners() } }
 
+    /** Video streams open right now: more than zero means a computer is mirroring. */
+    val videoStreams = java.util.concurrent.atomic.AtomicInteger(0)
+    /** Who asked for the last session (sent with START), for "Mirroring to …". */
+    @Volatile var sessionBy: String = ""
+
+    val mirroring: Boolean get() = videoStreams.get() > 0
+
     /** The phone's own Bluetooth is switched off, so no computer can link. */
     @Volatile var bluetoothOff = false
         set(value) { if (field != value) { field = value; notifyListeners() } }

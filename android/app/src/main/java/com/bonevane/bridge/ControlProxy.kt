@@ -80,10 +80,14 @@ class ControlProxy(private val ctx: Context) {
         if (TunnelState.openStreams.incrementAndGet() == 1) {
             TunnelService.current?.holdWifiAwake(true)
         }
+        // The video stream is what "mirroring" means on the phone's screen.
+        val video = String(head) == "VIDE"
+        if (video && TunnelState.videoStreams.incrementAndGet() == 1) TunnelState.notifyListeners()
         try { pipeToDaemonInner(client, head) } finally {
             if (TunnelState.openStreams.decrementAndGet() == 0) {
                 TunnelService.current?.holdWifiAwake(false)
             }
+            if (video && TunnelState.videoStreams.decrementAndGet() == 0) TunnelState.notifyListeners()
             TunnelState.macSeen()
         }
     }
@@ -168,7 +172,11 @@ class ControlProxy(private val ctx: Context) {
         fun reply(s: String) { out.write("$s\n".toByteArray()); out.flush() }
         TunnelState.log("Mac: $line")
         when (line.substringBefore(' ')) {
-            "START" -> runCatching { DaemonManager.start(ctx) }
+            // "START by=<computer name>": the name is for "Mirroring to …".
+            "START" -> runCatching {
+                line.substringAfter("by=", "").trim().takeIf { it.isNotEmpty() }?.let { TunnelState.sessionBy = it.take(60) }
+                DaemonManager.start(ctx)
+            }
                 .onSuccess { reply("OK daemon running") }
                 .onFailure { reply("ERR ${it.message}") }
             "STOP" -> {

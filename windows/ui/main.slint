@@ -61,6 +61,7 @@ export global AppState {
     callback toggle-phone-tunnel();
     callback set-up-over-usb();
     callback open-files();
+    callback pair-from-clipboard();
     callback open-settings();
     callback open-log-folder();
     callback quit();
@@ -304,10 +305,16 @@ export component MainWindow inherits Window {
                 Muted { text: AppState.reach-detail; font-size: 12px; color: Theme.on-surface; }
                 Rectangle { height: 8px; }
                 PillButton {
-                    text: AppState.mirroring || AppState.busy ? "Disconnect" : AppState.usb-retry ? "Set up over USB again" : AppState.windows-paired ? "Unpair it in Windows" : AppState.paired ? "Mirror phone" : "Pair from clipboard";
+                    text: AppState.mirroring || AppState.busy ? "Disconnect" : AppState.usb-retry ? "Set up over USB again" : AppState.windows-paired ? "Unpair it in Windows" : AppState.paired ? "Mirror phone" : "Set up over USB";
                     kind: "filled";
-                    icon: AppState.mirroring || AppState.busy ? @image-url("icons/x.svg") : AppState.usb-retry ? @image-url("icons/usb.svg") : AppState.windows-paired ? @image-url("icons/bluetooth-off.svg") : AppState.paired ? @image-url("icons/screen-share.svg") : @image-url("icons/key-round.svg");
+                    icon: AppState.mirroring || AppState.busy ? @image-url("icons/x.svg") : AppState.usb-retry ? @image-url("icons/usb.svg") : AppState.windows-paired ? @image-url("icons/bluetooth-off.svg") : AppState.paired ? @image-url("icons/screen-share.svg") : @image-url("icons/usb.svg");
                     clicked => { AppState.primary(); }
+                }
+                // No cable handy: the ticket copied from the phone works too.
+                if !AppState.paired && !AppState.busy : PillButton {
+                    text: "Pair from the clipboard instead";
+                    kind: "outlined";
+                    clicked => { AppState.pair-from-clipboard(); }
                 }
             }
         }
@@ -534,6 +541,37 @@ export component SettingsWindow inherits Window {
     }
 }
 
+// One button of the phone window's bar; names itself on hover, to the left
+// (over the picture, where there's room).
+component BarButton inherits Rectangle {
+    in property <image> source;
+    in property <string> hint;
+    out property <bool> hovered: area.has-hover;
+    callback clicked();
+    width: 44px;
+    height: 32px;
+    Rectangle {
+        x: 6px; width: 32px; height: 32px; border-radius: 16px;
+        background: area.pressed ? Theme.surface-highest : area.has-hover ? Theme.surface-high : transparent;
+        Icon { source: root.source; tint: Theme.on-surface; width: 20px; height: 20px; x: 6px; y: 6px; }
+    }
+    area := TouchArea { clicked => { root.clicked(); } }
+    if area.has-hover : Rectangle {
+        x: -self.width - 4px;
+        y: (parent.height - self.height) / 2;
+        width: label.preferred-width + 16px;
+        height: 24px;
+        border-radius: 6px;
+        background: Theme.on-surface;
+        label := Text { text: root.hint; color: Theme.background; font-family: Theme.font; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+    }
+}
+
+component BarGap inherits Rectangle {
+    height: 9px;
+    Rectangle { x: 13px; width: 18px; height: 1px; y: 4px; background: Theme.surface-highest; }
+}
+
 // The phone's screen. Fills the window, keeps its aspect; every pointer and
 // key event goes to the phone as a scrcpy control message (see scrcpy.rs).
 export component MirrorWindow inherits Window {
@@ -544,7 +582,13 @@ export component MirrorWindow inherits Window {
     in-out property <length> video-width: 1080px;
     in-out property <length> video-height: 2400px;
     preferred-height: 820px;
-    preferred-width: 820px * video-width / video-height;
+    preferred-width: 820px * video-width / video-height + root.bar-width;
+
+    // Back, Home, volume…: a slim bar to the right of the picture, never over
+    // it. Faint until the pointer moves in the window (Rust sets bar-awake).
+    property <length> bar-width: 44px;
+    in-out property <bool> bar-awake: true;
+    callback bar(string);
 
     callback pointer(int, int, int, int);
     callback scroll(int, int, float, float);
@@ -555,10 +599,11 @@ export component MirrorWindow inherits Window {
     in-out property <string> transfer-text: "";
     in-out property <float> transfer-progress: 0;
 
-    property <float> scale: min(root.width / root.video-width, root.height / root.video-height);
+    property <length> area-width: root.width - root.bar-width;
+    property <float> scale: min(root.area-width / root.video-width, root.height / root.video-height);
     property <length> shown-w: root.video-width * scale;
     property <length> shown-h: root.video-height * scale;
-    property <length> off-x: (root.width - shown-w) / 2;
+    property <length> off-x: (root.area-width - shown-w) / 2;
     property <length> off-y: (root.height - shown-h) / 2;
     pure function px(x: length) -> int { return (x - off-x) / scale / 1px; }
     pure function py(y: length) -> int { return (y - off-y) / scale / 1px; }
@@ -566,12 +611,15 @@ export component MirrorWindow inherits Window {
     Image {
         source: root.frame;
         image-fit: contain;
-        width: 100%;
+        x: 0;
+        width: root.area-width;
         height: 100%;
         image-rendering: smooth;
     }
 
     focus := FocusScope {
+        x: 0;
+        width: root.area-width;
         key-pressed(event) => {
             root.key(event.text, (event.modifiers.control ? 1 : 0) + (event.modifiers.shift ? 2 : 0) + (event.modifiers.alt ? 4 : 0), true);
             accept
@@ -602,7 +650,7 @@ export component MirrorWindow inherits Window {
     if root.transfer-visible : Rectangle {
         x: 12px;
         y: root.height - self.height - 12px;
-        width: root.width - 24px;
+        width: root.area-width - 24px;
         height: 54px;
         border-radius: 16px;
         background: #000000cc;
@@ -611,6 +659,32 @@ export component MirrorWindow inherits Window {
             spacing: 6px;
             Text { text: root.transfer-text; color: white; font-size: 12px; overflow: elide; }
             LinearProgress { value: root.transfer-progress; }
+        }
+    }
+
+    Rectangle {
+        x: root.area-width;
+        width: root.bar-width;
+        height: root.height;
+        background: Theme.surface;
+        opacity: root.bar-awake || b1.hovered || b2.hovered || b3.hovered || b4.hovered || b5.hovered || b6.hovered || b7.hovered || b8.hovered || b9.hovered || b10.hovered ? 1 : 0.3;
+        animate opacity { duration: 300ms; }
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            b1 := BarButton { source: @image-url("icons/back.svg"); hint: "Back · Ctrl+B"; clicked => { root.bar("back"); } }
+            b2 := BarButton { source: @image-url("icons/home.svg"); hint: "Home · Ctrl+H"; clicked => { root.bar("home"); } }
+            b3 := BarButton { source: @image-url("icons/recents.svg"); hint: "Recent apps · Ctrl+R"; clicked => { root.bar("recents"); } }
+            BarGap {}
+            b4 := BarButton { source: @image-url("icons/volume-up.svg"); hint: "Volume up"; clicked => { root.bar("volume-up"); } }
+            b5 := BarButton { source: @image-url("icons/volume-down.svg"); hint: "Volume down"; clicked => { root.bar("volume-down"); } }
+            BarGap {}
+            b6 := BarButton { source: @image-url("icons/rotate.svg"); hint: "Rotate"; clicked => { root.bar("rotate"); } }
+            b7 := BarButton { source: @image-url("icons/screenshot.svg"); hint: "Screenshot"; clicked => { root.bar("screenshot"); } }
+            b8 := BarButton { source: @image-url("icons/bell.svg"); hint: "Notifications · Ctrl+N"; clicked => { root.bar("notifications"); } }
+            b9 := BarButton { source: @image-url("icons/folder.svg"); hint: "Phone files"; clicked => { root.bar("files"); } }
+            BarGap {}
+            b10 := BarButton { source: @image-url("icons/power.svg"); hint: "Screen off · Ctrl+O"; clicked => { root.bar("screen-off"); } }
         }
     }
 }
@@ -635,6 +709,9 @@ export component FilesWindow inherits Window {
     icon: @image-url("../assets/icon-256.png");
 
     in-out property <string> path: "";
+    /// The folder path as clickable steps: "Phone storage", "DCIM", "Camera".
+    in-out property <[string]> crumbs: [];
+    in-out property <string> filter: "";
     in-out property <bool> at-top: true;
     in-out property <[FileEntry]> entries: [];
     in-out property <string> status: "";
@@ -643,6 +720,8 @@ export component FilesWindow inherits Window {
     in-out property <float> progress: -1;
 
     callback open(int);
+    callback crumb(int);
+    callback filter-changed(string);
     callback up();
     callback refresh();
     callback open-downloads();
@@ -654,8 +733,38 @@ export component FilesWindow inherits Window {
         HorizontalLayout {
             spacing: 8px;
             PillButton { text: "Up"; icon: @image-url("icons/arrow-up.svg"); enabled: !root.at-top && !root.loading; clicked => { root.up(); } }
-            Label { text: root.path; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; color: Theme.on-surface-variant; }
+            // Each step of the path jumps straight to that folder.
+            Rectangle {
+                horizontal-stretch: 1;
+                clip: true;
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 2px;
+                    for c[i] in root.crumbs : HorizontalLayout {
+                        spacing: 2px;
+                        if i > 0 : Muted { text: "›"; font-size: 13px; vertical-alignment: center; wrap: no-wrap; }
+                        Rectangle {
+                            border-radius: 12px;
+                            background: crumb-area.has-hover && i < root.crumbs.length - 1 ? Theme.surface-high : transparent;
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 8px;
+                                Text {
+                                    text: c; font-family: Theme.font; font-size: 12px; vertical-alignment: center; wrap: no-wrap;
+                                    color: i == root.crumbs.length - 1 ? Theme.on-surface : Theme.primary;
+                                }
+                            }
+                            crumb-area := TouchArea { enabled: i < root.crumbs.length - 1 && !root.loading; clicked => { root.crumb(i); } }
+                        }
+                    }
+                }
+            }
             PillButton { text: "Refresh"; icon: @image-url("icons/refresh-cw.svg"); enabled: !root.loading; clicked => { root.refresh(); } }
+        }
+
+        LineEdit {
+            placeholder-text: "Search this folder";
+            text <=> root.filter;
+            edited(t) => { root.filter-changed(t); }
         }
 
         Card {

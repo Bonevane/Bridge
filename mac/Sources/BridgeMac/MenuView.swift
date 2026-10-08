@@ -299,7 +299,7 @@ struct MenuView: View {
             return Reach(title: "Phone nearby",
                          detail: bridge.phoneTunnelOn
                             ? "Bluetooth linked, and reachable from anywhere"
-                            : "Bluetooth linked · tunnel off, so no remote mirroring",
+                            : "Bluetooth linked · Mirror wakes the tunnel",
                          symbol: "dot.radiowaves.left.and.right", tint: .green)
         }
         switch bridge.bluetoothState {

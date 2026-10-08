@@ -114,6 +114,9 @@ class BleLink(private val context: Context) {
      */
     private inner class Peer(val device: BluetoothDevice, val plain: Boolean) {
         val label = if (plain) "PC" else "Mac"
+        /** The computer's own name and platform, from its "hello" (see [receive]). */
+        @Volatile var name: String? = null
+        var platform = if (plain) "windows" else "mac"
         val characteristic: BluetoothGattCharacteristic? get() = if (plain) txPlain else tx
         @Volatile var verified = false
         var pendingNonce: String? = null
@@ -140,9 +143,10 @@ class BleLink(private val context: Context) {
     private fun updateConnected() {
         val linked = peers.values.filter { it.verified }
         connected = linked.isNotEmpty()
-        // Each linked computer by its Bluetooth name, falling back to Mac/PC.
+        // Each linked computer by the name it gave us ("hello"), else its
+        // Bluetooth name, else Mac/PC. The Bluetooth name is often just "Mac".
         TunnelState.linkedComputers = linked.map { p ->
-            runCatching { p.device.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: p.label
+            p.name ?: runCatching { p.device.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: p.label
         }.sorted()
     }
 
@@ -165,6 +169,10 @@ class BleLink(private val context: Context) {
             if (now != lastBattery) {
                 lastBattery = now
                 if (peers.isNotEmpty()) sendStatus()
+                // "Last seen" on the phone's Computers card.
+                peers.values.filter { it.verified }.forEach { p ->
+                    p.name?.let { Prefs.rememberComputer(context, it, p.platform) }
+                }
             }
         }
     }
@@ -767,6 +775,15 @@ class BleLink(private val context: Context) {
                     // so the Mac/PC can show it on the notification. Sent once;
                     // the other side caches it.
                     message.startsWith("icon ") -> sendIcon(message.removePrefix("icon ").trim())
+                    // "hello mac Bonevane's MacBook Pro": who this computer is,
+                    // in its own words (the Bluetooth name is often just "Mac").
+                    message.startsWith("hello ") -> {
+                        val rest = message.removePrefix("hello ")
+                        peer.platform = rest.substringBefore(' ').ifEmpty { peer.platform }
+                        peer.name = rest.substringAfter(' ', "").trim().take(60).ifEmpty { null }
+                        peer.name?.let { Prefs.rememberComputer(context, it, peer.platform) }
+                        updateConnected()
+                    }
                     // "reply 12 On my way": answer notification 12 through its
                     // own Reply action. The text is the rest of the line.
                     message.startsWith("reply ") -> {

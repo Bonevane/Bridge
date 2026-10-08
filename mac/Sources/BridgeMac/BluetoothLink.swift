@@ -215,6 +215,11 @@ final class BluetoothLink: NSObject {
         send(type: Self.typeCommand, text: "icon \(package)")
     }
 
+    /// Tells the phone this computer's name, for its Computers list and chips.
+    func hello(name: String) {
+        send(type: Self.typeCommand, text: "hello mac \(name)")
+    }
+
     /// Answers notification `id` on the phone, through its own Reply action.
     func reply(id: Int, text: String) {
         let line = text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")

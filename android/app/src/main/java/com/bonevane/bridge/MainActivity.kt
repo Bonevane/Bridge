@@ -77,11 +77,29 @@ class MainActivity : ComponentActivity() {
                         if (on) TunnelService.current?.policy?.maybeStart("setting turned on")
                     },
                     onAutostartChange = { Prefs.setAutostart(this, it) },
-                    onQuietStatusChange = { on ->
-                        Prefs.setQuietStatus(this, on)
-                        TunnelService.current?.refreshNotification()
+                    onStatusNotificationSettings = {
+                        runCatching {
+                            startActivity(
+                                Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                                    .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, "tunnel")
+                            )
+                        }
                     },
-                    onBatteryExemption = ::askBatteryExemption,
+                    onStopMirroring = { TunnelService.endMirroring(this) },
+                    onResumePause = {
+                        val policy = TunnelService.current?.policy
+                        Thread { policy?.resume() }.start()
+                    },
+                    onShareLog = {
+                        // Straight into WhatsApp, email, notes…: the log is what
+                        // gets sent when something goes wrong.
+                        val send = Intent(Intent.ACTION_SEND)
+                            .setType("text/plain")
+                            .putExtra(Intent.EXTRA_SUBJECT, "Bridge log")
+                            .putExtra(Intent.EXTRA_TEXT, TunnelState.logText())
+                        runCatching { startActivity(Intent.createChooser(send, "Share the log")) }
+                    },
                     onNewIdentity = ::newIdentity,
                     onGrantAccess = ::grantAccess,
                     onOpenLink = { url ->

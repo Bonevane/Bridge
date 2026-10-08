@@ -103,6 +103,7 @@ object Daemon {
             "CLIP" -> clip(s)
             "PUSH" -> push(s, rest)
             "LIST" -> list(s, rest.trim())
+            "ENDSESSIONS" -> endSessions(s)
             "PULL" -> pull(s, rest.trim())
             "INSTALL" -> install(s, rest.trim().toLongOrNull() ?: 0)
             "QUIT" -> { log("quit requested"); reply(s, "OK bye"); System.exit(0) }
@@ -238,6 +239,21 @@ object Daemon {
         var i = 1
         while (f.exists()) f = File(dir, "$stem (${i++})$ext")
         return f
+    }
+
+    /**
+     * ENDSESSIONS: the phone's own "Stop mirroring". Every running screen
+     * session ends; the computer sees its video stop and closes its window.
+     */
+    private fun endSessions(s: Socket) {
+        val n = sessions.size
+        sessions.values.toList().forEach { session ->
+            runCatching { session.audio.close() }
+            runCatching { session.control.close() }
+            session.process.destroy()
+        }
+        log("ended $n session(s) from the phone")
+        reply(s, "OK ended $n")
     }
 
     /** Shared storage only: what the Files app shows. Never the app-private or system dirs. */

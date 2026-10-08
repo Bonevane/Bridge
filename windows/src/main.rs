@@ -52,6 +52,9 @@ struct App {
     /// The phone folder the files window shows, as the phone resolved it.
     files_path: String,
     files_entries: Vec<files::Entry>,
+    /// Which entries the search box lets through, by index into files_entries.
+    files_shown: Vec<usize>,
+    files_filter: String,
     /// One transfer at a time: dropping ten files queues them rather than
     /// opening ten streams at once.
     transfer_lock: std::sync::Arc<std::sync::Mutex<()>>,
@@ -71,6 +74,9 @@ struct App {
     mirror_window: Option<MirrorWindow>,
     /// The video size the window's input callbacks scale coordinates against.
     mirror_size: Option<Rc<RefCell<(u16, u16)>>>,
+    /// When the pointer last moved over the phone window: the control bar is
+    /// full strength for 3 s after, faint otherwise.
+    mirror_pointer: Rc<std::cell::Cell<Instant>>,
     /// Last text we synced with the phone over the session, to stop ping-pong.
     last_synced: Option<String>,
     mirroring: bool,
@@ -122,6 +128,8 @@ impl App {
             files_window,
             files_path: String::new(),
             files_entries: Vec::new(),
+            files_shown: Vec::new(),
+            files_filter: String::new(),
             transfer_lock: Default::default(),
             settings: settings::Settings::load(),
             creds: store::load().unwrap_or_default(),
@@ -138,6 +146,7 @@ impl App {
             session_events: None,
             mirror_window: None,
             mirror_size: None,
+            mirror_pointer: Rc::new(std::cell::Cell::new(Instant::now())),
             last_synced: None,
             mirroring: false,
             files_session: false,
@@ -208,7 +217,7 @@ impl App {
         let (title, detail, tint) = if let Some((title, detail, _)) = &self.error {
             (title.as_str(), detail.as_str(), 3)
         } else if !self.creds.is_paired() {
-            ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
+            ("Pair your phone first", "Install Bridge on the phone, turn on USB debugging, plug it in, and click Set up over USB.", 0)
         } else if self.usb_busy {
             ("Setting up over USB", "Follow the phone's prompts", 2)
         } else if self.connecting {
@@ -224,7 +233,7 @@ impl App {
         } else if self.linked {
             (
                 "Phone nearby",
-                if self.phone_tunnel_on { "Bluetooth linked, and reachable from anywhere" } else { "Bluetooth linked · tunnel off, so no remote mirroring" },
+                if self.phone_tunnel_on { "Bluetooth linked, and reachable from anywhere" } else { "Bluetooth linked · Mirror wakes the tunnel" },
                 1,
             )
         } else if !self.settings.use_bluetooth {
@@ -242,8 +251,8 @@ impl App {
 
         ui.set_screen(Capability {
             name: "Screen".into(),
-            detail: if self.mirroring { "Live" } else if self.phone_paused { "Paused for banking" } else if self.phone_tunnel_on { "Ready to mirror" } else if self.linked { "Click Mirror: the tunnel comes up over Bluetooth" } else { "Needs the phone's tunnel, or Bluetooth to wake it" }.into(),
-            state: if self.mirroring || self.phone_tunnel_on { 2 } else if self.linked { 1 } else { 0 },
+            detail: if self.mirroring { "Live" } else if self.phone_paused { "Paused for banking" } else if self.phone_tunnel_on || self.linked { "Ready to mirror" } else { "Needs the phone nearby, or set to Anywhere" }.into(),
+            state: if self.mirroring || self.phone_tunnel_on || self.linked { 2 } else { 0 },
         });
         let notif_on = self.settings.mirror_notifications;
         ui.set_notifications(Capability {
@@ -444,7 +453,7 @@ impl App {
         if !self.mirroring && !self.files_session {
             // No session: bring the tunnel and helper up just for files (no
             // video), and list once they're there. See connect_with().
-            fw.set_path("Phone storage".into());
+            fw.set_crumbs(std::rc::Rc::new(slint::VecModel::from(vec![slint::SharedString::from("Phone storage")])).into());
             if self.connecting {
                 fw.set_status("Connecting to the phone…".into());
             } else if !self.creds.is_paired() {
@@ -465,7 +474,8 @@ impl App {
     }
 
     fn files_open(&mut self, index: usize) {
-        let Some(entry) = self.files_entries.get(index).cloned() else { return };
+        // `index` is a row as shown, which the search box may have narrowed.
+        let Some(entry) = self.files_shown.get(index).and_then(|&i| self.files_entries.get(i)).cloned() else { return };
         let full = format!("{}/{}", self.files_path.trim_end_matches('/'), entry.name);
         if entry.dir {
             self.list_files(&full);
@@ -500,16 +510,33 @@ impl App {
         const ROOT: &str = "/storage/emulated/0";
         let fw = &self.files_window;
         fw.set_loading(false);
-        let shown = match resolved.strip_prefix(ROOT) {
-            Some("") => "Phone storage".to_string(),
-            Some(rest) => format!("Phone storage{rest}").replace('/', " › "),
-            None => resolved.clone(),
+        let crumbs: Vec<slint::SharedString> = match resolved.strip_prefix(ROOT) {
+            Some(rest) => std::iter::once("Phone storage".to_string())
+                .chain(rest.split('/').filter(|p| !p.is_empty()).map(String::from))
+                .map(Into::into)
+                .collect(),
+            None => vec![resolved.clone().into()],
         };
-        fw.set_path(shown.into());
+        fw.set_crumbs(std::rc::Rc::new(slint::VecModel::from(crumbs)).into());
         fw.set_at_top(resolved == ROOT);
-        let rows: Vec<FileEntry> = entries
+        fw.set_filter("".into());
+        self.files_filter.clear();
+        self.files_path = resolved;
+        self.files_entries = entries;
+        self.render_files();
+    }
+
+    /// The listing, narrowed by the search box (case-insensitive, by name).
+    fn render_files(&mut self) {
+        let needle = self.files_filter.to_lowercase();
+        self.files_shown = (0..self.files_entries.len())
+            .filter(|&i| needle.is_empty() || self.files_entries[i].name.to_lowercase().contains(&needle))
+            .collect();
+        let rows: Vec<FileEntry> = self
+            .files_shown
             .iter()
-            .map(|e| {
+            .map(|&i| {
+                let e = &self.files_entries[i];
                 let when = chrono::DateTime::from_timestamp_millis(e.modified_ms)
                     .map(|d| d.with_timezone(&chrono::Local).format("%-d %b %Y, %H:%M").to_string())
                     .unwrap_or_default();
@@ -520,10 +547,24 @@ impl App {
                 }
             })
             .collect();
+        let fw = &self.files_window;
         fw.set_entries(std::rc::Rc::new(slint::VecModel::from(rows)).into());
-        fw.set_status(if entries.is_empty() { "Empty folder".into() } else { format!("{} items", entries.len()).into() });
-        self.files_path = resolved;
-        self.files_entries = entries;
+        let total = self.files_entries.len();
+        fw.set_status(if total == 0 {
+            "Empty folder".into()
+        } else if needle.is_empty() {
+            format!("{total} items").into()
+        } else {
+            format!("{} of {total} items match", self.files_shown.len()).into()
+        });
+    }
+
+    /// A step of the path was clicked: 0 is the top.
+    fn files_crumb(&mut self, index: usize) {
+        const ROOT: &str = "/storage/emulated/0";
+        let rest: Vec<&str> = self.files_path.strip_prefix(ROOT).unwrap_or("").split('/').filter(|p| !p.is_empty()).collect();
+        let target = format!("{ROOT}{}", rest.iter().take(index).map(|p| format!("/{p}")).collect::<String>());
+        self.list_files(&target);
     }
 
     /// A progress bar on the files window and, while mirroring, over the
@@ -679,7 +720,7 @@ impl App {
                 if current.load(Ordering::SeqCst) != attempt {
                     return; // cancelled, or superseded by a newer Connect
                 }
-                match tunnel::control(&secret, "START", Duration::from_secs(40)) {
+                match tunnel::control(&secret, &format!("START by={}", computer_name()), Duration::from_secs(40)) {
                     Ok(r) if r.starts_with("OK") => { result = Ok(r); break; }
                     Ok(r) => { crate::log!("phone", "START: {r}"); result = Err(r); break; }
                     Err(e) => crate::log!("phone", "START {try_}/12: {e:#}"),
@@ -736,7 +777,9 @@ impl App {
         let size = Rc::new(RefCell::new((0u16, 0u16)));
         let (s1, z1) = (s.clone(), size.clone());
         let first_input = Rc::new(std::cell::Cell::new(true));
+        let pointer_seen = self.mirror_pointer.clone();
         window.on_pointer(move |x, y, kind, button| {
+            pointer_seen.set(Instant::now());
             let Some(sess) = s1.borrow().clone() else { return };
             let (w, h) = *z1.borrow();
             if first_input.replace(false) {
@@ -815,6 +858,37 @@ impl App {
                 sess.send(&scrcpy::text(&text));
             }
         });
+        // The bar beside the picture: the same keys and messages as the shortcuts.
+        let s4 = s.clone();
+        let tx_bar = self.events_tx.clone();
+        let screen_off = Rc::new(std::cell::Cell::new(false));
+        window.on_bar(move |action| {
+            if action.as_str() == "files" {
+                let _ = tx_bar.send(Event::OpenFiles);
+                return;
+            }
+            let Some(sess) = s4.borrow().clone() else { return };
+            use scrcpy::android_key as k;
+            let press = |code: i32| {
+                sess.send(&scrcpy::key(true, code, 0));
+                sess.send(&scrcpy::key(false, code, 0));
+            };
+            match action.as_str() {
+                "back" => press(k::BACK),
+                "home" => press(k::HOME),
+                "recents" => press(k::APP_SWITCH),
+                "volume-up" => press(24),
+                "volume-down" => press(25),
+                "screenshot" => press(120),                      // KEYCODE_SYSRQ
+                "rotate" => sess.send(&scrcpy::simple(11)),       // scrcpy ROTATE_DEVICE
+                "notifications" => sess.send(&scrcpy::simple(scrcpy::EXPAND_NOTIFICATION_PANEL)),
+                "screen-off" => {
+                    screen_off.set(!screen_off.get());
+                    sess.send(&scrcpy::display_power(!screen_off.get()));
+                }
+                _ => {}
+            }
+        });
         // Closing the window ends the session, via the same path a dead stream takes.
         let closer = tx_close.clone();
         window.window().on_close_requested(move || {
@@ -832,6 +906,8 @@ impl App {
     }
 
     fn fail(&mut self, message: String) {
+        self.log("", &format!("error: {message}"));   // the raw text, for the log
+        let message = friendly(&message);
         self.connecting = false;
         // We switched the phone's tunnel on for this; it costs battery and
         // data all the while, so put it back if nothing came of it.
@@ -917,6 +993,9 @@ impl App {
         }
         self.show_log();   // lines logged from other threads since the last tick
         self.show_media(); // the Now Playing clock
+        if let Some(w) = &self.mirror_window {
+            w.set_bar_awake(self.mirror_pointer.get().elapsed() < Duration::from_secs(3));
+        }
         self.poll_session();
         if self.settings.sync_clipboard && (self.linked || self.mirroring) {
             if let Some(text) = self.clipboard.poll() {
@@ -1037,6 +1116,8 @@ impl App {
                 self.log("bluetooth", "linked to the phone");
                 self.report_twins(true);
                 if let Some(b) = &self.ble {
+                    // Who we are, for the phone's Computers list and chips.
+                    let _ = b.send_command(&format!("hello windows {}", computer_name()));
                     let _ = b.send_command("status");
                 }
             }
@@ -1121,7 +1202,7 @@ impl App {
                     Ok((resolved, entries)) => self.show_listing(resolved, entries),
                     Err(e) => {
                         self.files_window.set_loading(false);
-                        self.files_window.set_status(format!("Couldn't list: {e}").into());
+                        self.files_window.set_status(friendly(&e).into());
                         self.log("files", &e);
                     }
                 }
@@ -1148,6 +1229,10 @@ impl App {
                         self.error = Some(("Couldn't unpair the phone".into(), format!("{e}. Remove it in Settings › Bluetooth & devices instead."), false));
                     }
                 }
+            }
+            Event::OpenFiles => {
+                self.open_files();
+                return;
             }
             Event::Radio(state) => {
                 self.no_adapter = state.is_none();
@@ -1194,7 +1279,7 @@ impl App {
                     }
                     Err(e) => {
                         self.log("files", &format!("transfer failed: {e}"));
-                        self.files_window.set_status(format!("Failed: {e}").into());
+                        self.files_window.set_status(friendly(&e).into());
                         notify::show("Bridge", "File transfer failed", &e);
                     }
                 }
@@ -1334,6 +1419,44 @@ fn accept_drops(window: &slint::Window, secret: String, tx: mpsc::Sender<Event>,
     });
 }
 
+/// Known errors in plain words, with what to do; anything else as it came.
+/// The raw text always goes to the log first.
+fn friendly(raw: &str) -> String {
+    const RULES: &[(&str, &str)] = &[
+        ("wireless debugging port not found", "Your phone needs Wi-Fi to restart its helper. Connect it to Wi-Fi, or plug it in and use Set up over USB."),
+        ("daemon did not answer", "Your phone's helper didn't start. Plug the phone in and use Set up over USB."),
+        ("WRITE_SECURE_SETTINGS", "This phone hasn't been set up yet. Plug it in and use Set up over USB."),
+        ("unauthorized", "The pairing doesn't match this phone any more. Pair again with Set up over USB."),
+        ("scrcpy jar not found", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("scrcpy-server did not start", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("restart failed", "Mirroring stopped because the connection dropped. Click Mirror phone to start again."),
+        ("tunnel dropped", "Lost the connection to your phone."),
+        ("Lost the connection", "Lost the connection to your phone."),
+        ("didn't start its tunnel", "Your phone didn't respond over Bluetooth. Open Bridge on the phone, or switch it to Anywhere."),
+        ("tunnel not listening", "Bridge's connection to your phone didn't start. Try again; if it repeats, restart Bridge."),
+        ("didn't answer", "Your phone didn't answer. Make sure it's on and has internet, or bring it near this computer so Bluetooth can wake it."),
+        ("adb.exe isn't available", "Bridge is missing a file it needs. Download Bridge again and keep all its files together."),
+        ("not a folder in shared storage", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("can't read", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("stopped sending at", "The download was interrupted. Try again."),
+    ];
+    RULES.iter().find(|(k, _)| raw.contains(k)).map(|(_, v)| v.to_string()).unwrap_or_else(|| raw.to_string())
+}
+
+/// This PC's name as shown in Settings › System › About, case kept
+/// (COMPUTERNAME is the all-caps NetBIOS form).
+fn computer_name() -> String {
+    use windows::Win32::System::SystemInformation::{ComputerNamePhysicalDnsHostname, GetComputerNameExW};
+    let mut buf = [0u16; 256];
+    let mut len = buf.len() as u32;
+    let ok = unsafe { GetComputerNameExW(ComputerNamePhysicalDnsHostname, windows::core::PWSTR(buf.as_mut_ptr()), &mut len) }.is_ok();
+    if ok && len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into())
+    }
+}
+
 /// 125000 ms → "2:05"; an hour or more → "1:02:05".
 fn clock(ms: f64) -> String {
     let s = (ms / 1000.0) as u64;
@@ -1409,7 +1532,7 @@ fn main() {
                 app.log("bluetooth", "unpairing the phone in Windows");
                 ble::Ble::unpair_device(address, app.events_tx.clone());
             } else if !app.creds.is_paired() {
-                app.pair_from_clipboard();
+                app.set_up_over_usb();
             } else {
                 app.connect();
             }
@@ -1431,6 +1554,8 @@ fn main() {
         ui.on_set_up_over_usb(move || a.borrow_mut().set_up_over_usb());
         let a = app.clone();
         ui.on_open_files(move || a.borrow_mut().open_files());
+        let a = app.clone();
+        ui.on_pair_from_clipboard(move || a.borrow_mut().pair_from_clipboard());
         let a = app.clone();
         ui.on_media(move |cmd| {
             let app = a.borrow();
@@ -1511,6 +1636,14 @@ fn main() {
         files_window.on_open(move |i| a.borrow_mut().files_open(i as usize));
         let a = app.clone();
         files_window.on_up(move || a.borrow_mut().files_up());
+        let a = app.clone();
+        files_window.on_crumb(move |i| a.borrow_mut().files_crumb(i as usize));
+        let a = app.clone();
+        files_window.on_filter_changed(move |t| {
+            let mut app = a.borrow_mut();
+            app.files_filter = t.to_string();
+            app.render_files();
+        });
         let a = app.clone();
         files_window.on_refresh(move || {
             let mut app = a.borrow_mut();

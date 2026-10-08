@@ -232,8 +232,31 @@ final class BridgeController: ObservableObject {
     }
 
     private func fail(_ message: String) {
-        phase = .failed(message)
-        appendLog("Error: \(message)")
+        appendLog("Error: \(message)")          // the raw text, for the log
+        phase = .failed(Self.friendly(message))
+    }
+
+    /// Known errors in plain words, with what to do; anything else as it came.
+    static func friendly(_ raw: String) -> String {
+        let rules: [(String, String)] = [
+        ("wireless debugging port not found", "Your phone needs Wi-Fi to restart its helper. Connect it to Wi-Fi, or plug it in and use Set up over USB."),
+        ("daemon did not answer", "Your phone's helper didn't start. Plug the phone in and use Set up over USB."),
+        ("WRITE_SECURE_SETTINGS", "This phone hasn't been set up yet. Plug it in and use Set up over USB."),
+        ("unauthorized", "The pairing doesn't match this phone any more. Pair again with Set up over USB."),
+        ("scrcpy jar not found", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("scrcpy-server did not start", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("restart failed", "Mirroring stopped because the connection dropped. Click Mirror phone to start again."),
+        ("tunnel dropped", "Lost the connection to your phone."),
+        ("Lost the connection", "Lost the connection to your phone."),
+        ("didn't start its tunnel", "Your phone didn't respond over Bluetooth. Open Bridge on the phone, or switch it to Anywhere."),
+        ("tunnel not listening", "Bridge's connection to your phone didn't start. Try again; if it repeats, restart Bridge."),
+        ("didn't answer", "Your phone didn't answer. Make sure it's on and has internet, or bring it near this computer so Bluetooth can wake it."),
+        ("adb.exe isn't available", "Bridge is missing a file it needs. Download Bridge again and keep all its files together."),
+        ("not a folder in shared storage", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("can't read", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("stopped sending at", "The download was interrupted. Try again."),
+        ]
+        return rules.first { raw.contains($0.0) }?.1 ?? raw
     }
 
     /// Runs blocking work (like waiting for adb) off the main thread.
@@ -567,7 +590,8 @@ final class BridgeController: ObservableObject {
             var reply: String?
             for _ in 0..<15 {
                 if userStopped { return }
-                reply = await background { Control.send("START", port: port) }
+                let me = Self.computerName
+                reply = await background { Control.send("START by=\(me)", port: port) }
                 if reply != nil { break }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
@@ -804,8 +828,8 @@ final class BridgeController: ObservableObject {
     var screenCapability: Capability {
         if isConnected { return .working("Mirroring now") }
         if ticket.trimmingCharacters(in: .whitespaces).isEmpty { return .off("Not paired yet") }
-        if bluetoothLinked && !phoneTunnelOn { return .off("Turn the tunnel on, on the phone") }
-        return .working("Ready to connect")
+        if bluetoothLinked || phoneTunnelOn { return .working("Ready to mirror") }
+        return .limited("Needs the phone nearby, or set to Anywhere")
     }
 
     /// The Mac's own radio is off (not just "phone out of range").
@@ -900,7 +924,12 @@ final class BridgeController: ObservableObject {
                 guard let self = self else { return }
                 self.bluetoothState = state
                 // A fresh link: the phone has no idea what's open here yet.
-                if state == .linked { self.twins.report(force: true); self.iconsRequested.removeAll() }
+                if state == .linked {
+                    self.twins.report(force: true); self.iconsRequested.removeAll()
+                    // Who we are, in our own words: the phone's Bluetooth name
+                    // for a Mac is often just "Mac".
+                    self.bluetoothLink.hello(name: Self.computerName)
+                }
             }
         }
         bluetoothLink.onRemoved = { [weak self] id in
@@ -974,6 +1003,11 @@ final class BridgeController: ObservableObject {
             }
         }
         bluetoothLink.start()
+    }
+
+    /// This Mac's name as the user set it (System Settings › General › About).
+    static var computerName: String {
+        (Host.current().localizedName ?? "Mac").replacingOccurrences(of: "\n", with: " ")
     }
 
     /// Packages whose icon has been asked for over this Bluetooth link.

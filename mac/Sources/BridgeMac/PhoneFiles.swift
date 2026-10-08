@@ -178,6 +178,24 @@ final class PhoneFilesModel: ObservableObject {
     @Published var loading = false
     /// Transfer progress 0…1, nil when nothing is moving.
     @Published var progress: Double?
+    /// The search box: narrows the open folder by name.
+    @Published var filter = ""
+
+    var shownEntries: [PhoneFiles.Entry] {
+        filter.isEmpty ? entries : entries.filter { $0.name.localizedCaseInsensitiveContains(filter) }
+    }
+
+    /// The path as steps, "Phone storage", "DCIM", "Camera", each with its folder.
+    var crumbs: [(String, String)] {
+        guard path.hasPrefix(PhoneFiles.storageRoot) else { return path.isEmpty ? [] : [(path, path)] }
+        var out = [("Phone storage", PhoneFiles.storageRoot)]
+        var acc = PhoneFiles.storageRoot
+        for part in path.dropFirst(PhoneFiles.storageRoot.count).split(separator: "/") {
+            acc += "/" + part
+            out.append((String(part), acc))
+        }
+        return out
+    }
     let port: Int
     private var transfers: DispatchQueue { PhoneFiles.queue }
 
@@ -202,6 +220,7 @@ final class PhoneFilesModel: ObservableObject {
                 switch result {
                 case .success(let (resolved, entries)):
                     self.path = resolved
+                    self.filter = ""
                     self.entries = entries.sorted { ($0.isDir ? 0 : 1, $0.name.lowercased()) < ($1.isDir ? 0 : 1, $1.name.lowercased()) }
                     self.status = entries.isEmpty ? "Empty folder" : "\(entries.count) items"
                 case .failure(let error):
@@ -275,12 +294,29 @@ struct PhoneFilesView: View {
             HStack {
                 Button { model.up() } label: { Label("Up", systemImage: "arrow.up") }
                     .disabled(model.atTop || model.loading)
-                Text(model.shownPath).lineLimit(1).truncationMode(.head)
-                    .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                // Each step of the path jumps straight to that folder.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
+                        ForEach(Array(model.crumbs.enumerated()), id: \.offset) { i, crumb in
+                            if i > 0 { Text("›").foregroundStyle(.tertiary) }
+                            if i == model.crumbs.count - 1 {
+                                Text(crumb.0).fontWeight(.medium)
+                            } else {
+                                Button(crumb.0) { model.list(crumb.1) }
+                                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                                    .disabled(model.loading)
+                            }
+                        }
+                    }
+                    .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(model.loading)
             }
-            List(model.entries) { entry in
+            TextField("Search this folder", text: $model.filter)
+                .textFieldStyle(.roundedBorder)
+            List(model.shownEntries) { entry in
                 Button { model.open(entry) } label: {
                     HStack(spacing: 10) {
                         Image(systemName: entry.isDir ? "folder.fill" : "doc")

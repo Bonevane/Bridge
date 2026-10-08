@@ -18,6 +18,8 @@ pub type FrameSink = Arc<dyn Fn(video::Frame) + Send + Sync>;
 pub enum SessionEvent {
     /// Video size from the server's session meta.
     Size(u32, u32),
+    /// The phone's name, from the video stream's header.
+    Device(String),
     /// The phone's clipboard changed.
     Clipboard(String),
     Log(String),
@@ -184,6 +186,7 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
         let mut codec = [0u8; 4];
         s.read_exact(&mut codec)?;
         let _ = shared.events.send(SessionEvent::Log(format!("Video from {device}, codec {}", String::from_utf8_lossy(&codec))));
+        let _ = shared.events.send(SessionEvent::Device(device));
 
         let mut decoder = video::Decoder::new()?;
         let mut first: Option<(i64, Instant)> = None;

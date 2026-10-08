@@ -58,6 +58,33 @@ class TunnelService : Service() {
          * it), so if the chosen mode is Nearby, switch it off again. The phone
          * decides this, not the Mac: the Mac can't always tell who turned it on.
          */
+        /**
+         * A computer says its session is over (STOP over the tunnel, or
+         * "session over" over Bluetooth). With two computers, the other one
+         * may still be mirroring: stopping the helper or the tunnel then cut
+         * its session off mid-stream. So wait for the ending computer's own
+         * streams to close (they do within a second or two of its message),
+         * and only wind down if no session stream is left open at all.
+         */
+        fun endSession(ctx: Context, who: String) {
+            Thread {
+                // A beat first, so a reply already written to the tunnel leaves
+                // before the tunnel can be switched off.
+                Thread.sleep(1_000)
+                var waited = 0
+                while (TunnelState.openStreams.get() > 0 && waited < 4_000) {
+                    Thread.sleep(250); waited += 250
+                }
+                if (TunnelState.openStreams.get() > 0) {
+                    TunnelState.log("$who ended its session; another computer is still mirroring, so the helper and tunnel stay up")
+                } else {
+                    TunnelState.log("$who ended the session: ${DaemonManager.stop(ctx)}")
+                    settleTunnelAfterSession(ctx)
+                }
+                current?.ble?.sendStatus()
+            }.start()
+        }
+
         fun settleTunnelAfterSession(ctx: Context) {
             if (!Prefs.tunnelEnabled(ctx) && TunnelState.tunnelOn) {
                 TunnelState.log("Session over: back to Nearby")

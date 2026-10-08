@@ -172,10 +172,10 @@ class ControlProxy(private val ctx: Context) {
                 .onSuccess { reply("OK daemon running") }
                 .onFailure { reply("ERR ${it.message}") }
             "STOP" -> {
-                reply("OK " + DaemonManager.stop(ctx))
-                // The reply just went over the tunnel; give it a moment to
-                // leave before the tunnel itself is switched off.
-                Thread { Thread.sleep(1500); TunnelService.settleTunnelAfterSession(ctx) }.start()
+                // Reply first: the reply goes over the tunnel, which may be
+                // about to be switched off. endSession waits for the streams.
+                reply("OK session over")
+                TunnelService.endSession(ctx, "A computer (over the tunnel)")
             }
             "LOCKDOWN" -> reply("OK " + DaemonManager.stop(ctx, force = true))
             "PAUSE" -> {

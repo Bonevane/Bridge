@@ -23,9 +23,17 @@ enum PhoneFiles {
         try s.write("LIST \(path)\n")
         let head = try s.readLine()
         guard head.hasPrefix("OK ") else { throw TCPStream.StreamError.failed("phone: \(head)") }
+        // The rest is text up to a blank line; read it in chunks (readLine
+        // goes a byte at a time, slow for a folder like DCIM/Camera).
+        var body: [UInt8] = []
+        while body != [10] && !(body.count >= 2 && body[body.count - 2] == 10 && body[body.count - 1] == 10) {
+            let chunk = try s.readSome(64 * 1024)
+            if chunk.isEmpty { break }
+            body += chunk
+            if body.count > 32 * 1024 * 1024 { throw TCPStream.StreamError.failed("folder listing too large") }
+        }
         var entries: [Entry] = []
-        while true {
-            let line = try s.readLine()
+        for line in String(decoding: body, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false) {
             if line.isEmpty { break }
             let f = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false)
             guard f.count == 4 else { continue }

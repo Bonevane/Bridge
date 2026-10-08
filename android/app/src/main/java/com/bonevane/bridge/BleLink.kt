@@ -160,6 +160,7 @@ class BleLink(private val context: Context) {
             override fun onReceive(ctx: Context, intent: Intent) {
                 when (intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1)) {
                     android.bluetooth.BluetoothAdapter.STATE_OFF -> {
+                        main.removeCallbacksAndMessages(null)   // no restarts pending for a radio that's off
                         TunnelState.bluetoothOff = true
                         TunnelState.log("Bluetooth: turned off; link closed")
                         teardown()
@@ -210,6 +211,8 @@ class BleLink(private val context: Context) {
             main.postDelayed({
                 if (serviceReady && advertisingOk) {
                     TunnelState.log("Bluetooth: link ready again")
+                } else if (TunnelState.bluetoothOff) {
+                    // Switched off again meanwhile; STATE_ON will start over.
                 } else if (attempt < 6) {
                     TunnelState.log("Bluetooth: not ready yet (service=$serviceReady advertising=$advertisingOk); retry $attempt")
                     restartWhenReady(attempt + 1)
@@ -671,9 +674,7 @@ class BleLink(private val context: Context) {
                     // The Mac finished mirroring. Same as the tunnel's STOP, but
                     // over Bluetooth, which still works when the tunnel is the
                     // very thing that just died.
-                    TunnelState.log("Mac ended the session (Bluetooth): ${DaemonManager.stop(context)}")
-                    TunnelService.settleTunnelAfterSession(context)
-                    sendStatus()
+                    TunnelService.endSession(context, "A computer (over Bluetooth)")
                 }
                 // "keep on at=<millis>" carries a timestamp, so it can't match exactly.
                 else -> when {

@@ -871,6 +871,11 @@ impl App {
                     }
                 }
                 SessionEvent::Log(line) => self.log("video", &line),
+                SessionEvent::Device(name) => {
+                    if let Some(win) = &self.mirror_window {
+                        win.set_phone_name(name.into());
+                    }
+                }
                 _ => {}
             }
         }
@@ -966,7 +971,11 @@ impl App {
                     Ok(msg) => {
                         self.log("files", &msg);
                         self.files_window.set_status(msg.clone().into());
-                        notify::show("Bridge", "File transfer", &msg);
+                        // The files window shows it already; a toast is for drops
+                        // onto the phone window, where nothing else would say so.
+                        if !self.files_window.window().is_visible() {
+                            notify::show("Bridge", "File transfer", &msg);
+                        }
                         // A drop went into the phone's Download folder; if that's
                         // what's on screen, show it.
                         if self.files_path.ends_with("/Download") {

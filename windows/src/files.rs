@@ -26,9 +26,23 @@ pub fn list(secret: &str, path: &str) -> Result<(String, Vec<Entry>)> {
     let head = s.read_line()?;
     let Some(resolved) = head.strip_prefix("OK ") else { bail!("phone: {head}") };
     let resolved = resolved.to_string();
+    // The rest is text up to an empty line. Read it in chunks: a folder like
+    // DCIM/Camera can run to hundreds of KB, and read_line goes a byte at a time.
+    let mut body = Vec::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    // Ends with a blank line: "\n" alone for an empty folder, "…\n\n" otherwise.
+    while body != b"\n" && !body.ends_with(b"\n\n") {
+        let n = s.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&buf[..n]);
+        if body.len() > 32 * 1024 * 1024 {
+            bail!("folder listing too large");
+        }
+    }
     let mut entries = Vec::new();
-    loop {
-        let line = s.read_line()?;
+    for line in String::from_utf8_lossy(&body).lines() {
         if line.is_empty() {
             break;
         }

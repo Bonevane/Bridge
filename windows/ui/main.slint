@@ -367,7 +367,8 @@ export component SettingsWindow inherits Window {
 // The phone's screen. Fills the window, keeps its aspect; every pointer and
 // key event goes to the phone as a scrcpy control message (see scrcpy.rs).
 export component MirrorWindow inherits Window {
-    title: "Phone";
+    in-out property <string> phone-name: "Phone";
+    title: root.phone-name + " (Bridge)";
     background: black;
     in-out property <image> frame;
     in-out property <length> video-width: 1080px;

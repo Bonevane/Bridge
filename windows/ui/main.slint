@@ -1,7 +1,7 @@
 // Bridge's windows, in the same Material 3 shapes as the phone app.
 // Main window: is my phone reachable, what works right now, what can I do.
 // Settings window: the Mac's four tabs. Mirror window: the phone's screen.
-import { ScrollView, LineEdit, ListView, TextEdit } from "std-widgets.slint";
+import { ScrollView, LineEdit, ListView, TextEdit, ProgressBar } from "std-widgets.slint";
 import { Theme, Icon, Label, Muted, SectionTitle, Card, PillButton, Toggle, Tile, Divider, Segmented } from "theme.slint";
 
 export struct Capability {
@@ -380,6 +380,11 @@ export component MirrorWindow inherits Window {
     callback scroll(int, int, float, float);
     callback key(string, int, bool);
 
+    // A file being sent or fetched: shown as a bar over the bottom of the picture.
+    in-out property <bool> transfer-visible: false;
+    in-out property <string> transfer-text: "";
+    in-out property <float> transfer-progress: 0;
+
     property <float> scale: min(root.width / root.video-width, root.height / root.video-height);
     property <length> shown-w: root.video-width * scale;
     property <length> shown-h: root.video-height * scale;
@@ -423,6 +428,21 @@ export component MirrorWindow inherits Window {
             }
         }
     }
+
+    if root.transfer-visible : Rectangle {
+        x: 12px;
+        y: root.height - self.height - 12px;
+        width: root.width - 24px;
+        height: 54px;
+        border-radius: 16px;
+        background: #000000cc;
+        VerticalLayout {
+            padding: 12px;
+            spacing: 6px;
+            Text { text: root.transfer-text; color: white; font-size: 12px; overflow: elide; }
+            ProgressBar { value: root.transfer-progress; }
+        }
+    }
 }
 
 export struct FileEntry {
@@ -449,6 +469,8 @@ export component FilesWindow inherits Window {
     in-out property <[FileEntry]> entries: [];
     in-out property <string> status: "";
     in-out property <bool> loading: false;
+    /// Transfer progress, 0 to 1; below 0 hides the bar.
+    in-out property <float> progress: -1;
 
     callback open(int);
     callback up();
@@ -482,6 +504,7 @@ export component FilesWindow inherits Window {
             }
         }
 
+        if root.progress >= 0 : ProgressBar { value: root.progress; }
         HorizontalLayout {
             spacing: 8px;
             Muted { text: root.status; vertical-alignment: center; horizontal-stretch: 1; }

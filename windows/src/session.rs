@@ -21,6 +21,29 @@ pub fn note_transfer() {
     LAST_TRANSFER_MS.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
 }
 
+/// How far behind the video is right now (ms), for file transfers to pace
+/// themselves: they pause while the picture is lagging, so the video keeps
+/// moving and the transfer takes a little longer instead.
+static VIDEO_BACKLOG_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+static VIDEO_BACKLOG_AT_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// 0 unless a frame measured it in the last 1.5 s: a still screen sends no
+/// frames, and a stale "behind" reading mustn't hold a transfer back.
+pub fn video_backlog_ms() -> i64 {
+    let fresh = chrono::Utc::now().timestamp_millis() - VIDEO_BACKLOG_AT_MS.load(Ordering::Relaxed) < 1_500;
+    if fresh { VIDEO_BACKLOG_MS.load(Ordering::Relaxed) } else { 0 }
+}
+
+/// Called between chunks of a transfer: waits (up to 2 s) while the video
+/// is more than 400 ms behind.
+pub fn yield_to_video() {
+    let start = Instant::now();
+    while video_backlog_ms() > 400 && start.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn transfer_active() -> bool {
     chrono::Utc::now().timestamp_millis() - LAST_TRANSFER_MS.load(Ordering::Relaxed) < 5_000
 }
@@ -109,6 +132,7 @@ impl Session {
 
     pub fn stop(&self) {
         self.shared.stopped.store(true, Ordering::SeqCst);
+        VIDEO_BACKLOG_MS.store(0, Ordering::Relaxed);
         if let Some(c) = self.shared.control.lock().unwrap().take() {
             c.close();
         }
@@ -251,17 +275,18 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
             // Adaptive bitrate: if frames arrive later and later relative to
             // their capture time, bits are queueing up on the link.
             let now = Instant::now();
-            if transfer_active() {
-                // Start the measurement afresh once the transfer is done.
-                first = None;
-                min_lag = f64::INFINITY;
-                slow_since = None;
-                continue;
-            }
             let Some((first_pts, first_arrival)) = first else { first = Some((pts, now)); continue };
             let lag = now.duration_since(first_arrival).as_secs_f64() - (pts - first_pts) as f64 / 1_000_000.0;
             min_lag = min_lag.min(lag);
             let backlog = lag - min_lag;
+            VIDEO_BACKLOG_MS.store((backlog * 1000.0) as i64, Ordering::Relaxed);
+            VIDEO_BACKLOG_AT_MS.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+            if transfer_active() {
+                // A transfer is what's slowing the video (and it backs off by
+                // itself, see yield_to_video): not a reason to restart.
+                slow_since = None;
+                continue;
+            }
             let level = *shared.level.lock().unwrap();
             if backlog > 0.35 {
                 let since = *slow_since.get_or_insert(now);

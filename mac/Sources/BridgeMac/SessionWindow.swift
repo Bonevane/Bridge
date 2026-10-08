@@ -140,12 +140,34 @@ final class InputView: NSView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
               let session = owner.session else { return false }
-        for url in urls {
-            session.pushFile(url) { reply in
-                DispatchQueue.main.async { session.onLog?(reply) }
-            }
+        for url in urls where !url.hasDirectoryPath {
+            let name = url.lastPathComponent
+            session.pushFile(url, progress: { [weak self] done, total in
+                DispatchQueue.main.async {
+                    self?.transferBar.show("Sending \(name) · \(PhoneFiles.humanSize(done)) of \(PhoneFiles.humanSize(total))",
+                                           progress: total > 0 ? Double(done) / Double(total) : 1)
+                }
+            }, completion: { [weak self] message, _ in
+                DispatchQueue.main.async {
+                    session.onLog?(message)
+                    self?.transferBar.finish(message)
+                }
+            })
         }
         return true
+    }
+
+    /// A Blip-style bar over the bottom of the phone while a file is moving.
+    private lazy var transferBar: TransferBar = {
+        let bar = TransferBar(frame: .zero)
+        bar.isHidden = true
+        addSubview(bar)
+        return bar
+    }()
+
+    override func layout() {
+        super.layout()
+        transferBar.frame = NSRect(x: 12, y: bounds.height - 66, width: bounds.width - 24, height: 54)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -199,5 +221,56 @@ final class InputView: NSView {
         let v = Float(event.scrollingDeltaY * scale)
         guard h != 0 || v != 0 else { return }
         owner.session?.send(ScrcpyProtocol.scroll(at: p, h: h, v: v))
+    }
+}
+
+
+/// "Sending photo.jpg · 3 MB of 8 MB" and a bar, on a dark rounded plate.
+final class TransferBar: NSView {
+    private let label = NSTextField(labelWithString: "")
+    private let bar = NSProgressIndicator()
+    private var hideWork: DispatchWorkItem?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.8).cgColor
+        layer?.cornerRadius = 14
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 12)
+        label.lineBreakMode = .byTruncatingMiddle
+        bar.isIndeterminate = false
+        bar.minValue = 0
+        bar.maxValue = 1
+        bar.style = .bar
+        addSubview(label)
+        addSubview(bar)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+
+    override func layout() {
+        super.layout()
+        label.frame = NSRect(x: 12, y: 8, width: bounds.width - 24, height: 18)
+        bar.frame = NSRect(x: 12, y: 30, width: bounds.width - 24, height: 14)
+    }
+
+    // Clicks go through to the phone underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func show(_ text: String, progress: Double) {
+        hideWork?.cancel()
+        label.stringValue = text
+        bar.doubleValue = progress
+        isHidden = false
+    }
+
+    /// Leaves the result up for a few seconds, then goes.
+    func finish(_ text: String) {
+        show(text, progress: 1)
+        let work = DispatchWorkItem { [weak self] in self?.isHidden = true }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 }

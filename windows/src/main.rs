@@ -445,8 +445,8 @@ impl App {
                 let name = entry.name.clone();
                 let ptx = tx.clone();
                 let result = files::pull(&secret, &full, |done, total| {
-                    let pct = if total > 0 { done * 100 / total } else { 100 };
-                    let _ = ptx.send(Event::FileProgress(format!("Downloading {name}… {pct}% of {}", files::human_size(total))));
+                    let frac = if total > 0 { done as f32 / total as f32 } else { 1.0 };
+                    let _ = ptx.send(Event::FileProgress(format!("Downloading {name} · {} of {}", files::human_size(done), files::human_size(total)), frac));
                 });
                 let _ = tx.send(Event::FileDone(
                     result.map(|p| format!("Saved {} to Downloads", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())).map_err(|e| format!("{e:#}")),
@@ -492,6 +492,33 @@ impl App {
         fw.set_status(if entries.is_empty() { "Empty folder".into() } else { format!("{} items", entries.len()).into() });
         self.files_path = resolved;
         self.files_entries = entries;
+    }
+
+    /// A progress bar on the files window and, while mirroring, over the
+    /// bottom of the phone window, like Blip's.
+    fn show_transfer(&mut self, text: &str, frac: f32) {
+        self.files_window.set_status(text.into());
+        self.files_window.set_progress(frac);
+        if let Some(w) = &self.mirror_window {
+            w.set_transfer_text(text.into());
+            w.set_transfer_progress(frac);
+            w.set_transfer_visible(true);
+        }
+    }
+
+    /// The result stays on the bar for a few seconds, then the bar goes.
+    fn end_transfer(&mut self, text: String) {
+        self.files_window.set_progress(-1.0);
+        if let Some(w) = &self.mirror_window {
+            w.set_transfer_text(text.into());
+            w.set_transfer_progress(1.0);
+            let weak = w.as_weak();
+            Timer::single_shot(Duration::from_secs(3), move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_transfer_visible(false);
+                }
+            });
+        }
     }
 
     // MARK: - Tunnel and mirroring
@@ -1006,18 +1033,19 @@ impl App {
                     _ => {}
                 }
             }
-            Event::FileProgress(text) => {
-                self.files_window.set_status(text.into());
+            Event::FileProgress(text, frac) => {
+                self.show_transfer(&text, frac);
                 return;
             }
             Event::FileDone(result) => {
+                self.end_transfer(match &result { Ok(m) => m.clone(), Err(e) => format!("Failed: {e}") });
                 match result {
                     Ok(msg) => {
                         self.log("files", &msg);
                         self.files_window.set_status(msg.clone().into());
-                        // The files window shows it already; a toast is for drops
-                        // onto the phone window, where nothing else would say so.
-                        if !self.files_window.window().is_visible() {
+                        // The files window or the phone window's bar shows it
+                        // already; a toast only when neither is open.
+                        if !self.files_window.window().is_visible() && self.mirror_window.is_none() {
                             notify::show("Bridge", "File transfer", &msg);
                         }
                         // A drop went into the phone's Download folder; if that's
@@ -1148,8 +1176,8 @@ fn start_push(secret: String, tx: mpsc::Sender<Event>, lock: std::sync::Arc<std:
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let ptx = tx.clone();
         let result = files::push(&secret, &path, |done, total| {
-            let pct = if total > 0 { done * 100 / total } else { 100 };
-            let _ = ptx.send(Event::FileProgress(format!("Sending {name}… {pct}% of {}", files::human_size(total))));
+            let frac = if total > 0 { done as f32 / total as f32 } else { 1.0 };
+            let _ = ptx.send(Event::FileProgress(format!("Sending {name} · {} of {}", files::human_size(done), files::human_size(total)), frac));
         });
         let _ = tx.send(Event::FileDone(result.map(|r| format!("{name}: {r}")).map_err(|e| format!("{name}: {e:#}"))));
     });

@@ -111,17 +111,16 @@ final class Session {
         let now = Date().timeIntervalSince1970
         // A file transfer shares the tunnel and makes the video fall behind.
         // That's not the link getting worse, and a restart (about 10 s with
-        // no picture and no input) only made it worse. Hold the bitrate while
-        // a transfer runs, and start the measurement afresh once it's done.
-        if PhoneFiles.transferActive {
-            firstArrival = 0; minLag = .infinity; slowSince = nil
-            return
-        }
+        // no picture and no input) only made it worse. So: hold the bitrate
+        // while a transfer runs, and publish the lag so the transfer can
+        // pause while the picture catches up (PhoneFiles.yieldToVideo).
         if firstArrival == 0 { firstArrival = now; firstPts = pts; return }
         // How much later than "expected" did this frame arrive, relative to the first one?
         let lag = (now - firstArrival) - Double(pts - firstPts) / 1_000_000
         minLag = min(minLag, lag)
         let backlog = lag - minLag           // seconds of queued video, roughly
+        PhoneFiles.noteVideoBacklog(backlog)
+        if PhoneFiles.transferActive { slowSince = nil; return }   // the transfer backs off by itself
         if backlog > 0.35 {
             if slowSince == nil { slowSince = now }
             if now - slowSince! > 1.5, level < 3 { changeLevel(to: level + 1, reason: "Link is slow (\(Int(backlog * 1000)) ms behind)") }
@@ -144,15 +143,17 @@ final class Session {
     /// Runs on a background thread; `completion` gets the phone's reply line.
     /// Streams from disk (it used to read the whole file into memory first,
     /// which a multi-gigabyte video could not survive).
-    func pushFile(_ url: URL, completion: @escaping (String) -> Void) {
+    /// Queued behind any other transfer. `completion(message, ok)`.
+    func pushFile(_ url: URL, progress: @escaping (UInt64, UInt64) -> Void, completion: @escaping (String, Bool) -> Void) {
         let port = self.port
-        Thread {
+        PhoneFiles.queue.async {
             do {
-                completion(try PhoneFiles.push(port: port, url: url) { _, _ in })
+                let reply = try PhoneFiles.push(port: port, url: url, progress: progress)
+                completion("\(url.lastPathComponent): \(reply)", true)
             } catch {
-                completion("Couldn't send \(url.lastPathComponent): \(error.localizedDescription)")
+                completion("Couldn't send \(url.lastPathComponent): \(error.localizedDescription)", false)
             }
-        }.start()
+        }
     }
 
     func send(_ message: [UInt8]) {

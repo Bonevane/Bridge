@@ -26,6 +26,30 @@ enum PhoneFiles {
         return Date().timeIntervalSince(lastTransferBytes) < 5
     }
 
+    /// How far behind the mirrored video is (seconds) and when that was
+    /// measured. Transfers pause while it's lagging, so the picture keeps
+    /// moving and the transfer takes a little longer instead.
+    private static var backlog: Double = 0
+    private static var backlogAt = Date.distantPast
+    static func noteVideoBacklog(_ seconds: Double) {
+        lock.lock(); backlog = seconds; backlogAt = Date(); lock.unlock()
+    }
+    /// Waits (up to 2 s) while the video is more than 400 ms behind. A reading
+    /// older than 1.5 s is ignored: a still screen sends no frames.
+    static func yieldToVideo() {
+        let start = Date()
+        while Date().timeIntervalSince(start) < 2 {
+            lock.lock()
+            let lagging = backlog > 0.4 && Date().timeIntervalSince(backlogAt) < 1.5
+            lock.unlock()
+            if !lagging { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    /// One transfer at a time, whichever window started it.
+    static let queue = DispatchQueue(label: "bridge.transfers")
+
     /// One folder; empty path = the top. Returns the phone's resolved path too.
     static func list(port: Int, path: String) throws -> (String, [Entry]) {
         let s = try TCPStream(port: port, timeout: 20)
@@ -96,6 +120,7 @@ enum PhoneFiles {
                 out.write(Data(chunk))
                 done += UInt64(chunk.count)
                 noteTransfer()
+                yieldToVideo()
                 if Date().timeIntervalSince(last) > 0.25 { progress(done, total); last = Date() }
             }
         } catch {
@@ -131,6 +156,7 @@ enum PhoneFiles {
             try s.write([UInt8](data))
             done += UInt64(data.count)
             noteTransfer()
+            yieldToVideo()
             if Date().timeIntervalSince(last) > 0.25 { progress(done, total); last = Date() }
         }
         let reply = try s.readLine()
@@ -150,9 +176,10 @@ final class PhoneFilesModel: ObservableObject {
     @Published var entries: [PhoneFiles.Entry] = []
     @Published var status = ""
     @Published var loading = false
+    /// Transfer progress 0…1, nil when nothing is moving.
+    @Published var progress: Double?
     let port: Int
-    /// One transfer at a time; drops queue up behind each other.
-    private let transfers = DispatchQueue(label: "bridge.files")
+    private var transfers: DispatchQueue { PhoneFiles.queue }
 
     init(port: Int) { self.port = port }
 
@@ -199,15 +226,18 @@ final class PhoneFilesModel: ObservableObject {
         transfers.async {
             do {
                 let url = try PhoneFiles.pull(port: port, remote: full) { done, total in
-                    let pct = total > 0 ? done * 100 / total : 100
-                    DispatchQueue.main.async { self.status = "Downloading \(entry.name)… \(pct)% of \(PhoneFiles.humanSize(total))" }
+                    DispatchQueue.main.async {
+                        self.progress = total > 0 ? Double(done) / Double(total) : 1
+                        self.status = "Downloading \(entry.name) · \(PhoneFiles.humanSize(done)) of \(PhoneFiles.humanSize(total))"
+                    }
                 }
                 DispatchQueue.main.async {
+                    self.progress = nil
                     self.status = "Saved \(url.lastPathComponent) to Downloads"
                     NotificationBridge.post(app: "Bridge", title: "File downloaded", body: url.lastPathComponent)
                 }
             } catch {
-                DispatchQueue.main.async { self.status = "Download failed: \(error.localizedDescription)" }
+                DispatchQueue.main.async { self.progress = nil; self.status = "Download failed: \(error.localizedDescription)" }
             }
         }
     }
@@ -219,15 +249,18 @@ final class PhoneFilesModel: ObservableObject {
                 let name = url.lastPathComponent
                 do {
                     let reply = try PhoneFiles.push(port: port, url: url) { done, total in
-                        let pct = total > 0 ? done * 100 / total : 100
-                        DispatchQueue.main.async { self.status = "Sending \(name)… \(pct)%" }
+                        DispatchQueue.main.async {
+                            self.progress = total > 0 ? Double(done) / Double(total) : 1
+                            self.status = "Sending \(name) · \(PhoneFiles.humanSize(done)) of \(PhoneFiles.humanSize(total))"
+                        }
                     }
                     DispatchQueue.main.async {
+                        self.progress = nil
                         self.status = "\(name): \(reply)"
                         if self.path.hasSuffix("/Download") { self.refresh() }
                     }
                 } catch {
-                    DispatchQueue.main.async { self.status = "\(name): \(error.localizedDescription)" }
+                    DispatchQueue.main.async { self.progress = nil; self.status = "\(name): \(error.localizedDescription)" }
                 }
             }
         }
@@ -266,6 +299,7 @@ struct PhoneFilesView: View {
                 .buttonStyle(.plain)
                 .disabled(model.loading)
             }
+            if let p = model.progress { ProgressView(value: p) }
             HStack {
                 Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 Spacer()

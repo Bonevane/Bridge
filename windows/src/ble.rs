@@ -63,7 +63,8 @@ pub enum Event {
     UsbDone(Result<crate::store::Credentials, String>),
     /// Phone files (files.rs): a folder listing, transfer progress, and the outcome.
     FilesListed(Result<(String, Vec<crate::files::Entry>), String>),
-    FileProgress(String),
+    /// Transfer progress: what's moving, and how far (0.0 to 1.0).
+    FileProgress(String, f32),
     FileDone(Result<String, String>),
     /// This PC's Bluetooth radio: Some(on) when known, None if it has none.
     Radio(Option<bool>),

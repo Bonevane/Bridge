@@ -40,6 +40,12 @@ final class BluetoothLink: NSObject {
     private static let typeAuth: UInt8 = 6
     /// An app's icon, answering `icon <package>`: "package\t<base64 PNG>".
     private static let typeIcon: UInt8 = 7
+    /// A mirrored notification left the phone: "<id>".
+    private static let typeRemoved: UInt8 = 8
+    /// Now Playing: tab-separated key=value pairs, or "state=none" (MediaRelay.kt).
+    private static let typeMedia: UInt8 = 9
+    /// Album art: "<key>\t<base64 JPEG>".
+    private static let typeArt: UInt8 = 10
 
     private var central: CBCentralManager?
     private var phone: CBPeripheral?
@@ -63,6 +69,12 @@ final class BluetoothLink: NSObject {
     var onStatus: (([String: String]) -> Void)?
     /// An app icon from the phone (package name, PNG bytes).
     var onIcon: ((String, Data) -> Void)?
+    /// A notification's id when the phone clears it.
+    var onRemoved: ((Int) -> Void)?
+    /// Now Playing fields (title, artist, state, pos, dur…).
+    var onMedia: (([String: String]) -> Void)?
+    /// Album art: its key and JPEG bytes.
+    var onArt: ((String, Data) -> Void)?
 
     /// True while the phone is connected and subscribed.
     private(set) var isLinked = false {
@@ -203,6 +215,22 @@ final class BluetoothLink: NSObject {
         send(type: Self.typeCommand, text: "icon \(package)")
     }
 
+    /// Answers notification `id` on the phone, through its own Reply action.
+    func reply(id: Int, text: String) {
+        let line = text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
+        send(type: Self.typeCommand, text: "reply \(id) \(line)")
+    }
+
+    /// Cleared here, so clear it on the phone.
+    func dismiss(id: Int) {
+        send(type: Self.typeCommand, text: "dismiss \(id)")
+    }
+
+    /// "play", "pause", "toggle", "next", "prev" or "seek <ms>".
+    func media(_ command: String) {
+        send(type: Self.typeCommand, text: "media \(command)")
+    }
+
     /// Tells the phone the session is over, so it can turn USB debugging off.
     /// Bluetooth is the right channel for this: the tunnel is often exactly what
     /// has just died.
@@ -285,6 +313,19 @@ final class BluetoothLink: NSObject {
         case Self.typeNotification: onNotification(text)
         case Self.typeClipboard: onClipboard(text)
         case Self.typePing: break        // liveness only
+        case Self.typeRemoved:
+            if let id = Int(text.trimmingCharacters(in: .whitespaces)) { onRemoved?(id) }
+        case Self.typeMedia:
+            let fields = Dictionary(text.split(separator: "\t").compactMap { field -> (String, String)? in
+                let parts = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                return parts.count == 2 ? (String(parts[0]), String(parts[1])) : nil
+            }, uniquingKeysWith: { _, last in last })
+            onMedia?(fields)
+        case Self.typeArt:
+            let parts = text.split(separator: "\t", maxSplits: 1)
+            if parts.count == 2, let jpeg = Data(base64Encoded: String(parts[1])) {
+                onArt?(String(parts[0]), jpeg)
+            }
         case Self.typeIcon:
             let parts = text.split(separator: "\t", maxSplits: 1)
             if parts.count == 2, let png = Data(base64Encoded: String(parts[1])) {

@@ -1,4 +1,5 @@
 import AppKit
+import UserNotifications
 import SwiftUI
 
 @MainActor
@@ -21,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = StatusItemController(bridge: BridgeController.shared)
         // Resume the background helpers the user had switched on.
         NotificationBridge.requestPermission()
+        UNUserNotificationCenter.current().delegate = PhoneNotificationDelegate.shared
+        NotificationBridge.registerCategories()
         BridgeController.shared.updateBluetooth()
         BridgeController.shared.updateNotificationBridge()
         BridgeController.shared.updateBackgroundClipboard()

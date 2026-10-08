@@ -898,6 +898,25 @@ final class BridgeController: ObservableObject {
                 if state == .linked { self.twins.report(force: true); self.iconsRequested.removeAll() }
             }
         }
+        bluetoothLink.onRemoved = { id in
+            Task { @MainActor in NotificationBridge.remove(id: id) }
+        }
+        bluetoothLink.onMedia = { [weak self] fields in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.media = fields["state"] == "none" ? [:] : fields
+                self.mediaReceivedAt = Date()
+                self.mediaArt = fields["art"].flatMap { self.artByKey[$0] }
+            }
+        }
+        bluetoothLink.onArt = { [weak self] key, jpeg in
+            Task { @MainActor in
+                guard let self = self, let image = NSImage(data: jpeg) else { return }
+                if self.artByKey.count > 30 { self.artByKey.removeAll() }
+                self.artByKey[key] = image
+                if self.media["art"] == key { self.mediaArt = image }
+            }
+        }
         bluetoothLink.onIcon = { [weak self] package, png in
             Task { @MainActor in
                 NotificationBridge.cacheIcon(png, for: package)
@@ -913,6 +932,10 @@ final class BridgeController: ObservableObject {
                 self.phoneDaemonAlive = daemon
                 self.phoneTunnelOn = tunnel
                 if let paused = fields["paused"] { self.phonePausedForBanking = paused == "1" }
+                if let b = fields["battery"].flatMap(Int.init), b >= 0 { self.phoneBattery = b }
+                self.phoneCharging = fields["charging"] == "1"
+                if let net = fields["net"] { self.phoneNetwork = net }
+                if let model = fields["model"] { self.phoneModel = model.replacingOccurrences(of: "_", with: " ") }
                 if let keep = fields["keep"] {
                     self.reconcileKeepReady(phoneValue: keep == "1",
                                             phoneChangedAt: Double(fields["keepAt"] ?? "0") ?? 0)
@@ -930,7 +953,10 @@ final class BridgeController: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 self.bluetoothLinked = linked
-                if !linked { self.phoneDaemonAlive = false; self.phoneTunnelOn = false }
+                if !linked {
+                    self.phoneDaemonAlive = false; self.phoneTunnelOn = false
+                    self.media = [:]; self.phoneBattery = nil
+                }
                 // Bluetooth covers both while it's in range, so the tunnel-based
                 // helpers should stand down, and the clipboard watcher should
                 // start (or stop) with the link.
@@ -950,13 +976,49 @@ final class BridgeController: ObservableObject {
         let parts = line.components(separatedBy: "\t")
         guard parts.count >= 3, mirrorNotifications else { return }
         let package = parts.count > 3 ? parts[3] : ""
+        let id = parts.count > 4 ? Int(parts[4]) ?? 0 : 0
+        let flags = parts.count > 5 ? parts[5] : ""
         // First notification from an app: ask the phone for its icon (a small
         // PNG over Bluetooth, cached for good). This one goes out without it.
         if !package.isEmpty, !NotificationBridge.hasIcon(for: package), bluetoothLinked, !iconsRequested.contains(package) {
             iconsRequested.insert(package)
             bluetoothLink.requestIcon(package)
         }
-        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2], package: package)
+        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2], package: package,
+                                id: id, replyable: flags.contains("r") && bluetoothLinked)
+    }
+
+    /// A reply typed into a phone notification here.
+    func replyOnPhone(id: Int, text: String) {
+        guard bluetoothLinked else {
+            NotificationBridge.post(app: "Bridge", title: "Reply not sent",
+                                    body: "The phone isn't linked over Bluetooth right now.")
+            return
+        }
+        bluetoothLink.reply(id: id, text: text)
+        appendLog("Reply sent to the phone.", source: "notify")
+    }
+
+    /// Cleared here: clear it on the phone too.
+    func dismissOnPhone(id: Int) {
+        if bluetoothLinked { bluetoothLink.dismiss(id: id) }
+    }
+
+    // MARK: - Phone status and Now Playing (shown in the menu)
+
+    @Published var phoneBattery: Int?
+    @Published var phoneCharging = false
+    @Published var phoneNetwork = ""
+    @Published var phoneModel = ""
+    /// Now Playing fields from the phone, and when they arrived (the position
+    /// is extrapolated from then).
+    @Published var media: [String: String] = [:]
+    @Published var mediaReceivedAt = Date()
+    @Published var mediaArt: NSImage?
+    private var artByKey: [String: NSImage] = [:]
+
+    func mediaCommand(_ command: String) {
+        if bluetoothLinked { bluetoothLink.media(command) }
     }
 
     private lazy var notificationBridge = NotificationBridge(

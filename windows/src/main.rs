@@ -74,6 +74,10 @@ struct App {
     /// Last text we synced with the phone over the session, to stop ping-pong.
     last_synced: Option<String>,
     mirroring: bool,
+    /// The tunnel and helper are up for the files window only (no video).
+    files_session: bool,
+    /// The connect in progress is for the files window, not for mirroring.
+    connect_for_files: bool,
     /// Which Connect this is. A result from an earlier, cancelled attempt is
     /// ignored, and the thread behind it stops retrying as soon as it sees
     /// the number move on (it used to keep hammering START, and once it got
@@ -127,6 +131,8 @@ impl App {
             mirror_size: None,
             last_synced: None,
             mirroring: false,
+            files_session: false,
+            connect_for_files: false,
             attempt: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             connecting: false,
             woke_tunnel: false,
@@ -181,6 +187,8 @@ impl App {
             ("Connecting", "Starting the tunnel and the phone's helper…", 2)
         } else if self.mirroring {
             ("Mirroring", "Video, audio and input over the tunnel", 1)
+        } else if self.files_session {
+            ("Connected for files", "The tunnel and the phone's helper are up for Phone files. Closing that window ends it.", 1)
         } else if self.phone_paused {
             ("Phone paused", "USB debugging off for banking apps", 2)
         } else if self.linked {
@@ -401,8 +409,19 @@ impl App {
 
     fn list_files(&mut self, path: &str) {
         let fw = &self.files_window;
-        if !self.mirroring {
-            fw.set_status("Phone files need a mirroring session: click Mirror phone first.".into());
+        if !self.mirroring && !self.files_session {
+            // No session: bring the tunnel and helper up just for files (no
+            // video), and list once they're there. See connect_with().
+            fw.set_path("Phone storage".into());
+            if self.connecting {
+                fw.set_status("Connecting to the phone…".into());
+            } else if !self.creds.is_paired() {
+                fw.set_status("Pair your phone first.".into());
+            } else {
+                fw.set_status("Connecting to the phone…".into());
+                self.files_path = path.to_string();
+                self.connect_with(true);
+            }
             return;
         }
         fw.set_loading(true);
@@ -506,11 +525,31 @@ impl App {
 
     /// Mirror Phone: wake the tunnel if needed, connect, START.
     fn connect(&mut self) {
+        if self.files_session && !self.mirroring {
+            // The tunnel and helper are already up for the files window:
+            // just open the video.
+            match self.open_session() {
+                Ok(()) => self.mirroring = true,
+                Err(e) => {
+                    self.log("", &format!("couldn't start mirroring: {e:#}"));
+                    self.error = Some(("Couldn't mirror".into(), format!("{e:#}"), false));
+                }
+            }
+            self.refresh();
+            return;
+        }
+        self.connect_with(false);
+    }
+
+    /// Tunnel up (waking it over Bluetooth if needed), then START the helper.
+    /// `for_files`: stop there, for the files window, instead of opening video.
+    fn connect_with(&mut self, for_files: bool) {
         if self.mirroring || self.tunnel.is_some() {
             return;
         }
         use std::sync::atomic::Ordering;
         let attempt = self.attempt.fetch_add(1, Ordering::SeqCst) + 1;
+        self.connect_for_files = for_files;
         self.connecting = true;
         self.error = None;
         self.woke_tunnel = false;
@@ -713,6 +752,10 @@ impl App {
         }
         self.woke_tunnel = false;
         self.window.global::<AppState>().set_busy(false);
+        if self.connect_for_files {
+            self.files_window.set_loading(false);
+            self.files_window.set_status(format!("Couldn't connect: {message}").into());
+        }
         self.error = Some(("Couldn't connect".into(), message, false));
         if let Some(mut t) = self.tunnel.take() {
             t.stop();
@@ -721,14 +764,17 @@ impl App {
     }
 
     fn disconnect(&mut self) {
-        if !self.mirroring && !self.connecting && self.tunnel.is_none() {
+        if !self.mirroring && !self.connecting && !self.files_session && self.tunnel.is_none() {
             return;
         }
-        let was_mirroring = self.mirroring || self.connecting;   // a cancelled connect may have STARTed the helper
+        // A cancelled connect may have STARTed the helper; so has a files session.
+        let was_mirroring = self.mirroring || self.connecting || self.files_session;
         self.mirroring = false;
         self.connecting = false;
+        self.files_session = false;
         self.woke_tunnel = false;   // "session over" below settles the tunnel
-        self.files_window.set_status("Mirroring ended; phone files need a session.".into());
+        self.files_window.set_status("Disconnected from the phone. Refresh to connect again.".into());
+        self.files_window.set_loading(false);
         if let Some(sess) = self.session.take() {
             sess.stop();
         }
@@ -827,7 +873,7 @@ impl App {
                 if !t.is_running() {
                     self.log("tunnel", "dumbpipe exited");
                     self.tunnel = None;
-                    if self.mirroring || self.connecting {
+                    if self.mirroring || self.connecting || self.files_session {
                         // Close the session and its window properly (this used
                         // to leave both up, with disconnect() then refusing to
                         // run because it saw no tunnel and no mirroring).
@@ -1044,6 +1090,15 @@ impl App {
                 match result {
                     Ok(reply) => {
                         self.log("phone", &reply);
+                        if self.connect_for_files {
+                            self.files_session = true;
+                            self.connecting = false;
+                            self.window.global::<AppState>().set_busy(false);
+                            let p = self.files_path.clone();
+                            self.list_files(&p);
+                            self.refresh();
+                            return;
+                        }
                         if let Err(e) = self.open_session() {
                             self.log("", &format!("couldn't start mirroring: {e:#}"));
                             // Still "connecting" here, so disconnect() tells the phone
@@ -1120,7 +1175,32 @@ fn tray_icon() -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("icon")
 }
 
+/// One Bridge at a time. A second copy would link to the phone over
+/// Bluetooth from the same PC (the phone saw two subscriptions from one
+/// device and one failed its handshake) and fight the first over the tunnel
+/// port. A second launch asks the running one to show its window, then quits.
+/// Returns the "show yourself" event the running instance waits on.
+fn single_instance() -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+    unsafe {
+        // Never closed: it lives as long as this process, which is the point.
+        let _mutex = CreateMutexW(None, true, w!("Local\\Bridge-Bonevane-instance"));
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            if !std::env::args().any(|a| a == "--tray") {
+                if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, w!("Local\\Bridge-Bonevane-show")) {
+                    let _ = SetEvent(ev);
+                }
+            }
+            std::process::exit(0);
+        }
+        CreateEventW(None, false, false, w!("Local\\Bridge-Bonevane-show")).ok()
+    }
+}
+
 fn main() {
+    let show_event = single_instance();
     log::init();
     crate::log!("", "Bridge {VERSION} starting");
 
@@ -1258,19 +1338,28 @@ fn main() {
             files_window.window().on_winit_window_event(move |_, event| {
                 if let WindowEvent::DroppedFile(path) = event {
                     if let Ok(app) = a.try_borrow() {
-                        if app.mirroring {
+                        if app.mirroring || app.files_session {
                             start_push(app.creds.secret.clone(), app.events_tx.clone(), app.transfer_lock.clone(), path.clone());
                         } else {
-                            app.files_window.set_status("Sending files needs a mirroring session.".into());
+                            app.files_window.set_status("Not connected yet: wait for the folder to load, then drop again.".into());
                         }
                     }
                 }
                 EventResult::Propagate
             });
         }
-        let fw = files_window.as_weak();
+        // Closing it ends a files-only session (tunnel and helper were up just
+        // for it); a mirroring session carries on.
+        let a = app.clone();
         files_window.window().on_close_requested(move || {
-            if let Some(w) = fw.upgrade() { let _ = w.hide(); }
+            if let Ok(mut app) = a.try_borrow_mut() {
+                if app.files_session && !app.mirroring {
+                    app.log("files", "files window closed; ending the files session");
+                    app.disconnect();
+                } else if app.connecting && app.connect_for_files {
+                    app.disconnect();
+                }
+            }
             slint::CloseRequestResponse::HideWindow
         });
     }
@@ -1330,6 +1419,16 @@ fn main() {
                 } else if e.id == quit.id() {
                     a.borrow_mut().disconnect();
                     let _ = slint::quit_event_loop();
+                }
+            }
+            // Someone launched Bridge again: show this one instead.
+            if let Some(ev) = show_event {
+                use windows::Win32::Foundation::WAIT_OBJECT_0;
+                use windows::Win32::System::Threading::WaitForSingleObject;
+                if unsafe { WaitForSingleObject(ev, 0) } == WAIT_OBJECT_0 {
+                    if let Some(w) = w.upgrade() {
+                        let _ = w.show();
+                    }
                 }
             }
             while let Ok(e) = tray_clicks.try_recv() {

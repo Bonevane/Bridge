@@ -177,8 +177,8 @@ export component MainWindow inherits Window {
             Divider {}
             Tile {
                 icon: @image-url("icons/folder-open.svg"); title: "Phone files";
-                subtitle: AppState.mirroring ? "Browse and download, or drop files on the phone window" : "While mirroring";
-                clickable: true; enabled: AppState.mirroring;
+                subtitle: "Browse and download; drop files to send them. Works without mirroring.";
+                clickable: true; enabled: AppState.paired;
                 clicked => { AppState.open-files(); }
                 Icon { source: @image-url("icons/chevron-right.svg"); }
             }

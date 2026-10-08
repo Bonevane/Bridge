@@ -135,11 +135,12 @@ struct MenuView: View {
                 }
             }
 
-            if bridge.isConnected {
+            if bridge.isPaired {
                 MenuRow("Phone Files…", systemImage: "folder",
-                        help: "Browse the phone's storage and download files; drop files on the phone window to send them") {
+                        help: "Browse the phone's storage and download files; drop files on the window to send them. Works without mirroring.") {
                     bridge.openPhoneFiles()
                 }
+                .disabled(bridge.isBusy)
             }
 
             MenuRow("Set Up Over USB…", systemImage: "cable.connector",
@@ -227,6 +228,11 @@ struct MenuView: View {
         if bridge.isConnected {
             return Reach(title: "Mirroring", detail: "Screen, audio and clipboard are live",
                          symbol: "checkmark.circle.fill", tint: .green)
+        }
+        if bridge.filesSession {
+            return Reach(title: "Connected for files",
+                         detail: "The tunnel and the phone's helper are up for Phone Files. Closing that window ends it.",
+                         symbol: "folder.fill", tint: .green)
         }
         if bridge.phonePausedForBanking {
             return Reach(title: "Phone paused", detail: "USB debugging off for banking apps",

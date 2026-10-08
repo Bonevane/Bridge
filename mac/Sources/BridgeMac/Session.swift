@@ -109,6 +109,14 @@ final class Session {
     /// Per-frame lag bookkeeping. `pts` in microseconds from the phone.
     private func observe(pts: Int64) {
         let now = Date().timeIntervalSince1970
+        // A file transfer shares the tunnel and makes the video fall behind.
+        // That's not the link getting worse, and a restart (about 10 s with
+        // no picture and no input) only made it worse. Hold the bitrate while
+        // a transfer runs, and start the measurement afresh once it's done.
+        if PhoneFiles.transferActive {
+            firstArrival = 0; minLag = .infinity; slowSince = nil
+            return
+        }
         if firstArrival == 0 { firstArrival = now; firstPts = pts; return }
         // How much later than "expected" did this frame arrive, relative to the first one?
         let lag = (now - firstArrival) - Double(pts - firstPts) / 1_000_000

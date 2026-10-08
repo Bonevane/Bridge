@@ -11,6 +11,20 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// When a file transfer last moved data (ms since the epoch). The session
+/// holds its bitrate while this is recent: a transfer shares the tunnel and
+/// makes the video fall behind, which isn't the link getting worse, and a
+/// restart (about 10 s with no picture and no input) only made it worse.
+static LAST_TRANSFER_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn note_transfer() {
+    LAST_TRANSFER_MS.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+}
+
+fn transfer_active() -> bool {
+    chrono::Utc::now().timestamp_millis() - LAST_TRANSFER_MS.load(Ordering::Relaxed) < 5_000
+}
+
 /// Where decoded frames go: called on the video thread, as fast as they come.
 pub type FrameSink = Arc<dyn Fn(video::Frame) + Send + Sync>;
 
@@ -237,6 +251,13 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
             // Adaptive bitrate: if frames arrive later and later relative to
             // their capture time, bits are queueing up on the link.
             let now = Instant::now();
+            if transfer_active() {
+                // Start the measurement afresh once the transfer is done.
+                first = None;
+                min_lag = f64::INFINITY;
+                slow_since = None;
+                continue;
+            }
             let Some((first_pts, first_arrival)) = first else { first = Some((pts, now)); continue };
             let lag = now.duration_since(first_arrival).as_secs_f64() - (pts - first_pts) as f64 / 1_000_000.0;
             min_lag = min_lag.min(lag);

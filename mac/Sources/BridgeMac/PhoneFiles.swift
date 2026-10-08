@@ -16,6 +16,16 @@ enum PhoneFiles {
 
     static let storageRoot = "/storage/emulated/0"
 
+    /// When a transfer last moved data. The mirroring session holds its
+    /// bitrate while this is recent (see Session.observe).
+    private static let lock = NSLock()
+    private static var lastTransferBytes = Date.distantPast
+    static func noteTransfer() { lock.lock(); lastTransferBytes = Date(); lock.unlock() }
+    static var transferActive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastTransferBytes) < 5
+    }
+
     /// One folder; empty path = the top. Returns the phone's resolved path too.
     static func list(port: Int, path: String) throws -> (String, [Entry]) {
         let s = try TCPStream(port: port, timeout: 20)
@@ -85,6 +95,7 @@ enum PhoneFiles {
                 let chunk = try s.readExactly(Int(min(1 << 20, total - done)))
                 out.write(Data(chunk))
                 done += UInt64(chunk.count)
+                noteTransfer()
                 if Date().timeIntervalSince(last) > 0.25 { progress(done, total); last = Date() }
             }
         } catch {
@@ -119,6 +130,7 @@ enum PhoneFiles {
             if data.isEmpty { break }
             try s.write([UInt8](data))
             done += UInt64(data.count)
+            noteTransfer()
             if Date().timeIntervalSince(last) > 0.25 { progress(done, total); last = Date() }
         }
         let reply = try s.readLine()
@@ -273,6 +285,14 @@ struct PhoneFilesView: View {
 /// The window. Files dropped on it go to the phone's Download folder.
 final class PhoneFilesWindow: NSWindow {
     let model: PhoneFilesModel
+    /// Called when the window closes, so a files-only session can end with it.
+    var onClose: (() -> Void)?
+
+    override func close() {
+        let handler = onClose
+        super.close()
+        handler?()
+    }
 
     init(port: Int) {
         model = PhoneFilesModel(port: port)

@@ -105,6 +105,7 @@ pub fn pull(secret: &str, remote: &str, mut progress: impl FnMut(u64, u64)) -> R
         }
         out.write_all(&buf[..n])?;
         done += n as u64;
+        crate::session::note_transfer();
         if last.elapsed() > Duration::from_millis(250) {
             progress(done, total);
             last = Instant::now();
@@ -144,6 +145,7 @@ pub fn push(secret: &str, local: &Path, mut progress: impl FnMut(u64, u64)) -> R
         }
         s.write_all(&buf[..n])?;
         done += n as u64;
+        crate::session::note_transfer();
         if last.elapsed() > Duration::from_millis(250) {
             progress(done, total);
             last = Instant::now();

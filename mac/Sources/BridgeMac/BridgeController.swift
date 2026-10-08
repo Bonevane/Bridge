@@ -495,8 +495,18 @@ final class BridgeController: ObservableObject {
         return killed
     }
 
-    func connect() {
+    /// The tunnel and helper are up for the Phone Files window only (no video).
+    @Published var filesSession = false
+
+    /// `forFiles`: bring up the tunnel and helper for the files window and
+    /// stop there, instead of opening the video.
+    func connect(forFiles: Bool = false) {
         guard !isBusy, !isConnected else { return }
+        if filesSession {
+            // Already up for the files window: just open the video.
+            if !forFiles { Task { await startMirroring(port: localPort) } }
+            return
+        }
 
         let currentTicket = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentTicket.hasPrefix("endpoint") else {
@@ -567,9 +577,20 @@ final class BridgeController: ObservableObject {
                 fail("Phone: \(startReply)")
                 return
             }
+            if forFiles {
+                filesSession = true
+                phase = .idle
+                filesWindow?.model.list(filesWindow?.model.path ?? "")
+                return
+            }
+            await startMirroring(port: port)
+        }
+    }
 
-            // Step 3: open the video and control streams and show the window.
-            // No adb involved: the phone's daemon runs scrcpy's server for us.
+    /// Step 3: open the video and control streams and show the window. No adb
+    /// involved: the phone's daemon runs scrcpy's server for us.
+    private func startMirroring(port: Int) async {
+        do {
             phase = .working("Starting mirroring...")
             let window = SessionWindow()
             let session = Session(port: port, player: window.player)
@@ -619,15 +640,27 @@ final class BridgeController: ObservableObject {
 
     private var filesWindow: PhoneFilesWindow?
 
-    /// Browse the phone's shared storage. Needs the session's tunnel and helper.
+    /// Browse the phone's shared storage. Without a mirroring session it
+    /// brings the tunnel and helper up just for this window, and closing the
+    /// window ends that again.
     func openPhoneFiles() {
-        guard isConnected else { return }
+        guard isPaired else { return }
         let window = filesWindow ?? PhoneFilesWindow(port: localPort)
         filesWindow = window
+        window.onClose = { [weak self] in
+            guard let self = self, self.filesSession, !self.isConnected, !self.disconnecting else { return }
+            self.appendLog("Files window closed; ending the files session.")
+            self.disconnect()
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        window.model.list(window.model.path)
+        if isConnected || filesSession {
+            window.model.list(window.model.path)
+        } else if !isBusy {
+            window.model.status = "Connecting to the phone…"
+            connect(forFiles: true)
+        }
     }
 
     // MARK: - Disconnect
@@ -1039,6 +1072,7 @@ final class BridgeController: ObservableObject {
             }
 
             stopProcesses()
+            filesSession = false
             phase = .idle
             disconnecting = false
             if syncClipboard && !keepReady {
@@ -1103,6 +1137,7 @@ final class BridgeController: ObservableObject {
         session?.stop()
         session = nil
         if let w = sessionWindow { sessionWindow = nil; w.onClose = nil; w.close() }
+        filesSession = false
         filesWindow?.close()   // it needs the session's tunnel
         NSApp.setActivationPolicy(.accessory)   // back to menu-bar only
         if let m = oldMirror, m.isRunning { m.terminate() }
@@ -1122,7 +1157,8 @@ final class BridgeController: ObservableObject {
             }
         } else if process === tunnel {
             tunnel = nil
-            if !userStopped, isConnected {
+            if !userStopped, isConnected || filesSession {
+                filesSession = false
                 stopProcesses()
                 fail("Lost the connection to the phone.")
             }

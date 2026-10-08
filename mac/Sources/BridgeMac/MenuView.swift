@@ -13,7 +13,7 @@ struct MenuView: View {
     var body: some View {
         GlassGroup(spacing: 14) {
             VStack(spacing: 10) {
-                header
+                header.zIndex(1)   // its hover labels hang over the card below
                 connection
                 primaryButton
                 if !bridge.media.isEmpty { NowPlayingCard(bridge: bridge) }
@@ -96,7 +96,7 @@ struct MenuView: View {
             }
             modeIcon
             if let net = networkLabel {
-                Image(systemName: net.1).font(.system(size: 11)).foregroundStyle(.secondary).help(net.0)
+                Image(systemName: net.1).font(.system(size: 11)).foregroundStyle(.secondary).hoverHint(net.0)
             }
             if let battery = bridge.phoneBattery {
                 HStack(spacing: 2) {
@@ -105,7 +105,7 @@ struct MenuView: View {
                 }
                 .font(.system(size: 11))
                 .foregroundStyle(battery < 20 && !bridge.phoneCharging ? Color.orange : bridge.phoneCharging ? Color.green : Color.secondary)
-                .help(bridge.phoneCharging ? "Charging" : "Battery")
+                .hoverHint(bridge.phoneCharging ? "Charging" : "Battery")
             }
         }
     }
@@ -114,10 +114,10 @@ struct MenuView: View {
     @ViewBuilder private var modeIcon: some View {
         switch bridge.phoneMode {
         case "anywhere":
-            Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(Color.accentColor).help("Anywhere mode")
+            Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(Color.accentColor).hoverHint("Anywhere mode")
         case "nearby":
             BluetoothGlyph().stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
-                .frame(width: 7, height: 11).help("Nearby mode")
+                .frame(width: 7, height: 11).hoverHint("Nearby mode")
         default:
             EmptyView()
         }
@@ -566,4 +566,45 @@ struct BluetoothGlyph: Shape {
         p.addLine(to: CGPoint(x: x0, y: r.minY + r.height * 0.73))
         return p
     }
+}
+
+// MARK: - Hover labels
+
+/// macOS shows `.help` tooltips only in the active app's key window, and
+/// this panel deliberately never takes focus, so they never appeared. This
+/// draws its own small label under the view while the pointer is over it.
+private final class HintState: ObservableObject {
+    @Published var showing = false
+}
+
+private struct HoverHint: ViewModifier {
+    let text: String
+    @StateObject private var state = HintState()
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .onHover { inside in
+                withAnimation(.easeOut(duration: 0.12)) { state.showing = inside }
+            }
+            .overlay(alignment: .top) {
+                if state.showing {
+                    Text(text)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .fixedSize()
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(.regularMaterial))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.12)))
+                        .offset(y: 18)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+extension View {
+    func hoverHint(_ text: String) -> some View { modifier(HoverHint(text: text)) }
 }

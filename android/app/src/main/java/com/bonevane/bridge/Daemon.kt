@@ -139,6 +139,13 @@ object Daemon {
         }
         sessions[scid] = Session(scid, process, audioSock, controlSock)
         reply(s, "OK scid=$scid")
+        // The video only flows phone → computer, so nothing here would notice
+        // the computer hanging up while the screen is still (no frames, no
+        // failed write). The session then lingered: scrcpy-server kept
+        // capturing in the background, and the open stream made the phone
+        // think another computer was still mirroring, so it never went back to
+        // Nearby. Watch the computer's side; when it closes, end the session.
+        hangUpWhenClosed(s) { runCatching { videoSock.close() } }
         try {
             pump(videoSock.inputStream, s.getOutputStream())
         } finally {
@@ -155,7 +162,25 @@ object Daemon {
     private fun audio(s: Socket, scid: String) {
         val session = sessions[scid] ?: run { reply(s, "ERR no such session"); return }
         reply(s, "OK")
+        // As for video: a silent phone sends nothing, so notice the hang-up.
+        hangUpWhenClosed(s) { runCatching { s.close() } }
         pump(session.audio.inputStream, s.getOutputStream())
+    }
+
+    /**
+     * Runs [onClosed] once the computer's side of [s] closes. For streams that
+     * only send, the computer never writes after its command line, so a read
+     * returning -1 (or failing) means it has gone.
+     */
+    private fun hangUpWhenClosed(s: Socket, onClosed: () -> Unit) {
+        Thread {
+            runCatching {
+                s.soTimeout = 0
+                val input = s.getInputStream()
+                while (input.read() >= 0) { /* nothing is expected; ignore */ }
+            }
+            onClosed()
+        }.apply { isDaemon = true }.start()
     }
 
     /** Attaches [s] to a running session's control stream (both directions). */

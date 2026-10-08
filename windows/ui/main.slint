@@ -29,6 +29,26 @@ export global AppState {
     in-out property <Capability> notifications: { name: "Notifications", detail: "", state: 0 };
     in-out property <Capability> clipboard: { name: "Clipboard", detail: "", state: 0 };
 
+    // The phone line at the top of the hero: model, battery, network.
+    in-out property <string> phone-model: "";
+    in-out property <int> phone-battery: -1;   // -1: unknown, hidden
+    in-out property <bool> phone-charging: false;
+    in-out property <string> phone-network: "";   // "Wi-Fi", "Mobile", "Offline" or ""
+    in-out property <string> phone-mode: "";   // "nearby", "anywhere" or ""
+
+    // Now Playing on the phone (hidden when nothing is).
+    in-out property <bool> media-visible: false;
+    in-out property <string> media-title: "";
+    in-out property <string> media-subtitle: "";
+    in-out property <image> media-art;
+    in-out property <bool> media-has-art: false;
+    in-out property <bool> media-playing: false;
+    in-out property <float> media-position: 0;   // 0..1
+    in-out property <string> media-elapsed: "";
+    in-out property <string> media-length: "";
+    callback media(string);
+    callback seek(float);
+
     in-out property <bool> show-log: false;
     in-out property <string> log-text: "";
     in-out property <string> version: "";
@@ -82,6 +102,119 @@ component CapabilityTile inherits Tile {
     }
 }
 
+// An icon that names itself on hover (Slint has no tooltips).
+component HoverIcon inherits Rectangle {
+    in property <image> source;
+    in property <color> tint: Theme.on-surface-variant;
+    in property <string> hint;
+    width: 16px;
+    height: 28px;
+    Icon { source: root.source; tint: root.tint; width: 15px; height: 15px; y: (parent.height - self.height) / 2; }
+    area := TouchArea {}
+    if area.has-hover : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height + 2px;
+        width: label.preferred-width + 16px;
+        height: 22px;
+        border-radius: 6px;
+        background: Theme.on-surface;
+        label := Text { text: root.hint; color: Theme.background; font-family: Theme.font; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+    }
+}
+
+// What the phone is playing: the cover, title, artist and app, a seek bar
+// you can drag, and previous / play-pause / next.
+component NowPlaying inherits Rectangle {
+    property <float> dragging: -1;   // 0..1 while the seek bar is held
+    border-radius: 16px;
+    background: Theme.surface;
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        Rectangle {
+            width: 52px; height: 52px;
+            border-radius: 10px;
+            clip: true;
+            background: Theme.surface-highest;
+            if AppState.media-has-art : Image { source: AppState.media-art; width: 100%; height: 100%; image-fit: cover; }
+            if !AppState.media-has-art : Icon { source: @image-url("icons/music.svg"); width: 24px; height: 24px; x: 14px; y: 14px; }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Label { text: AppState.media-title; font-weight: 600; overflow: elide; }
+            Muted { text: AppState.media-subtitle; font-size: 12px; wrap: no-wrap; overflow: elide; }
+            if AppState.media-length != "" : VerticalLayout {
+                spacing: 2px;
+                padding-top: 4px;
+                Rectangle {
+                    height: 12px;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        height: root.dragging >= 0 ? 6px : 4px;
+                        border-radius: self.height / 2;
+                        background: Theme.surface-highest;
+                        Rectangle {
+                            x: 0;
+                            width: max(4px, parent.width * (root.dragging >= 0 ? root.dragging : AppState.media-position));
+                            height: parent.height;
+                            border-radius: parent.border-radius;
+                            background: Theme.primary;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down || (e.kind == PointerEventKind.move && self.pressed)) {
+                                root.dragging = clamp(self.mouse-x / self.width, 0, 1);
+                            } else if (e.kind == PointerEventKind.up && root.dragging >= 0) {
+                                AppState.seek(root.dragging);
+                                root.dragging = -1;
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    Muted { text: AppState.media-elapsed; font-size: 10px; wrap: no-wrap; horizontal-stretch: 1; }
+                    Muted { text: AppState.media-length; font-size: 10px; wrap: no-wrap; }
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 4px;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 30px; height: 30px; border-radius: 15px;
+                    background: prev.has-hover ? Theme.surface-high : transparent;
+                    Icon { source: @image-url("icons/skip-previous.svg"); tint: Theme.on-surface; width: 22px; height: 22px; x: 4px; y: 4px; }
+                    prev := TouchArea { clicked => { AppState.media("prev"); } }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 34px; height: 34px; border-radius: 17px;
+                    background: play.has-hover ? Theme.on-primary-container : Theme.primary;
+                    Icon { source: AppState.media-playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg"); tint: Theme.on-primary; width: 22px; height: 22px; x: 6px; y: 6px; }
+                    play := TouchArea { clicked => { AppState.media("toggle"); } }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 30px; height: 30px; border-radius: 15px;
+                    background: next.has-hover ? Theme.surface-high : transparent;
+                    Icon { source: @image-url("icons/skip-next.svg"); tint: Theme.on-surface; width: 22px; height: 22px; x: 4px; y: 4px; }
+                    next := TouchArea { clicked => { AppState.media("next"); } }
+                }
+            }
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Bridge";
     // Resizable: the content follows the window's width and scrolls when
@@ -104,20 +237,50 @@ export component MainWindow inherits Window {
         padding: 16px;
         spacing: 14px;
 
-        // Header, centred like the phone's top bar, with refresh on the right.
+        // Top bar: "Bridge" on the left; on the right, while the phone is
+        // linked, its name, the mode chosen on it (icon, name on hover), its
+        // network and its battery; then refresh.
+        // z: drawn above the cards below, so hover labels aren't covered.
         Rectangle {
-            height: 28px;
-            Label { text: "Bridge"; width: 100%; height: 100%; font-size: 17px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-            HorizontalLayout {
-                alignment: end;
-                Rectangle {
-                    width: 28px;
-                    border-radius: 14px;
-                    background: rf.has-hover ? Theme.surface-high : transparent;
-                    Icon { source: @image-url("icons/refresh-cw.svg"); width: 18px; height: 18px; x: 5px; y: 5px; }
-                    rf := TouchArea { clicked => { AppState.refresh(); } }
+        z: 1;
+        height: 28px;
+        HorizontalLayout {
+            spacing: 8px;
+            Label { text: "Bridge"; font-size: 15px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+            if AppState.phone-battery >= 0 : HorizontalLayout {
+                spacing: 8px;
+                Muted { text: AppState.phone-model; font-size: 11px; vertical-alignment: center; wrap: no-wrap; overflow: elide; }
+                if AppState.phone-mode != "" : HoverIcon {
+                    source: AppState.phone-mode == "anywhere" ? @image-url("icons/globe.svg") : @image-url("icons/bluetooth.svg");
+                    tint: Theme.primary;
+                    hint: AppState.phone-mode == "anywhere" ? "Anywhere mode" : "Nearby mode";
+                }
+                if AppState.phone-network != "" : HoverIcon {
+                    source: AppState.phone-network == "Wi-Fi" ? @image-url("icons/wifi.svg") : @image-url("icons/cellular.svg");
+                    hint: AppState.phone-network;
+                }
+                HorizontalLayout {
+                    spacing: 2px;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            source: AppState.phone-charging ? @image-url("icons/bolt.svg") : @image-url("icons/battery.svg");
+                            tint: AppState.phone-charging ? Theme.good : AppState.phone-battery < 20 ? Theme.warn : Theme.on-surface-variant;
+                            width: 14px; height: 14px;
+                        }
+                    }
+                    Muted { text: AppState.phone-battery + "%"; font-size: 11px; vertical-alignment: center; wrap: no-wrap;
+                        color: AppState.phone-charging ? Theme.good : AppState.phone-battery < 20 ? Theme.warn : Theme.on-surface-variant; }
                 }
             }
+            Rectangle {
+                width: 28px;
+                border-radius: 14px;
+                background: rf.has-hover ? Theme.surface-high : transparent;
+                Icon { source: @image-url("icons/refresh-cw.svg"); width: 18px; height: 18px; x: 5px; y: 5px; }
+                rf := TouchArea { clicked => { AppState.refresh(); } }
+            }
+        }
         }
 
         // Hero: how the phone is reachable.
@@ -145,6 +308,8 @@ export component MainWindow inherits Window {
                 }
             }
         }
+
+        if AppState.media-visible : NowPlaying {}
 
         // What works right now.
         SectionTitle { text: "Right now"; }

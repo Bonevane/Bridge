@@ -936,6 +936,7 @@ final class BridgeController: ObservableObject {
                 self.phoneCharging = fields["charging"] == "1"
                 if let net = fields["net"] { self.phoneNetwork = net }
                 if let model = fields["model"] { self.phoneModel = model.replacingOccurrences(of: "_", with: " ") }
+                if let mode = fields["mode"] { self.phoneMode = mode }
                 if let keep = fields["keep"] {
                     self.reconcileKeepReady(phoneValue: keep == "1",
                                             phoneChangedAt: Double(fields["keepAt"] ?? "0") ?? 0)
@@ -1016,6 +1017,8 @@ final class BridgeController: ObservableObject {
     @Published var mediaReceivedAt = Date()
     @Published var mediaArt: NSImage?
     private var artByKey: [String: NSImage] = [:]
+    /// "nearby" or "anywhere": the mode chosen on the phone.
+    @Published var phoneMode = ""
 
     func mediaCommand(_ command: String) {
         if bluetoothLinked { bluetoothLink.media(command) }

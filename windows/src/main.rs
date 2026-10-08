@@ -100,7 +100,9 @@ struct App {
     /// and album art by key.
     media: std::collections::HashMap<String, String>,
     media_received: Instant,
-    art: std::collections::HashMap<String, Vec<u8>>,
+    art: std::collections::HashMap<String, slint::Image>,
+    /// The phone's last status report (battery, network, mode, model…).
+    phone_status: std::collections::HashMap<String, String>,
     usb_busy: bool,
     /// The last failure (title, detail, from USB setup?). Stays on the hero
     /// card until the next action, so a heartbeat can't wipe it before it's read.
@@ -151,6 +153,7 @@ impl App {
             media: Default::default(),
             media_received: Instant::now(),
             art: Default::default(),
+            phone_status: Default::default(),
             usb_busy: false,
             error: None,
             icons_requested: BTreeSet::new(),
@@ -182,6 +185,19 @@ impl App {
         ui.set_phone_paused(self.phone_paused);
         ui.set_mirroring(self.mirroring);
         ui.set_version(VERSION.into());
+        // The phone in the top bar, while it's linked.
+        let ps = &self.phone_status;
+        let battery = ps.get("battery").and_then(|b| b.parse::<i32>().ok()).filter(|b| *b >= 0);
+        ui.set_phone_battery(if self.linked { battery.unwrap_or(-1) } else { -1 });
+        ui.set_phone_charging(ps.get("charging").map(|v| v == "1").unwrap_or(false));
+        ui.set_phone_model(ps.get("model").map(|m| m.replace('_', " ")).unwrap_or_default().into());
+        ui.set_phone_mode(ps.get("mode").cloned().unwrap_or_default().into());
+        ui.set_phone_network(match ps.get("net").map(String::as_str) {
+            Some("wifi") => "Wi-Fi",
+            Some("cell") => "Mobile",
+            Some("none") => "Offline",
+            _ => "",
+        }.into());
 
         let usb_failed = matches!(&self.error, Some((_, _, true)));
         ui.set_usb_retry(usb_failed && !self.usb_busy && !self.connecting && !self.mirroring);
@@ -529,6 +545,38 @@ impl App {
         }
     }
 
+    /// Now Playing → the card. Called when the phone sends something and on
+    /// every tick: the phone only sends the position when it changes, so the
+    /// clock runs here between updates.
+    fn show_media(&self) {
+        let ui = self.window.global::<AppState>();
+        let m = &self.media;
+        let visible = self.linked && !m.is_empty() && m.get("state").map(String::as_str) != Some("none");
+        ui.set_media_visible(visible);
+        if !visible {
+            return;
+        }
+        let playing = m.get("state").map(String::as_str) == Some("playing");
+        let dur = m.get("dur").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let pos = m.get("pos").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let now = pos + if playing { self.media_received.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+        let now = if dur > 0.0 { now.min(dur) } else { now };
+        ui.set_media_title(m.get("title").cloned().unwrap_or_default().into());
+        let sub: Vec<&str> = [m.get("artist"), m.get("app")].into_iter().flatten().map(String::as_str).filter(|s| !s.is_empty()).collect();
+        ui.set_media_subtitle(sub.join(" · ").into());
+        ui.set_media_playing(playing);
+        ui.set_media_position(if dur > 0.0 { (now / dur) as f32 } else { 0.0 });
+        ui.set_media_elapsed(if dur > 0.0 { clock(now).into() } else { "".into() });
+        ui.set_media_length(if dur > 0.0 { clock(dur).into() } else { "".into() });
+        match m.get("art").and_then(|k| self.art.get(k)) {
+            Some(img) => {
+                ui.set_media_art(img.clone());
+                ui.set_media_has_art(true);
+            }
+            None => ui.set_media_has_art(false),
+        }
+    }
+
     // MARK: - Tunnel and mirroring
 
     fn toggle_phone_tunnel(&mut self) {
@@ -860,6 +908,7 @@ impl App {
             self.handle(event);
         }
         self.show_log();   // lines logged from other threads since the last tick
+        self.show_media(); // the Now Playing clock
         self.poll_session();
         if self.settings.sync_clipboard && (self.linked || self.mirroring) {
             if let Some(text) = self.clipboard.poll() {
@@ -1025,13 +1074,23 @@ impl App {
             Event::Media(fields) => {
                 self.media = fields;
                 self.media_received = Instant::now();
+                self.show_media();
             }
             Event::Art { key, jpeg } => {
-                self.art.insert(key, jpeg);
-                if self.art.len() > 30 {
-                    // Keep the current one; drop the rest.
-                    let keep = self.media.get("art").cloned().unwrap_or_default();
-                    self.art.retain(|k, _| *k == keep);
+                match image::load_from_memory(&jpeg) {
+                    Ok(img) => {
+                        let rgba = img.into_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h);
+                        if self.art.len() > 30 {
+                            // Keep the current cover; drop the rest.
+                            let keep = self.media.get("art").cloned().unwrap_or_default();
+                            self.art.retain(|k, _| *k == keep);
+                        }
+                        self.art.insert(key, slint::Image::from_rgba8(buf));
+                        self.show_media();
+                    }
+                    Err(e) => self.log("media", &format!("couldn't read the album art: {e}")),
                 }
             }
             Event::Icon { package, png } => {
@@ -1133,6 +1192,7 @@ impl App {
                 }
             }
             Event::Status(fields) => {
+                self.phone_status = fields.clone();
                 self.phone_tunnel_on = fields.get("tunnel").map(|v| v == "1").unwrap_or(false);
                 self.phone_paused = fields.get("paused").map(|v| v == "1").unwrap_or(false);
                 if self.connecting && !self.phone_tunnel_on {
@@ -1236,6 +1296,12 @@ fn accept_drops(window: &slint::Window, secret: String, tx: mpsc::Sender<Event>,
     });
 }
 
+/// 125000 ms → "2:05"; an hour or more → "1:02:05".
+fn clock(ms: f64) -> String {
+    let s = (ms / 1000.0) as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
 /// The navy square with the white mark (assets/icon-32.png, from make-icons.sh).
 fn tray_icon() -> tray_icon::Icon {
     let img = image::load_from_memory(include_bytes!("../assets/icon-32.png")).expect("tray icon png").into_rgba8();
@@ -1324,6 +1390,21 @@ fn main() {
         ui.on_set_up_over_usb(move || a.borrow_mut().set_up_over_usb());
         let a = app.clone();
         ui.on_open_files(move || a.borrow_mut().open_files());
+        let a = app.clone();
+        ui.on_media(move |cmd| {
+            let app = a.borrow();
+            if let Some(b) = &app.ble {
+                let _ = b.send_command(&format!("media {cmd}"));
+            }
+        });
+        let a = app.clone();
+        ui.on_seek(move |fraction| {
+            let app = a.borrow();
+            let dur = app.media.get("dur").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            if let (Some(b), true) = (&app.ble, dur > 0.0) {
+                let _ = b.send_command(&format!("media seek {}", (dur * fraction as f64) as i64));
+            }
+        });
         let sw = settings_window.as_weak();
         ui.on_open_settings(move || { if let Some(w) = sw.upgrade() { let _ = w.show(); } });
         ui.on_open_log_folder(move || {

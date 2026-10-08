@@ -429,6 +429,9 @@ class BleLink(private val context: Context) {
                 // What the computers show in their phone status line.
                 " battery=${lastBattery.first} charging=${if (lastBattery.second) 1 else 0}" +
                 " net=${network()}" +
+                // The mode chosen on the phone (Off can't be reported: Bluetooth
+                // is off with it). Shown as an icon in the computers' top bar.
+                " mode=${if (Prefs.tunnelEnabled(context)) "anywhere" else "nearby"}" +
                 " model=${android.os.Build.MODEL.replace(' ', '_')}"
         )
     }

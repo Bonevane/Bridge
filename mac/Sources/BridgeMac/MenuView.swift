@@ -537,7 +537,10 @@ struct NowPlayingCard: View {
     private var controls: some View {
         HStack(spacing: 8) {
             Button { bridge.mediaCommand("prev") } label: { Image(systemName: "backward.fill") }
-            Button { bridge.mediaCommand("toggle") } label: {
+            // Exactly what the button shows, not "toggle": the phone's own idea of
+            // the state can be off (a player it just found again, Spotify on another
+            // device), and "toggle" then started playback when you meant pause.
+            Button { bridge.mediaCommand(playing ? "pause" : "play") } label: {
                 Image(systemName: playing ? "pause.fill" : "play.fill").font(.system(size: 16))
             }
             Button { bridge.mediaCommand("next") } label: { Image(systemName: "forward.fill") }

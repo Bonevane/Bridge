@@ -203,7 +203,8 @@ component NowPlaying inherits Rectangle {
                     width: 34px; height: 34px; border-radius: 17px;
                     background: play.has-hover ? Theme.on-primary-container : Theme.primary;
                     Icon { source: AppState.media-playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg"); tint: Theme.on-primary; width: 22px; height: 22px; x: 6px; y: 6px; }
-                    play := TouchArea { clicked => { AppState.media("toggle"); } }
+                    // Exactly what the button shows, not "toggle" (see the Mac's NowPlayingCard).
+                    play := TouchArea { clicked => { AppState.media(AppState.media-playing ? "pause" : "play"); } }
                 }
             }
             VerticalLayout {

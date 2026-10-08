@@ -98,7 +98,6 @@ struct App {
     error: Option<(String, String, bool)>,
     /// Packages whose icon we've already asked the phone for this link.
     icons_requested: BTreeSet<String>,
-    log_lines: Vec<String>,
 }
 
 impl App {
@@ -141,23 +140,21 @@ impl App {
             usb_busy: false,
             error: None,
             icons_requested: BTreeSet::new(),
-            log_lines: Vec::new(),
         }
     }
 
     fn log(&mut self, source: &str, text: &str) {
         crate::log::line(source, text);
-        let stamp = chrono::Local::now().format("%H:%M:%S");
-        let line = if source.is_empty() { format!("{stamp} {text}") } else { format!("{stamp} [{source}] {text}") };
-        self.log_lines.push(line);
-        if self.log_lines.len() > 200 {
-            self.log_lines.remove(0);
+        self.show_log();
+    }
+
+    /// The panel shows every line the app logs, from every thread, newest
+    /// first (the text box can't follow the end by itself, and the latest line
+    /// is what you open it for). The file (Open log folder) stays in time order.
+    fn show_log(&self) {
+        if let Some(text) = crate::log::take_recent() {
+            self.window.global::<AppState>().set_log_text(text.into());
         }
-        // Newest first in the panel: the text box can't follow the end by
-        // itself, and the latest line is what you open it for. The file
-        // (Open log folder) stays in time order.
-        let newest_first: Vec<&str> = self.log_lines.iter().rev().map(String::as_str).collect();
-        self.window.global::<AppState>().set_log_text(newest_first.join("\n").into());
     }
 
     // MARK: - State → UI
@@ -781,6 +778,7 @@ impl App {
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
         }
+        self.show_log();   // lines logged from other threads since the last tick
         self.poll_session();
         if self.settings.sync_clipboard && (self.linked || self.mirroring) {
             if let Some(text) = self.clipboard.poll() {

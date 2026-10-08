@@ -68,29 +68,18 @@ object MediaRelay {
             val c = ComponentName(ctx, NotificationService::class.java)
             manager = m; component = c
             runCatching {
-                // Started again on every rebind of the listener: one subscription, not one per bind.
-                m.removeOnActiveSessionsChangedListener(sessionsChanged)
                 m.addOnActiveSessionsChangedListener(sessionsChanged, c, main)
                 pick(m.getActiveSessions(c))
             }.onFailure { TunnelState.log("Now Playing unavailable: ${it.message}") }
         }
     }
 
-    /**
-     * The listener was unbound. The sessions API keeps working as long as the
-     * listener is *enabled*, so keep watching; only forget the handle if
-     * reading the sessions now fails (access was actually revoked).
-     */
     fun stop() {
         main.post {
-            val ok = runCatching { manager?.getActiveSessions(component) }.isSuccess
-            if (!ok) {
-                runCatching { manager?.removeOnActiveSessionsChangedListener(sessionsChanged) }
-                controller?.unregisterCallback(callback)
-                controller = null
-                manager = null
-                publish()   // "state=none": the computers drop the card instead of showing a stale one
-            }
+            runCatching { manager?.removeOnActiveSessionsChangedListener(sessionsChanged) }
+            controller?.unregisterCallback(callback)
+            controller = null
+            manager = null
         }
     }
 
@@ -180,55 +169,26 @@ object MediaRelay {
         return key
     }
 
-    /**
-     * "media play|pause|toggle|next|prev|seek <ms>" from a computer.
-     *
-     * If the player handle has gone (Android rebinds the notification
-     * listener now and then, and the handle went with it), pick it up again
-     * here rather than drop the button press: that silent drop was the
-     * "controls do nothing" bug.
-     */
+    /** "media play|pause|toggle|next|prev|seek <ms>" from a computer. */
     fun command(args: String) {
         main.post {
-            if (controller == null) reacquire()
             val c = controller
-            val t = c?.transportControls
-            if (t == null) {
-                TunnelState.log("Media: ${args.trim()} ignored, nothing is playing on the phone")
-                publish()
+            val t = c?.transportControls ?: run {
+                TunnelState.log("Media: ${args.trim()} ignored, no player")
                 return@post
             }
             val words = args.trim().split(' ')
-            runCatching {
-                when (words.firstOrNull()) {
-                    "play" -> t.play()
-                    "pause" -> t.pause()
-                    "toggle" -> if (c.playbackState?.state == PlaybackState.STATE_PLAYING) t.pause() else t.play()
-                    "next" -> t.skipToNext()
-                    "prev" -> t.skipToPrevious()
-                    "seek" -> words.getOrNull(1)?.toLongOrNull()?.let { t.seekTo(it) }
-                }
-            }.onSuccess {
-                // State and where it plays, to tell "Spotify Connect: playing on
-                // another device" (remote) from "playing on this phone".
-                val remote = c.playbackInfo?.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE
-                TunnelState.log("Media: ${words.firstOrNull()} sent to ${c.packageName} " +
-                    "(its state ${c.playbackState?.state}, ${if (remote) "playing on another device" else "playing on this phone"})")
+            when (words.firstOrNull()) {
+                "play" -> t.play()
+                "pause" -> t.pause()
+                "toggle" -> if (c.playbackState?.state == PlaybackState.STATE_PLAYING) t.pause() else t.play()
+                "next" -> t.skipToNext()
+                "prev" -> t.skipToPrevious()
+                "seek" -> words.getOrNull(1)?.toLongOrNull()?.let { t.seekTo(it) }
             }
-                .onFailure { TunnelState.log("Media: ${words.firstOrNull()} failed: ${it.message}") }
+            val remote = c.playbackInfo?.playbackType == MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE
+            TunnelState.log("Media: ${words.firstOrNull()} sent to ${c.packageName} " +
+                "(its state ${c.playbackState?.state}, ${if (remote) "playing on another device" else "playing on this phone"})")
         }
-    }
-
-    /** Finds the active players again, without needing the listener to be bound right now. */
-    private fun reacquire() {
-        val ctx = AppContext.value
-        val m = manager ?: ctx.getSystemService(MediaSessionManager::class.java) ?: return
-        val c = component ?: ComponentName(ctx, NotificationService::class.java)
-        manager = m; component = c
-        runCatching {
-            m.removeOnActiveSessionsChangedListener(sessionsChanged)
-            m.addOnActiveSessionsChangedListener(sessionsChanged, c, main)
-            pick(m.getActiveSessions(c))
-        }.onFailure { TunnelState.log("Media: couldn't find the players: ${it.message}") }
     }
 }

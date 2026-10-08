@@ -1062,7 +1062,12 @@ final class BridgeController: ObservableObject {
     @Published var phoneMode = ""
 
     func mediaCommand(_ command: String) {
-        if bluetoothLinked { bluetoothLink.media(command) }
+        guard bluetoothLinked else {
+            appendLog("Media: \(command) not sent, the phone isn't linked over Bluetooth", source: "bluetooth")
+            return
+        }
+        bluetoothLink.media(command)
+        appendLog("Media: \(command)", source: "bluetooth")
     }
 
     private lazy var notificationBridge = NotificationBridge(

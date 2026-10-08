@@ -1559,8 +1559,12 @@ fn main() {
         let a = app.clone();
         ui.on_media(move |cmd| {
             let app = a.borrow();
-            if let Some(b) = &app.ble {
-                let _ = b.send_command(&format!("media {cmd}"));
+            match &app.ble {
+                Some(b) if app.linked => {
+                    let _ = b.send_command(&format!("media {cmd}"));
+                    crate::log!("media", "{cmd}");
+                }
+                _ => crate::log!("media", "{cmd} not sent, the phone isn't linked over Bluetooth"),
             }
         });
         let a = app.clone();

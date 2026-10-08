@@ -145,7 +145,11 @@ impl App {
         if self.log_lines.len() > 200 {
             self.log_lines.remove(0);
         }
-        self.window.global::<AppState>().set_log_text(self.log_lines.join("\n").into());
+        // Newest first in the panel: the text box can't follow the end by
+        // itself, and the latest line is what you open it for. The file
+        // (Open log folder) stays in time order.
+        let newest_first: Vec<&str> = self.log_lines.iter().rev().map(String::as_str).collect();
+        self.window.global::<AppState>().set_log_text(newest_first.join("\n").into());
     }
 
     // MARK: - State → UI

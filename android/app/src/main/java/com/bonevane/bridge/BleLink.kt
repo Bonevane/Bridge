@@ -130,19 +130,7 @@ class BleLink(private val context: Context) {
         private set(value) { field = value; TunnelState.macLinked = value }
     @Volatile private var beating = false
 
-    private fun updateConnected() {
-        connected = peers.values.any { it.verified }
-        // Advertising every 250 ms is only worth it while nobody is linked;
-        // once a computer is, once a second still lets a second one find the
-        // phone in a moment, at a quarter of the radio time.
-        val mode = if (connected) AdvertiseSettings.ADVERTISE_MODE_LOW_POWER else AdvertiseSettings.ADVERTISE_MODE_BALANCED
-        if (mode != advertiseMode && server != null) {
-            advertiseMode = mode
-            context.getSystemService(BluetoothManager::class.java)?.adapter?.let { adapter ->
-                runCatching { stopAdvertising(); advertise(adapter) }
-            }
-        }
-    }
+    private fun updateConnected() { connected = peers.values.any { it.verified } }
 
     private val notificationListener: (String) -> Unit = { line ->
         send(TYPE_NOTIFICATION, line)
@@ -168,8 +156,8 @@ class BleLink(private val context: Context) {
                         teardown()
                     }
                     android.bluetooth.BluetoothAdapter.STATE_ON -> {
-                        TunnelState.log("Bluetooth: back on; advertising again")
-                        runCatching { start() }.onFailure { TunnelState.log("Bluetooth: restart failed: ${it.message}") }
+                        TunnelState.log("Bluetooth: back on; restarting the link")
+                        restartWhenReady(1)
                     }
                 }
             }
@@ -192,9 +180,42 @@ class BleLink(private val context: Context) {
         }
     }
 
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    /** Set by the stack's callbacks, so a restart can check it really came up. */
+    @Volatile private var serviceReady = false
+    @Volatile private var advertisingOk = false
+
+    /**
+     * Bluetooth back on. Right after STATE_ON the stack often isn't ready:
+     * openGattServer() returns null, the service is never added, or the
+     * advertiser isn't there yet, and start() used to log "advertising" anyway
+     * and never try again. That was the "won't reconnect until I switch the
+     * app off and on" bug. Now: wait a moment, start, check that both the
+     * service and the advertisement actually came up, and retry if not.
+     */
+    private fun restartWhenReady(attempt: Int) {
+        main.postDelayed({
+            teardown()
+            runCatching { start() }.onFailure { TunnelState.log("Bluetooth: restart failed: ${it.message}") }
+            main.postDelayed({
+                if (serviceReady && advertisingOk) {
+                    TunnelState.log("Bluetooth: link ready again")
+                } else if (attempt < 6) {
+                    TunnelState.log("Bluetooth: not ready yet (service=$serviceReady advertising=$advertisingOk); retry $attempt")
+                    restartWhenReady(attempt + 1)
+                } else {
+                    TunnelState.log("Bluetooth: couldn't restart the link; toggle Bridge off and on")
+                }
+            }, 3_000)
+        }, if (attempt == 1) 1_500L else 2_000L * attempt)
+    }
+
     /** Forgets the (dead) server so start() can make a new one. Keeps the adapter watcher. */
     private fun teardown() {
         beating = false
+        heartbeatGeneration++
+        serviceReady = false
+        advertisingOk = false
         NotificationRelay.unsubscribe(notificationListener)
         runCatching { stopAdvertising() }
         runCatching { server?.close() }
@@ -204,7 +225,6 @@ class BleLink(private val context: Context) {
         peers.clear()
         mtus.clear()
         connected = false
-        advertiseMode = AdvertiseSettings.ADVERTISE_MODE_BALANCED
         paramGatts.values.forEach { runCatching { it.close() } }; paramGatts.clear()
     }
 
@@ -261,6 +281,7 @@ class BleLink(private val context: Context) {
         }
 
         server = openServer(manager)?.also { it.addService(service) }
+        if (server == null) TunnelState.log("Bluetooth: couldn't open the GATT server yet")
         tx = characteristicTx
         txPlain = characteristicTxPlain
         advertise(adapter)
@@ -281,18 +302,19 @@ class BleLink(private val context: Context) {
      * link often survives at the controller level even though the GATT service
      * is gone, and the Mac has no way to tell. A ping every 30 s gives it one.
      */
+    @Volatile private var heartbeatGeneration = 0
+
     private fun startHeartbeat() {
         if (beating) return
         beating = true
+        val generation = heartbeatGeneration
         Thread({
-            var beats = 0
-            while (beating) {
+            // A teardown and restart make a new thread; the old one, still
+            // asleep, must not wake up and carry on beside it.
+            while (beating && generation == heartbeatGeneration) {
                 Thread.sleep(30_000)
-                // Each re-pin is a link-layer parameter update on every Mac
-                // link. New connections already trigger one (that's when the
-                // stack renegotiates the others); this is only a safety net,
-                // so every 5 minutes rather than every beat.
-                if (++beats % 10 == 0) repinAll()
+                if (generation != heartbeatGeneration) break
+                repinAll()
                 if (peers.isNotEmpty()) sendStatus()
             }
         }, "ble-heartbeat").apply { isDaemon = true }.start()
@@ -428,7 +450,7 @@ class BleLink(private val context: Context) {
      * renegotiates parameters when *another* central connects (the Mac's
      * link went to the 720 ms timeout again the moment Windows linked and
      * dropped with "timed out" soon after), so this runs on each new
-     * connection and every 5 minutes.
+     * connection and with every heartbeat.
      *
      * BALANCED, not LOW_POWER, even though LOW_POWER would save more: its 20 s
      * supervision timeout is outside Apple's accessory limits (2–6 s), so
@@ -570,6 +592,11 @@ class BleLink(private val context: Context) {
                 pump(peer)      // next chunk, now that the stack is ready
             }
 
+            override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+                serviceReady = status == BluetoothGatt.GATT_SUCCESS
+                if (!serviceReady) TunnelState.log("Bluetooth: the stack refused the service (status $status)")
+            }
+
             override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
                 val payload = (mtu - 3).coerceIn(MIN_PAYLOAD, MAX_PAYLOAD)
                 mtus[device] = payload
@@ -678,7 +705,6 @@ class BleLink(private val context: Context) {
     // MARK: - Advertising
 
     private var advertiseCallback: AdvertiseCallback? = null
-    @Volatile private var advertiseMode = AdvertiseSettings.ADVERTISE_MODE_BALANCED
 
     @SuppressLint("MissingPermission")
     private fun advertise(adapter: android.bluetooth.BluetoothAdapter) {
@@ -687,7 +713,7 @@ class BleLink(private val context: Context) {
             return
         }
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(advertiseMode)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
             .setConnectable(true)
             .setTimeout(0)          // keep advertising
@@ -700,7 +726,13 @@ class BleLink(private val context: Context) {
             .build()
         val scanResponse = AdvertiseData.Builder().setIncludeDeviceName(true).build()
         val callback = object : AdvertiseCallback() {
+            override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+                advertisingOk = true
+            }
+
             override fun onStartFailure(errorCode: Int) {
+                // 3 = already started: that's fine, it is advertising.
+                advertisingOk = errorCode == ADVERTISE_FAILED_ALREADY_STARTED
                 TunnelState.log("Bluetooth: advertising failed ($errorCode)")
             }
         }

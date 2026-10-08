@@ -1,7 +1,7 @@
 // Bridge's windows, in the same Material 3 shapes as the phone app.
 // Main window: is my phone reachable, what works right now, what can I do.
 // Settings window: the Mac's four tabs. Mirror window: the phone's screen.
-import { ScrollView, LineEdit, ListView } from "std-widgets.slint";
+import { ScrollView, LineEdit, ListView, TextEdit } from "std-widgets.slint";
 import { Theme, Icon, Label, Muted, SectionTitle, Card, PillButton, Toggle, Tile, Divider, Segmented } from "theme.slint";
 
 export struct Capability {
@@ -213,14 +213,15 @@ export component MainWindow inherits Window {
             if AppState.show-log : VerticalLayout {
                 padding: 12px;
                 spacing: 8px;
-                Rectangle {
-                    height: 150px;
-                    border-radius: 12px;
-                    background: Theme.background;
-                    ScrollView {
-                        content-width: self.visible-width;
-                        Text { text: AppState.log-text; font-family: "Cascadia Mono"; font-size: 10px; color: Theme.on-surface-variant; wrap: word-wrap; }
-                    }
+                // A read-only text box, not Text in a ScrollView: the Text never
+                // reported a height, so there was nothing to scroll. This one
+                // scrolls on its own, and Ctrl+A / Ctrl+C copy the log.
+                TextEdit {
+                    height: 220px;
+                    text: AppState.log-text;
+                    read-only: true;
+                    wrap: word-wrap;
+                    font-size: 10px;
                 }
                 PillButton { text: "Open log folder"; icon: @image-url("icons/folder.svg"); clicked => { AppState.open-log-folder(); } }
             }

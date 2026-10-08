@@ -132,6 +132,11 @@ export component Toggle inherits Rectangle {
 }
 
 // A list tile: icon, title, subtitle, optional trailing content.
+//
+// Laid out by hand rather than with a HorizontalLayout: inside one, a
+// wrapping subtitle was measured as a single line, so when the window got
+// narrow its second line spilled out under the row. Here the text column has
+// an explicit width, so its height follows the wrapping and the row grows.
 export component Tile inherits Rectangle {
     in property <image> icon;
     in property <string> title;
@@ -139,27 +144,30 @@ export component Tile inherits Rectangle {
     in property <bool> clickable: false;
     in property <bool> enabled: true;
     callback clicked();
-    min-height: 56px;
+    property <length> text-x: icon.width > 0 ? 52px : 16px;
+    height: max(56px, text.preferred-height + 20px);
     background: clickable && area.has-hover && enabled ? Theme.surface-high : transparent;
     opacity: enabled ? 1 : 0.45;
     animate background { duration: 120ms; }
-    HorizontalLayout {
-        padding-left: 16px; padding-right: 12px;
-        padding-top: 10px; padding-bottom: 10px;
-        spacing: 14px;
-        alignment: stretch;
-        if icon.width > 0 : VerticalLayout { alignment: center; Icon { source: icon; tint: Theme.primary; width: 22px; height: 22px; } }
-        VerticalLayout {
-            alignment: center;
-            spacing: 2px;
-            horizontal-stretch: 1;
-            Label { text: title; font-size: 14px; wrap: word-wrap; }
-            if subtitle != "" : Muted { text: subtitle; }
-        }
-        // Trailing content (a switch, a chevron, a button), centred vertically.
+    area := TouchArea { enabled: root.clickable && root.enabled; clicked => { root.clicked(); } }
+    if icon.width > 0 : Icon { source: root.icon; tint: Theme.primary; width: 22px; height: 22px; x: 16px; y: (root.height - self.height) / 2; }
+    text := VerticalLayout {
+        x: root.text-x;
+        width: max(40px, root.width - root.text-x - trailing.width - 26px);
+        height: self.preferred-height;
+        y: (root.height - self.height) / 2;
+        spacing: 2px;
+        Label { text: root.title; font-size: 14px; wrap: word-wrap; }
+        if root.subtitle != "" : Muted { text: root.subtitle; }
+    }
+    // Trailing content (a switch, a chevron, a button), centred vertically.
+    trailing := HorizontalLayout {
+        width: self.preferred-width;
+        x: root.width - self.width - 12px;
+        height: root.height;
+        alignment: end;
         VerticalLayout { alignment: center; @children }
     }
-    area := TouchArea { enabled: root.clickable && root.enabled; clicked => { root.clicked(); } }
 }
 
 // Thin divider between tiles in the same card.

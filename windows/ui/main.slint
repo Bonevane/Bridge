@@ -249,7 +249,7 @@ export component MainWindow inherits Window {
             Label { text: "Bridge"; font-size: 15px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
             if AppState.phone-battery >= 0 : HorizontalLayout {
                 spacing: 8px;
-                Muted { text: AppState.phone-model; font-size: 11px; vertical-alignment: center; wrap: no-wrap; overflow: elide; }
+                Muted { text: AppState.phone-model; font-size: 11px; vertical-alignment: center; wrap: no-wrap; horizontal-stretch: 0; }
                 if AppState.phone-mode != "" : HoverIcon {
                     source: AppState.phone-mode == "anywhere" ? @image-url("icons/globe.svg") : @image-url("icons/bluetooth.svg");
                     tint: Theme.primary;
@@ -452,13 +452,13 @@ export component SettingsWindow inherits Window {
                 Card {
                     SettingRow { icon: @image-url("icons/bell.svg"); title: "Show the phone's notifications"; subtitle: "Over Bluetooth: free"; checked <=> SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
                     Divider {}
-                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "Keeps a tunnel open; costs the phone a little battery and data"; checked <=> SettingsState.notifications-anywhere; switch-enabled: SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
+                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "When the phone is out of Bluetooth range. Keeps a tunnel open; costs the phone a little battery and data"; checked <=> SettingsState.notifications-anywhere; switch-enabled: SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
                 }
                 SectionTitle { text: "Clipboard"; }
                 Card {
                     SettingRow { icon: @image-url("icons/clipboard.svg"); title: "Sync the clipboard"; subtitle: "Rides the session or Bluetooth: free"; checked <=> SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } }
                     Divider {}
-                    SettingRow { icon: @image-url("icons/link-2.svg"); title: "Also with no phone window open"; subtitle: "Keeps the helper and a channel running; turns on Keep ready"; checked <=> SettingsState.background-clipboard; switch-enabled: SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } }
+                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "When the phone is out of Bluetooth range. Keeps the tunnel and the phone's helper running; turns on Keep ready"; checked <=> SettingsState.background-clipboard; switch-enabled: SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } }
                 }
             }
 

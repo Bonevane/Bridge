@@ -156,12 +156,12 @@ struct SettingsView: View {
 
             Section {
                 Toggle("Sync the clipboard", isOn: $bridge.syncClipboard)
-                Toggle("Also with no phone window open", isOn: $bridge.backgroundClipboard)
+                Toggle("Also over the internet, when the phone is far away", isOn: $bridge.backgroundClipboard)
                     .disabled(!bridge.syncClipboard)
             } header: {
                 Text("Clipboard")
             } footer: {
-                Text("The first option is free: while a phone window is open the clipboard rides the mirroring session, and while the phone is nearby it goes over Bluetooth. The second keeps the phone's helper running and a channel open at all times, so it also works with no window and no Bluetooth; that costs battery and data, and turns on \"keep ready\".")
+                Text("The first option is free: while a phone window is open the clipboard rides the mirroring session, and while the phone is nearby it goes over Bluetooth. The second also syncs it when the phone is out of Bluetooth range, over the internet: it keeps the tunnel and the phone's helper running, which costs battery and data, and turns on \"keep ready\".")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

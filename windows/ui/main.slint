@@ -467,7 +467,7 @@ export component SettingsWindow inherits Window {
                 Card {
                     SettingRow { icon: @image-url("icons/bell.svg"); title: "Show the phone's notifications"; subtitle: "Over Bluetooth: free"; checked <=> SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
                     Divider {}
-                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "When the phone is out of Bluetooth range. Keeps a tunnel open; costs the phone a little battery and data"; checked <=> SettingsState.notifications-anywhere; switch-enabled: SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
+                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "When the phone is out of Bluetooth range. Mac only for now: coming to Windows"; checked <=> SettingsState.notifications-anywhere; switch-enabled: false; toggled => { SettingsState.changed(); } }
                     Divider {}
                     SettingRow { icon: @image-url("icons/check.svg"); title: "Clear on both sides"; subtitle: "Dismissing a notification here clears it on the phone, and clearing it on the phone takes it off this PC"; checked <=> SettingsState.sync-dismiss; switch-enabled: SettingsState.mirror-notifications; toggled => { SettingsState.changed(); } }
                 }
@@ -475,7 +475,7 @@ export component SettingsWindow inherits Window {
                 Card {
                     SettingRow { icon: @image-url("icons/clipboard.svg"); title: "Sync the clipboard"; subtitle: "Rides the session or Bluetooth: free"; checked <=> SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } }
                     Divider {}
-                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "When the phone is out of Bluetooth range. Keeps the tunnel and the phone's helper running; turns on Keep ready"; checked <=> SettingsState.background-clipboard; switch-enabled: SettingsState.sync-clipboard; toggled => { SettingsState.changed(); } }
+                    SettingRow { icon: @image-url("icons/globe.svg"); title: "Also over the internet"; subtitle: "When the phone is out of Bluetooth range. Mac only for now: coming to Windows"; checked <=> SettingsState.background-clipboard; switch-enabled: false; toggled => { SettingsState.changed(); } }
                 }
             }
 

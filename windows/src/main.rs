@@ -109,6 +109,10 @@ struct App {
     media: std::collections::HashMap<String, String>,
     media_received: Instant,
     art: std::collections::HashMap<String, slint::Image>,
+    /// The mirroring watchdog (see watch_session): when it last asked, and
+    /// how many asks in a row went unanswered.
+    session_ping_at: Instant,
+    session_ping_misses: u32,
     /// The phone's last status report (battery, network, mode, model…).
     phone_status: std::collections::HashMap<String, String>,
     usb_busy: bool,
@@ -166,6 +170,8 @@ impl App {
             media_received: Instant::now(),
             art: Default::default(),
             phone_status: Default::default(),
+            session_ping_at: Instant::now(),
+            session_ping_misses: 0,
             usb_busy: false,
             error: None,
             icons_requested: BTreeSet::new(),
@@ -594,6 +600,28 @@ impl App {
         }
     }
 
+    /// Video alone can't tell us the phone is gone: a still screen sends
+    /// nothing for a long time, and dumbpipe keeps the local socket open after
+    /// the far end vanishes, so the picture just froze (for up to the 10-minute
+    /// read timeout). As on the Mac: ask the phone something small every 15 s
+    /// while mirroring, and end the session after two silences.
+    fn watch_session(&mut self) {
+        if !self.mirroring {
+            self.session_ping_misses = 0;
+            self.session_ping_at = Instant::now();
+            return;
+        }
+        if self.session_ping_at.elapsed() < Duration::from_secs(15) {
+            return;
+        }
+        self.session_ping_at = Instant::now();
+        let (secret, tx) = (self.creds.secret.clone(), self.events_tx.clone());
+        std::thread::spawn(move || {
+            let ok = tunnel::control(&secret, "STATUS", Duration::from_secs(6)).is_ok();
+            let _ = tx.send(Event::SessionPing(ok));
+        });
+    }
+
     /// Now Playing → the card. Called when the phone sends something and on
     /// every tick: the phone only sends the position when it changes, so the
     /// clock runs here between updates.
@@ -993,6 +1021,7 @@ impl App {
         }
         self.show_log();   // lines logged from other threads since the last tick
         self.show_media(); // the Now Playing clock
+        self.watch_session();
         if let Some(w) = &self.mirror_window {
             w.set_bar_awake(self.mirror_pointer.get().elapsed() < Duration::from_secs(3));
         }
@@ -1233,6 +1262,22 @@ impl App {
                         self.error = Some(("Couldn't unpair the phone".into(), format!("{e}. Remove it in Settings › Bluetooth & devices instead."), false));
                     }
                 }
+            }
+            Event::SessionPing(ok) => {
+                if !self.mirroring {
+                    return;
+                }
+                if ok {
+                    self.session_ping_misses = 0;
+                } else {
+                    self.session_ping_misses += 1;
+                    if self.session_ping_misses >= 2 {
+                        self.log("", "the phone stopped answering; ending the session");
+                        self.disconnect();
+                        self.fail("Lost the connection".into());
+                    }
+                }
+                return;
             }
             Event::OpenFiles => {
                 self.open_files();

@@ -80,6 +80,8 @@ pub enum Event {
     PairedInWindows { name: String, address: u64 },
     /// The outcome of unpairing it for the user.
     UnpairedInWindows(Result<String, String>),
+    /// The mirroring watchdog's ping: did the phone answer STATUS?
+    SessionPing(bool),
     /// The phone window's "Phone files" button.
     OpenFiles,
     /// This PC's Bluetooth radio: Some(on) when known, None if it has none.

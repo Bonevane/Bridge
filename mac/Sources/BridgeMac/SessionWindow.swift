@@ -79,6 +79,9 @@ final class SessionWindow: NSWindow, NSWindowDelegate {
         case .screenshot: pressKey(120)                               // KEYCODE_SYSRQ
         case .notifications: session.send(ScrcpyProtocol.simple(ScrcpyProtocol.expandNotificationPanel))
         case .files: Task { @MainActor in BridgeController.shared.openPhoneFiles() }
+        // The phone's own power key: wakes it, or locks it. For phones where
+        // tapping the picture doesn't wake the screen (no tap-to-wake).
+        case .power: pressKey(AndroidKey.power)
         case .screenOff:
             screenOff.toggle()
             session.send(ScrcpyProtocol.displayPower(on: !screenOff))
@@ -325,7 +328,8 @@ final class TransferBar: NSView {
 final class ControlBar: NSView {
     static let width: CGFloat = 40
 
-    enum Action { case back, home, recents, volumeUp, volumeDown, rotate, screenshot, notifications, files, screenOff }
+    /// Int-backed so a button can carry its action in its tag directly.
+    enum Action: Int { case back, home, recents, volumeUp, volumeDown, rotate, screenshot, notifications, files, power, screenOff }
 
     private unowned let owner: SessionWindow
     private var fadeWork: DispatchWorkItem?
@@ -349,7 +353,8 @@ final class ControlBar: NSView {
             ("bell", "Notifications · ⌘N", .notifications),
             ("folder", "Phone files", .files),
             nil,
-            ("power", "Screen off · ⌘O", .screenOff),
+            ("power", "Power (wake or lock the phone) · ⌘P", .power),
+            ("rectangle.slash", "Phone screen off, keep mirroring · ⌘O", .screenOff),
         ]
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -366,7 +371,7 @@ final class ControlBar: NSView {
                                   target: self, action: #selector(tapped(_:)))
             button.isBordered = false
             button.toolTip = tip
-            button.tag = Self.order.firstIndex(of: action) ?? 0
+            button.tag = action.rawValue
             button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
             button.contentTintColor = .labelColor
             button.widthAnchor.constraint(equalToConstant: 28).isActive = true
@@ -386,10 +391,9 @@ final class ControlBar: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private static let order: [Action] = [.back, .home, .recents, .volumeUp, .volumeDown, .rotate, .screenshot, .notifications, .files, .screenOff]
-
     @objc private func tapped(_ sender: NSButton) {
-        owner.barAction(Self.order[sender.tag])
+        guard let action = Action(rawValue: sender.tag) else { return }
+        owner.barAction(action)
         wake()
     }
 

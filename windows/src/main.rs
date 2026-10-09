@@ -910,6 +910,8 @@ impl App {
                 "screenshot" => press(120),                      // KEYCODE_SYSRQ
                 "rotate" => sess.send(&scrcpy::simple(11)),       // scrcpy ROTATE_DEVICE
                 "notifications" => sess.send(&scrcpy::simple(scrcpy::EXPAND_NOTIFICATION_PANEL)),
+                // The phone's own power key, for phones without tap-to-wake.
+                "power" => press(k::POWER),
                 "screen-off" => {
                     screen_off.set(!screen_off.get());
                     sess.send(&scrcpy::display_power(!screen_off.get()));

@@ -26,6 +26,11 @@ object Pairing {
     fun hmacMatches(secret: String, message: String, presented: String?): Boolean =
         MessageDigest.isEqual(hmac(secret, message).toByteArray(), presented.orEmpty().trim().toByteArray())
 
+    /** What the phone advertises so its own computers can pick it out (see BleLink). */
+    fun advertTag(secret: String): ByteArray =
+        Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(secret.toByteArray(), "HmacSHA256")) }
+            .doFinal("bridge-advertise".toByteArray()).copyOf(4)
+
     fun nonce(): String = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it) }
 

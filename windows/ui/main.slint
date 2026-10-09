@@ -672,7 +672,7 @@ export component MirrorWindow inherits Window {
         width: root.bar-width;
         height: root.height;
         background: Theme.surface;
-        opacity: root.bar-awake || b1.hovered || b2.hovered || b3.hovered || b4.hovered || b5.hovered || b6.hovered || b7.hovered || b8.hovered || b9.hovered || b10.hovered ? 1 : 0.3;
+        opacity: root.bar-awake || b1.hovered || b2.hovered || b3.hovered || b4.hovered || b5.hovered || b6.hovered || b7.hovered || b8.hovered || b9.hovered || b10.hovered || b11.hovered ? 1 : 0.3;
         animate opacity { duration: 300ms; }
         VerticalLayout {
             alignment: center;
@@ -689,7 +689,8 @@ export component MirrorWindow inherits Window {
             b8 := BarButton { source: @image-url("icons/bell.svg"); hint: "Notifications · Ctrl+N"; clicked => { root.bar("notifications"); } }
             b9 := BarButton { source: @image-url("icons/folder.svg"); hint: "Phone files"; clicked => { root.bar("files"); } }
             BarGap {}
-            b10 := BarButton { source: @image-url("icons/power.svg"); hint: "Screen off · Ctrl+O"; clicked => { root.bar("screen-off"); } }
+            b10 := BarButton { source: @image-url("icons/power.svg"); hint: "Power (wake or lock the phone) · Ctrl+P"; clicked => { root.bar("power"); } }
+            b11 := BarButton { source: @image-url("icons/monitor.svg"); hint: "Phone screen off, keep mirroring · Ctrl+O"; clicked => { root.bar("screen-off"); } }
         }
     }
 }

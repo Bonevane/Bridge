@@ -145,6 +145,10 @@ fn flow(events: &Sender<Event>) -> Result<Credentials> {
     if !grant.trim().is_empty() {
         crate::log!("usb", "pm grant: {}", grant.trim());
     }
+    // Xiaomi (MIUI/HyperOS) refuses this unless a second switch is on (see the Mac).
+    if grant.contains("GRANT_RUNTIME_PERMISSIONS") {
+        return Err(anyhow!("This phone blocks the last setup step. In Developer options, turn on \"USB debugging (Security settings)\" (Xiaomi asks for a SIM and a Mi account), then Set up over USB again."));
+    }
 
     // Get adbd to trust the phone app's own ADB key (see the Mac for why):
     // TCP for a moment over the cable, the app connects to itself, the

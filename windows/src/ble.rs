@@ -28,7 +28,10 @@ use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
     GattDeviceService, GattOpenStatus, GattSession, GattSharingMode, GattValueChangedEventArgs, GattWriteOption,
 };
-use windows::Devices::Bluetooth::{BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice};
+use windows::Devices::Bluetooth::{
+    BluetoothAddressType, BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice,
+    BluetoothLEPreferredConnectionParameters, BluetoothLEPreferredConnectionParametersRequest,
+};
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::Streams::{DataReader, DataWriter};
@@ -48,7 +51,16 @@ pub enum Event {
     Searching,
     Linked,
     Dropped(String),
-    Notification { app: String, title: String, body: String, package: String },
+    Notification(protocol::PhoneNotification),
+    /// A mirrored notification left the phone (read, swiped, answered there).
+    NotificationRemoved(u32),
+    /// Now Playing changed (see protocol::parse_media).
+    Media(std::collections::HashMap<String, String>),
+    /// Album art: key and JPEG bytes.
+    Art { key: String, jpeg: Vec<u8> },
+    /// From a toast (notify.rs): reply typed, or swiped away.
+    ToastReply { id: u32, text: String },
+    ToastDismissed(u32),
     /// An app icon the phone sent: package and PNG bytes.
     Icon { package: String, png: Vec<u8> },
     Clipboard(String),
@@ -58,6 +70,49 @@ pub enum Event {
     /// Set up over USB (usb.rs): a step started, then the outcome.
     UsbProgress(String),
     UsbDone(Result<crate::store::Credentials, String>),
+    /// Phone files (files.rs): a folder listing, transfer progress, and the outcome.
+    FilesListed(Result<(String, Vec<crate::files::Entry>), String>),
+    /// Transfer progress: what's moving, and how far (0.0 to 1.0).
+    FileProgress(String, f32),
+    FileDone(Result<String, String>),
+    /// The phone is paired (bonded) in Windows' Bluetooth settings, which
+    /// breaks the link: Bridge connects unpaired, and encrypts by itself.
+    PairedInWindows { name: String, address: u64 },
+    /// The outcome of unpairing it for the user.
+    UnpairedInWindows(Result<String, String>),
+    /// The mirroring watchdog's ping: did the phone answer STATUS?
+    SessionPing(bool),
+    /// The phone window's "Phone files" button.
+    OpenFiles,
+    /// This PC's Bluetooth radio: Some(on) when known, None if it has none.
+    Radio(Option<bool>),
+}
+
+/// Watches this PC's Bluetooth radio, so the app can say "Bluetooth is off"
+/// instead of "looking for your phone" forever, and start the link the
+/// moment it's switched back on. Keep the returned Radio alive: dropping it
+/// drops the subscription.
+pub fn watch_radio(events: Sender<Event>) -> Option<windows::Devices::Radios::Radio> {
+    use windows::Devices::Radios::{Radio, RadioState};
+    let adapter = match windows::Devices::Bluetooth::BluetoothAdapter::GetDefaultAsync().and_then(|op| op.get()) {
+        Ok(a) => a,
+        Err(_) => {
+            let _ = events.send(Event::Radio(None));
+            return None;
+        }
+    };
+    let radio = adapter.GetRadioAsync().and_then(|op| op.get()).ok()?;
+    let _ = events.send(Event::Radio(Some(radio.State().map(|s| s == RadioState::On).unwrap_or(true))));
+    let tx = events.clone();
+    radio
+        .StateChanged(&TypedEventHandler::new(move |r: &Option<Radio>, _: &Option<windows::core::IInspectable>| {
+            if let Some(r) = r {
+                let _ = tx.send(Event::Radio(Some(r.State()? == RadioState::On)));
+            }
+            Ok(())
+        }))
+        .ok()?;
+    Some(radio)
 }
 
 /// The live link, shared between the WinRT callbacks and the app.
@@ -73,10 +128,15 @@ struct Link {
     /// session for as idle and lets it go after a while, which looked like
     /// the phone dropping us every minute or two for no reason.
     session: Option<GattSession>,
+    /// Our request for relaxed link parameters; Windows keeps it in force
+    /// only while this object lives (see request_relaxed_link).
+    params: Option<BluetoothLEPreferredConnectionParametersRequest>,
     inbox: Inbox,
     handshake: Handshake,
     verified: bool,
     last_heard: Instant,
+    /// When we last asked a quiet phone to speak (see tick).
+    probed_at: Option<Instant>,
     mtu_payload: usize,
     crypto: Option<SessionCrypto>,
     /// Set by stop(): a connect still running for this link must give up
@@ -108,10 +168,12 @@ impl Ble {
                 tx: None,
                 service: None,
                 session: None,
+                params: None,
                 inbox: Inbox::default(),
                 handshake: Handshake::new(secret),
                 verified: false,
                 last_heard: Instant::now(),
+                probed_at: None,
                 mtu_payload: 20,
                 crypto: None,
                 stopped: false,
@@ -192,6 +254,26 @@ impl Ble {
 
     /// Removes any Windows bond with a Bridge phone. Off the UI thread: each
     /// probe of a bonded-but-absent device can take a minute to time out.
+    /// Removes one device's Windows pairing, on its own thread; the result
+    /// comes back as an event.
+    pub fn unpair_device(address: u64, events: Sender<Event>) {
+        std::thread::spawn(move || {
+            let result = (|| -> Result<String> {
+                let d = BluetoothLEDevice::FromBluetoothAddressAsync(address)?.get()?;
+                let name = d.Name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                let r = d.DeviceInformation()?.Pairing()?.UnpairAsync()?.get()?;
+                let status = r.Status()?;
+                use windows::Devices::Enumeration::DeviceUnpairingResultStatus as S;
+                if status == S::Unpaired || status == S::AlreadyUnpaired {
+                    Ok(name)
+                } else {
+                    bail!("Windows said {status:?}")
+                }
+            })();
+            let _ = events.send(Event::UnpairedInWindows(result.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
     pub fn unpair_all() {
         std::thread::spawn(Self::unpair_all_now);
     }
@@ -230,26 +312,47 @@ impl Ble {
         l.tx = None;
         l.service = None;
         l.session = None;
+        l.params = None;
         l.device = None; // dropping the device object lets WinRT close the link
     }
 
     /// Called every few seconds by the app: notices a silent link and rescans.
-    /// A verified link gets 90 s (the phone's heartbeat is every 30 s); one
-    /// still waiting for the phone's challenge gets 20 s, like the Mac.
+    /// A link still waiting for the phone's challenge gets 20 s, like the Mac.
+    /// A verified one that goes quiet for 60 s is *asked* for its status
+    /// first: an idle phone's CPU sleeps and its 30 s heartbeat timer with it,
+    /// while the link itself is fine. A write from us wakes its app, which
+    /// answers. Only no answer within 20 s counts as dead (dropping on silence
+    /// alone redialled a healthy link every ~100 s whenever the phone idled).
     pub fn tick(&mut self) {
+        let mut probe = false;
         let (dead, why) = {
-            let l = self.link.lock().unwrap();
+            let mut l = self.link.lock().unwrap();
             let silent = l.last_heard.elapsed();
             if l.device.is_none() {
                 (false, "")
             } else if l.verified {
-                (silent > Duration::from_secs(90), "phone stopped answering")
+                if silent > Duration::from_secs(60) {
+                    match l.probed_at {
+                        Some(at) if at > l.last_heard => (at.elapsed() > Duration::from_secs(20), "phone didn't answer"),
+                        _ => {
+                            l.probed_at = Some(Instant::now());
+                            probe = true;
+                            (false, "")
+                        }
+                    }
+                } else {
+                    (false, "")
+                }
             } else {
                 (silent > Duration::from_secs(20), "the phone never sent its challenge")
             }
         };
+        if probe {
+            let _ = self.send_command("status");
+        }
         if dead {
             crate::log!("bluetooth", "{why}, reconnecting");
+            self.link.lock().unwrap().probed_at = None;
             self.stop();
             let _ = self.events.send(Event::Dropped("no heartbeat".into()));
             let _ = self.start();
@@ -295,6 +398,7 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
     let is_paired = device.DeviceInformation()?.Pairing()?.IsPaired()?;
     crate::log!("bluetooth", "found {name} (paired={is_paired})");
     if is_paired {
+        let _ = events.send(Event::PairedInWindows { name: name.clone(), address });
         // Not needed any more, and Windows behaves worse with one: the bonded
         // link came up "Connected" with no working ATT. Say so once.
         crate::log!("bluetooth", "note: the phone is bonded in Windows settings; Bridge no longer needs that, and removing it avoids trouble");
@@ -360,6 +464,7 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
                         l.tx = None;
                         l.service = None;
                         l.session = None;
+        l.params = None;
                         l.device = None;
                         l.crypto = None;
                         crate::log!("bluetooth", "disconnected");
@@ -408,14 +513,71 @@ fn connect(address: u64, addr_type: BluetoothAddressType, secret: &str, link: Ar
             crate::log!("bluetooth", "couldn't ask Windows to keep the link: {e}");
         }
     }
+    describe_params(&device, "at connect");
+    let params = request_relaxed_link(&device);
+    // If the phone's stack tightens the link again later (it renegotiates
+    // whenever another computer connects), ask again.
+    let link_pc = link.clone();
+    let _ = device.ConnectionParametersChanged(&TypedEventHandler::new(
+        move |d: &Option<BluetoothLEDevice>, _: &Option<windows::core::IInspectable>| {
+            if let Some(d) = d {
+                describe_params(d, "changed");
+                let tight = d.GetConnectionParameters().and_then(|p| p.LinkTimeout()).map(|t| t < 200).unwrap_or(false);
+                if tight {
+                    let fresh = request_relaxed_link(d);
+                    if let Ok(mut l) = link_pc.lock() {
+                        if l.device.is_some() {
+                            l.params = fresh;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        },
+    ));
     {
         let mut l = link.lock().unwrap();
         l.mtu_payload = mtu_payload;
         l.session = session;
+        l.params = params;
         l.device = Some(device);
     }
     crate::log!("bluetooth", "subscribed (chunks of {mtu_payload} bytes); waiting for the phone's challenge");
     Ok(())
+}
+
+/// Logs the link's actual parameters. The phone's Bluetooth stack puts new
+/// links on a 720 ms supervision timeout (the Mac's drops every few minutes
+/// were exactly that); this line is how to see whether the PC's link is too.
+fn describe_params(device: &BluetoothLEDevice, when: &str) {
+    match device.GetConnectionParameters() {
+        Ok(p) => crate::log!(
+            "bluetooth",
+            "link parameters {when}: interval {:.1} ms, latency {}, supervision timeout {} ms",
+            p.ConnectionInterval().unwrap_or(0) as f32 * 1.25,
+            p.ConnectionLatency().unwrap_or(0),
+            p.LinkTimeout().unwrap_or(0) as u32 * 10
+        ),
+        Err(_) => {} // Windows 10 doesn't have this API
+    }
+}
+
+/// Asks for "balanced" parameters (a supervision timeout of seconds, not
+/// 720 ms), from our side as the central. The phone does the same for the
+/// Mac's link from its side; for the PC it can't without opening a link back,
+/// which made Windows offer to pair. Windows 11 only; on 10 this is a no-op.
+fn request_relaxed_link(device: &BluetoothLEDevice) -> Option<BluetoothLEPreferredConnectionParametersRequest> {
+    let balanced = BluetoothLEPreferredConnectionParameters::Balanced().ok()?;
+    match device.RequestPreferredConnectionParameters(&balanced) {
+        Ok(r) => {
+            crate::log!("bluetooth", "asked for relaxed link parameters: {:?}", r.Status().ok());
+            Some(r)
+        }
+        Err(e) => {
+            crate::log!("bluetooth", "couldn't ask for link parameters: {e}");
+            None
+        }
+    }
 }
 
 /// Writes the Client Characteristic Configuration descriptor (0x2902) by hand.
@@ -502,6 +664,7 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
                 l.tx = None;
                 l.service = None;
                 l.session = None;
+        l.params = None;
             }
             Step::Ignore => {}
         }
@@ -522,8 +685,23 @@ fn receive(bytes: &[u8], link: &Arc<Mutex<Link>>, events: &Sender<Event>, secret
     };
     match kind {
         Kind::Notification => {
-            if let Some((app, title, body, package)) = protocol::parse_notification(&text) {
-                let _ = events.send(Event::Notification { app, title, body, package });
+            if let Some(n) = protocol::parse_notification(&text) {
+                let _ = events.send(Event::Notification(n));
+            }
+        }
+        Kind::Removed => {
+            if let Ok(id) = text.trim().parse() {
+                let _ = events.send(Event::NotificationRemoved(id));
+            }
+        }
+        Kind::Media => {
+            let _ = events.send(Event::Media(protocol::parse_media(&text)));
+        }
+        Kind::Art => {
+            if let Some((key, b64)) = text.split_once('\t') {
+                if let Ok(jpeg) = base64_decode(b64) {
+                    let _ = events.send(Event::Art { key: key.to_string(), jpeg });
+                }
             }
         }
         Kind::Icon => {

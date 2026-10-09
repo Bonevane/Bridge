@@ -135,7 +135,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     private func openPanel() {
-        let hosting = NSHostingView(rootView: MenuView(bridge: bridge))
+        let hosting = ResizingHostingView(rootView: MenuView(bridge: bridge))
         hosting.setFrameSize(hosting.fittingSize)
 
         let panel = NSPanel(contentRect: NSRect(origin: .zero, size: hosting.fittingSize),
@@ -154,6 +154,16 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         position(panel)
         panel.orderFrontRegardless()
         self.panel = panel
+        // The panel was sized once, at open: expanding the log (or a Now
+        // Playing card appearing) grew the content but not the window, until
+        // it was closed and opened again. Follow the content, top edge fixed.
+        hosting.onResize = { [weak self, weak panel] size in
+            guard let self = self, let panel = panel, panel.frame.size != size else { return }
+            let top = panel.frame.maxY
+            panel.setFrame(NSRect(x: panel.frame.minX, y: top - size.height, width: size.width, height: size.height),
+                           display: true)
+            self.position(panel)
+        }
 
         // Dismiss on a click anywhere else, the way a menu does. Installed a
         // beat later: the click that opens the panel is itself a global event,
@@ -190,5 +200,20 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         outsideClicks = nil
         panel?.orderOut(nil)
         panel = nil
+    }
+}
+
+
+/// An NSHostingView that reports when its SwiftUI content wants a new size.
+final class ResizingHostingView<Content: View>: NSHostingView<Content> {
+    var onResize: ((NSSize) -> Void)?
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        // After this layout pass, when fittingSize reflects the new content.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.onResize?(self.fittingSize)
+        }
     }
 }

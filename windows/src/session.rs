@@ -11,6 +11,43 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// When a file transfer last moved data (ms since the epoch). The session
+/// holds its bitrate while this is recent: a transfer shares the tunnel and
+/// makes the video fall behind, which isn't the link getting worse, and a
+/// restart (about 10 s with no picture and no input) only made it worse.
+static LAST_TRANSFER_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn note_transfer() {
+    LAST_TRANSFER_MS.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+}
+
+/// How far behind the video is right now (ms), for file transfers to pace
+/// themselves: they pause while the picture is lagging, so the video keeps
+/// moving and the transfer takes a little longer instead.
+static VIDEO_BACKLOG_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+static VIDEO_BACKLOG_AT_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// 0 unless a frame measured it in the last 1.5 s: a still screen sends no
+/// frames, and a stale "behind" reading mustn't hold a transfer back.
+pub fn video_backlog_ms() -> i64 {
+    let fresh = chrono::Utc::now().timestamp_millis() - VIDEO_BACKLOG_AT_MS.load(Ordering::Relaxed) < 1_500;
+    if fresh { VIDEO_BACKLOG_MS.load(Ordering::Relaxed) } else { 0 }
+}
+
+/// Called between chunks of a transfer: waits (up to 2 s) while the video
+/// is more than 400 ms behind.
+pub fn yield_to_video() {
+    let start = Instant::now();
+    while video_backlog_ms() > 400 && start.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn transfer_active() -> bool {
+    chrono::Utc::now().timestamp_millis() - LAST_TRANSFER_MS.load(Ordering::Relaxed) < 5_000
+}
+
 /// Where decoded frames go: called on the video thread, as fast as they come.
 pub type FrameSink = Arc<dyn Fn(video::Frame) + Send + Sync>;
 
@@ -18,6 +55,8 @@ pub type FrameSink = Arc<dyn Fn(video::Frame) + Send + Sync>;
 pub enum SessionEvent {
     /// Video size from the server's session meta.
     Size(u32, u32),
+    /// The phone's name, from the video stream's header.
+    Device(String),
     /// The phone's clipboard changed.
     Clipboard(String),
     Log(String),
@@ -36,6 +75,8 @@ struct Shared {
     target_bitrate: i64,
     level: Mutex<i32>,
     video_size: Mutex<(u16, u16)>,
+    /// One "couldn't send input" line per session, not one per mouse move.
+    send_failed_logged: AtomicBool,
 }
 
 pub struct Session {
@@ -62,6 +103,7 @@ impl Session {
             target_bitrate: target,
             level: Mutex::new(0),
             video_size: Mutex::new((0, 0)),
+            send_failed_logged: AtomicBool::new(false),
         });
         open(&shared)?;
         Ok(Session { shared })
@@ -72,14 +114,25 @@ impl Session {
     }
 
     /// Sends one control message; drops it if the control stream is gone.
+    /// Says so in the log the first time, so "input does nothing" is never silent.
     pub fn send(&self, message: &[u8]) {
-        if let Some(c) = self.shared.control.lock().unwrap().as_mut() {
-            let _ = c.write_all(message);
+        let result = match self.shared.control.lock().unwrap().as_mut() {
+            Some(c) => c.write_all(message).map_err(|e| format!("{e:#}")),
+            None => Err("no control stream (restarting?)".into()),
+        };
+        match result {
+            Ok(()) => self.shared.send_failed_logged.store(false, Ordering::SeqCst),
+            Err(e) => {
+                if !self.shared.send_failed_logged.swap(true, Ordering::SeqCst) {
+                    let _ = self.shared.events.send(SessionEvent::Log(format!("input not sent: {e}")));
+                }
+            }
         }
     }
 
     pub fn stop(&self) {
         self.shared.stopped.store(true, Ordering::SeqCst);
+        VIDEO_BACKLOG_MS.store(0, Ordering::Relaxed);
         if let Some(c) = self.shared.control.lock().unwrap().take() {
             c.close();
         }
@@ -171,6 +224,7 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
         let mut codec = [0u8; 4];
         s.read_exact(&mut codec)?;
         let _ = shared.events.send(SessionEvent::Log(format!("Video from {device}, codec {}", String::from_utf8_lossy(&codec))));
+        let _ = shared.events.send(SessionEvent::Device(device));
 
         let mut decoder = video::Decoder::new()?;
         let mut first: Option<(i64, Instant)> = None;
@@ -198,6 +252,16 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
             match decoder.handle(&data, is_config, is_key, pts) {
                 Ok(frames) => {
                     for f in frames {
+                        // Input coordinates are scaled against the video size.
+                        // If the server's size packet never came (or didn't
+                        // parse), take it from the picture itself rather than
+                        // dropping every click as "size unknown".
+                        // Only when unknown: the decoder may pad to a multiple of 16,
+                        // and the server's own figure is the exact one.
+                        if *shared.video_size.lock().unwrap() == (0, 0) {
+                            *shared.video_size.lock().unwrap() = (f.width as u16, f.height as u16);
+                            let _ = shared.events.send(SessionEvent::Size(f.width, f.height));
+                        }
                         (shared.frames)(f);
                     }
                 }
@@ -215,6 +279,14 @@ fn read_video(shared: Arc<Shared>, mut s: Stream) {
             let lag = now.duration_since(first_arrival).as_secs_f64() - (pts - first_pts) as f64 / 1_000_000.0;
             min_lag = min_lag.min(lag);
             let backlog = lag - min_lag;
+            VIDEO_BACKLOG_MS.store((backlog * 1000.0) as i64, Ordering::Relaxed);
+            VIDEO_BACKLOG_AT_MS.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+            if transfer_active() {
+                // A transfer is what's slowing the video (and it backs off by
+                // itself, see yield_to_video): not a reason to restart.
+                slow_since = None;
+                continue;
+            }
             let level = *shared.level.lock().unwrap();
             if backlog > 0.35 {
                 let since = *slow_since.get_or_insert(now);

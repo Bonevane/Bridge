@@ -117,6 +117,11 @@ final class BridgeController: ObservableObject {
     }
 
     /// Show the phone's notifications on the Mac (works with USB debugging off).
+    /// Clearing a notification on one side clears it on the other.
+    @Published var syncDismissals: Bool = UserDefaults.standard.object(forKey: "syncDismissals") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(syncDismissals, forKey: "syncDismissals") }
+    }
+
     @Published var mirrorNotifications: Bool {
         didSet {
             UserDefaults.standard.set(mirrorNotifications, forKey: "mirrorNotifications")
@@ -227,8 +232,31 @@ final class BridgeController: ObservableObject {
     }
 
     private func fail(_ message: String) {
-        phase = .failed(message)
-        appendLog("Error: \(message)")
+        appendLog("Error: \(message)")          // the raw text, for the log
+        phase = .failed(Self.friendly(message))
+    }
+
+    /// Known errors in plain words, with what to do; anything else as it came.
+    static func friendly(_ raw: String) -> String {
+        let rules: [(String, String)] = [
+        ("wireless debugging port not found", "Your phone needs Wi-Fi to restart its helper. Connect it to Wi-Fi, or plug it in and use Set up over USB."),
+        ("daemon did not answer", "Your phone's helper didn't start. Plug the phone in and use Set up over USB."),
+        ("WRITE_SECURE_SETTINGS", "This phone hasn't been set up yet. Plug it in and use Set up over USB."),
+        ("unauthorized", "The pairing doesn't match this phone any more. Pair again with Set up over USB."),
+        ("scrcpy jar not found", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("scrcpy-server did not start", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("restart failed", "Mirroring stopped because the connection dropped. Click Mirror phone to start again."),
+        ("tunnel dropped", "Lost the connection to your phone."),
+        ("Lost the connection", "Lost the connection to your phone."),
+        ("didn't start its tunnel", "Your phone didn't respond over Bluetooth. Open Bridge on the phone, or switch it to Anywhere."),
+        ("tunnel not listening", "Bridge's connection to your phone didn't start. Try again; if it repeats, restart Bridge."),
+        ("didn't answer", "Your phone didn't answer. Make sure it's on and has internet, or bring it near this computer so Bluetooth can wake it."),
+        ("adb.exe isn't available", "Bridge is missing a file it needs. Download Bridge again and keep all its files together."),
+        ("not a folder in shared storage", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("can't read", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("stopped sending at", "The download was interrupted. Try again."),
+        ]
+        return rules.first { raw.contains($0.0) }?.1 ?? raw
     }
 
     /// Runs blocking work (like waiting for adb) off the main thread.
@@ -495,8 +523,18 @@ final class BridgeController: ObservableObject {
         return killed
     }
 
-    func connect() {
+    /// The tunnel and helper are up for the Phone Files window only (no video).
+    @Published var filesSession = false
+
+    /// `forFiles`: bring up the tunnel and helper for the files window and
+    /// stop there, instead of opening the video.
+    func connect(forFiles: Bool = false) {
         guard !isBusy, !isConnected else { return }
+        if filesSession {
+            // Already up for the files window: just open the video.
+            if !forFiles { Task { await startMirroring(port: localPort) } }
+            return
+        }
 
         let currentTicket = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentTicket.hasPrefix("endpoint") else {
@@ -552,7 +590,8 @@ final class BridgeController: ObservableObject {
             var reply: String?
             for _ in 0..<15 {
                 if userStopped { return }
-                reply = await background { Control.send("START", port: port) }
+                let me = Self.computerName
+                reply = await background { Control.send("START by=\(me)", port: port) }
                 if reply != nil { break }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
@@ -567,9 +606,20 @@ final class BridgeController: ObservableObject {
                 fail("Phone: \(startReply)")
                 return
             }
+            if forFiles {
+                filesSession = true
+                phase = .idle
+                filesWindow?.model.list(filesWindow?.model.path ?? "")
+                return
+            }
+            await startMirroring(port: port)
+        }
+    }
 
-            // Step 3: open the video and control streams and show the window.
-            // No adb involved: the phone's daemon runs scrcpy's server for us.
+    /// Step 3: open the video and control streams and show the window. No adb
+    /// involved: the phone's daemon runs scrcpy's server for us.
+    private func startMirroring(port: Int) async {
+        do {
             phase = .working("Starting mirroring...")
             let window = SessionWindow()
             let session = Session(port: port, player: window.player)
@@ -612,6 +662,33 @@ final class BridgeController: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             phase = .connected
+        }
+    }
+
+    // MARK: - Phone files
+
+    private var filesWindow: PhoneFilesWindow?
+
+    /// Browse the phone's shared storage. Without a mirroring session it
+    /// brings the tunnel and helper up just for this window, and closing the
+    /// window ends that again.
+    func openPhoneFiles() {
+        guard isPaired else { return }
+        let window = filesWindow ?? PhoneFilesWindow(port: localPort)
+        filesWindow = window
+        window.onClose = { [weak self] in
+            guard let self = self, self.filesSession, !self.isConnected, !self.disconnecting else { return }
+            self.appendLog("Files window closed; ending the files session.")
+            self.disconnect()
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        if isConnected || filesSession {
+            window.model.list(window.model.path)
+        } else if !isBusy {
+            window.model.status = "Connecting to the phone…"
+            connect(forFiles: true)
         }
     }
 
@@ -697,17 +774,24 @@ final class BridgeController: ObservableObject {
     }
 
     /// Menu action: look for the phone again, and re-read what it says it can do.
+    /// Spins the refresh icon while a refresh is under way.
+    @Published var refreshing = false
+
+    /// The refresh button: a fresh connection to the phone. The link can look
+    /// "linked" here long after it has actually died, so this always drops
+    /// it and connects again; the phone then sends status, Now Playing and
+    /// the cover anew, as it does on every new link.
     func refreshBluetooth() {
         guard useBluetooth else {
             notice = "Bluetooth is switched off in Settings."
             return
         }
-        if bluetoothLinked {
-            bluetoothLink.requestStatus()   // a resync without dropping the link
-        } else {
-            bluetoothLink.rescan()
-        }
+        refreshing = true
+        bluetoothLinked = false
+        bluetoothLink.rescan()
+        appendLog("Refreshing: reconnecting to the phone", source: "bluetooth")
         refreshPhoneStatus()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.refreshing = false }
     }
 
     /// Menu action: switch the phone's tunnel on or off from here.
@@ -751,15 +835,18 @@ final class BridgeController: ObservableObject {
     var screenCapability: Capability {
         if isConnected { return .working("Mirroring now") }
         if ticket.trimmingCharacters(in: .whitespaces).isEmpty { return .off("Not paired yet") }
-        if bluetoothLinked && !phoneTunnelOn { return .off("Turn the tunnel on, on the phone") }
-        return .working("Ready to connect")
+        if bluetoothLinked || phoneTunnelOn { return .working("Ready to mirror") }
+        return .limited("Needs the phone nearby, or set to Anywhere")
     }
+
+    /// The Mac's own radio is off (not just "phone out of range").
+    var macBluetoothOff: Bool { useBluetooth && isPaired && bluetoothState == .off }
 
     var notificationCapability: Capability {
         if !mirrorNotifications { return .off("Switched off") }
         if bluetoothLinked { return .working("Over Bluetooth") }
         if notificationsAnywhere { return .limited("Phone is far: using the tunnel") }
-        return .off("Phone out of Bluetooth range")
+        return .off(macBluetoothOff ? "Bluetooth is off on this Mac" : "Phone out of Bluetooth range")
     }
 
     var clipboardCapability: Capability {
@@ -770,7 +857,7 @@ final class BridgeController: ObservableObject {
                 ? .working("Both ways, over Bluetooth")
                 : .limited("Mac to phone only — turn on \"Keep the phone ready\" for both")
         }
-        return .off("Phone out of Bluetooth range")
+        return .off(macBluetoothOff ? "Bluetooth is off on this Mac" : "Phone out of Bluetooth range")
     }
 
     // MARK: - Settings sync with the phone
@@ -844,7 +931,38 @@ final class BridgeController: ObservableObject {
                 guard let self = self else { return }
                 self.bluetoothState = state
                 // A fresh link: the phone has no idea what's open here yet.
-                if state == .linked { self.twins.report(force: true); self.iconsRequested.removeAll() }
+                if state == .linked {
+                    self.twins.report(force: true); self.iconsRequested.removeAll()
+                    // Who we are, in our own words: the phone's Bluetooth name
+                    // for a Mac is often just "Mac".
+                    self.bluetoothLink.hello(name: Self.computerName)
+                }
+            }
+        }
+        bluetoothLink.onRemoved = { [weak self] id in
+            Task { @MainActor in
+                if self?.syncDismissals == true { NotificationBridge.remove(id: id) }
+            }
+        }
+        bluetoothLink.onMedia = { [weak self] fields in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.media = fields["state"] == "none" ? [:] : fields
+                self.mediaReceivedAt = Date()
+                self.mediaArt = fields["art"].flatMap { self.artByKey[$0] }
+            }
+        }
+        bluetoothLink.onArt = { [weak self] key, jpeg in
+            Task { @MainActor in
+                guard let self = self, let image = NSImage(data: jpeg) else { return }
+                if self.artByKey.count > 30 { self.artByKey.removeAll() }
+                self.artByKey[key] = image
+                // Its own song, or the song on screen that came without a cover
+                // (the phone sends a late cover by itself).
+                if self.media["art"] == key || (!self.media.isEmpty && (self.media["art"] ?? "").isEmpty) {
+                    self.media["art"] = key
+                    self.mediaArt = image
+                }
             }
         }
         bluetoothLink.onIcon = { [weak self] package, png in
@@ -862,6 +980,11 @@ final class BridgeController: ObservableObject {
                 self.phoneDaemonAlive = daemon
                 self.phoneTunnelOn = tunnel
                 if let paused = fields["paused"] { self.phonePausedForBanking = paused == "1" }
+                if let b = fields["battery"].flatMap(Int.init), b >= 0 { self.phoneBattery = b }
+                self.phoneCharging = fields["charging"] == "1"
+                if let net = fields["net"] { self.phoneNetwork = net }
+                if let model = fields["model"] { self.phoneModel = model.replacingOccurrences(of: "_", with: " ") }
+                if let mode = fields["mode"] { self.phoneMode = mode }
                 if let keep = fields["keep"] {
                     self.reconcileKeepReady(phoneValue: keep == "1",
                                             phoneChangedAt: Double(fields["keepAt"] ?? "0") ?? 0)
@@ -879,7 +1002,10 @@ final class BridgeController: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 self.bluetoothLinked = linked
-                if !linked { self.phoneDaemonAlive = false; self.phoneTunnelOn = false }
+                if !linked {
+                    self.phoneDaemonAlive = false; self.phoneTunnelOn = false
+                    self.media = [:]; self.phoneBattery = nil
+                }
                 // Bluetooth covers both while it's in range, so the tunnel-based
                 // helpers should stand down, and the clipboard watcher should
                 // start (or stop) with the link.
@@ -891,6 +1017,11 @@ final class BridgeController: ObservableObject {
         bluetoothLink.start()
     }
 
+    /// This Mac's name as the user set it (System Settings › General › About).
+    static var computerName: String {
+        (Host.current().localizedName ?? "Mac").replacingOccurrences(of: "\n", with: " ")
+    }
+
     /// Packages whose icon has been asked for over this Bluetooth link.
     private var iconsRequested = Set<String>()
 
@@ -899,13 +1030,72 @@ final class BridgeController: ObservableObject {
         let parts = line.components(separatedBy: "\t")
         guard parts.count >= 3, mirrorNotifications else { return }
         let package = parts.count > 3 ? parts[3] : ""
+        let id = parts.count > 4 ? Int(parts[4]) ?? 0 : 0
+        let flags = parts.count > 5 ? parts[5] : ""
         // First notification from an app: ask the phone for its icon (a small
         // PNG over Bluetooth, cached for good). This one goes out without it.
         if !package.isEmpty, !NotificationBridge.hasIcon(for: package), bluetoothLinked, !iconsRequested.contains(package) {
             iconsRequested.insert(package)
             bluetoothLink.requestIcon(package)
         }
-        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2], package: package)
+        NotificationBridge.post(app: parts[0], title: parts[1], body: parts[2], package: package,
+                                id: id, replyable: flags.contains("r") && bluetoothLinked)
+    }
+
+    /// A reply typed into a phone notification here.
+    func replyOnPhone(id: Int, text: String) {
+        guard bluetoothLinked else {
+            NotificationBridge.post(app: "Bridge", title: "Reply not sent",
+                                    body: "The phone isn't linked over Bluetooth right now.")
+            return
+        }
+        bluetoothLink.reply(id: id, text: text)
+        appendLog("Reply sent to the phone.", source: "notify")
+    }
+
+    /// Cleared here: clear it on the phone too.
+    func dismissOnPhone(id: Int) {
+        if syncDismissals, bluetoothLinked { bluetoothLink.dismiss(id: id) }
+    }
+
+    // MARK: - Phone status and Now Playing (shown in the menu)
+
+    @Published var phoneBattery: Int?
+    @Published var phoneCharging = false
+    @Published var phoneNetwork = ""
+    @Published var phoneModel = ""
+    /// Now Playing fields from the phone, and when they arrived (the position
+    /// is extrapolated from then).
+    @Published var media: [String: String] = [:]
+    @Published var mediaReceivedAt = Date()
+    @Published var mediaArt: NSImage?
+    private var artByKey: [String: NSImage] = [:]
+    /// "nearby" or "anywhere": the mode chosen on the phone.
+    @Published var phoneMode = ""
+
+    func mediaCommand(_ command: String) {
+        guard bluetoothLinked else {
+            appendLog("Media: \(command) not sent, the phone isn't linked over Bluetooth", source: "bluetooth")
+            return
+        }
+        bluetoothLink.media(command)
+        appendLog("Media: \(command)", source: "bluetooth")
+        // React now instead of waiting a round trip for the phone to confirm;
+        // its next update puts things right if the player did something else.
+        let now = Date()
+        let pos = (Double(media["pos"] ?? "") ?? 0) +
+            (media["state"] == "playing" ? now.timeIntervalSince(mediaReceivedAt) * 1000 : 0)
+        switch command {
+        case "toggle":
+            media["state"] = media["state"] == "playing" ? "paused" : "playing"
+            media["pos"] = String(Int(pos)); mediaReceivedAt = now
+        case "next", "prev":
+            media["pos"] = "0"; mediaReceivedAt = now
+        default:
+            if command.hasPrefix("seek "), let ms = Int(command.dropFirst(5)) {
+                media["pos"] = String(ms); mediaReceivedAt = now
+            }
+        }
     }
 
     private lazy var notificationBridge = NotificationBridge(
@@ -1021,6 +1211,7 @@ final class BridgeController: ObservableObject {
             }
 
             stopProcesses()
+            filesSession = false
             phase = .idle
             disconnecting = false
             if syncClipboard && !keepReady {
@@ -1085,6 +1276,8 @@ final class BridgeController: ObservableObject {
         session?.stop()
         session = nil
         if let w = sessionWindow { sessionWindow = nil; w.onClose = nil; w.close() }
+        filesSession = false
+        filesWindow?.close()   // it needs the session's tunnel
         NSApp.setActivationPolicy(.accessory)   // back to menu-bar only
         if let m = oldMirror, m.isRunning { m.terminate() }
         if let adb = Shell.find("adb") {
@@ -1103,7 +1296,8 @@ final class BridgeController: ObservableObject {
             }
         } else if process === tunnel {
             tunnel = nil
-            if !userStopped, isConnected {
+            if !userStopped, isConnected || filesSession {
+                filesSession = false
                 stopProcesses()
                 fail("Lost the connection to the phone.")
             }

@@ -125,7 +125,12 @@ final class NotificationBridge {
     /// With a cached icon for the app, it rides along as the attachment
     /// thumbnail: the app icon slot itself always belongs to Bridge, that's
     /// how macOS works.
-    static func post(app: String, title: String, body: String, package: String = "") {
+    ///
+    /// `id` (from the phone) makes an update replace the notification (a
+    /// chat's next message) instead of stacking, lets the phone take it down
+    /// when it's cleared there, and is what Reply and dismiss refer to.
+    static func post(app: String, title: String, body: String, package: String = "",
+                     id: Int = 0, replyable: Bool = false) {
         let content = UNMutableNotificationContent()
         // The app name is the most useful thing to lead with; the phone's own
         // title goes in the subtitle so both are visible.
@@ -133,6 +138,10 @@ final class NotificationBridge {
         content.subtitle = title
         content.body = body
         content.sound = nil
+        if id > 0 {
+            content.userInfo = ["phoneId": id]
+            content.categoryIdentifier = replyable ? Category.reply : Category.plain
+        }
         if hasIcon(for: package) {
             // UNNotificationAttachment takes the file over (it moves it), so
             // hand it a copy and keep the cache.
@@ -142,12 +151,60 @@ final class NotificationBridge {
                 content.attachments = [attachment]
             }
         }
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        let identifier = id > 0 ? "phone-\(id)" : UUID().uuidString
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    /// The phone cleared it: take it out of Notification Center too.
+    static func remove(id: Int) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["phone-\(id)"])
+    }
+
+    enum Category {
+        static let reply = "phone.reply"
+        static let plain = "phone.plain"
+    }
+
+    /// The Reply box, and "tell us when it's dismissed" (customDismissAction),
+    /// so clearing a notification here clears it on the phone.
+    static func registerCategories() {
+        let reply = UNTextInputNotificationAction(identifier: "reply", title: "Reply", options: [],
+                                                  textInputButtonTitle: "Send", textInputPlaceholder: "Reply")
+        UNUserNotificationCenter.current().setNotificationCategories([
+            UNNotificationCategory(identifier: Category.reply, actions: [reply], intentIdentifiers: [],
+                                   options: [.customDismissAction]),
+            UNNotificationCategory(identifier: Category.plain, actions: [], intentIdentifiers: [],
+                                   options: [.customDismissAction]),
+        ])
     }
 
     /// macOS only shows notifications once the user has allowed them.
     static func requestPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+}
+
+/// Hears what the user does with a phone notification: a typed reply, or
+/// clearing it. Set as the notification center's delegate at launch.
+final class PhoneNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = PhoneNotificationDelegate()
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        defer { completionHandler() }
+        guard let id = response.notification.request.content.userInfo["phoneId"] as? Int else { return }
+        if let typed = response as? UNTextInputNotificationResponse {
+            let text = typed.userText
+            Task { @MainActor in BridgeController.shared.replyOnPhone(id: id, text: text) }
+        } else if response.actionIdentifier == UNNotificationDismissActionIdentifier {
+            Task { @MainActor in BridgeController.shared.dismissOnPhone(id: id) }
+        }
+    }
+
+    /// Show phone notifications even while Bridge's own window is in front.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
     }
 }

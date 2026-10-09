@@ -13,9 +13,10 @@ struct MenuView: View {
     var body: some View {
         GlassGroup(spacing: 14) {
             VStack(spacing: 10) {
-                header
+                header.zIndex(1)   // its hover labels hang over the card below
                 connection
                 primaryButton
+                if !bridge.media.isEmpty { NowPlayingCard(bridge: bridge) }
                 capabilities
                 actions
                 logSection
@@ -33,20 +34,25 @@ struct MenuView: View {
 
     // MARK: - Header
 
+    /// "Bridge" on the left; on the right, while the phone is linked, its
+    /// name, the mode chosen on it, its network and its battery.
     private var header: some View {
         ZStack {
-            Text("Bridge")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-            HStack {
-                Spacer()
+            HStack(spacing: 7) {
+                Text("Bridge")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 4)
+                if bridge.bluetoothLinked, bridge.phoneBattery != nil { phoneLine }
                 Button(action: bridge.refreshBluetooth) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(bridge.refreshing ? 360 : 0))
+                        .animation(bridge.refreshing ? .linear(duration: 0.6).repeatForever(autoreverses: false) : .default,
+                                   value: bridge.refreshing)
                 }
                 .buttonStyle(.plain)
-                .help("Look for the phone again")
+                .hoverHint("Reconnect to the phone")
             }
         }
         .frame(maxWidth: .infinity)
@@ -83,6 +89,60 @@ struct MenuView: View {
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .innerCard(tint: reach.tint == .secondary ? nil : reach.tint)
+    }
+
+    /// The phone at a glance: name, mode (icon, name on hover), network, battery.
+    private var phoneLine: some View {
+        HStack(spacing: 6) {
+            if !bridge.phoneModel.isEmpty {
+                Text(bridge.phoneModel).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            modeIcon
+            if let net = networkLabel {
+                Image(systemName: net.1).font(.system(size: 11)).foregroundStyle(.secondary).hoverHint(net.0)
+            }
+            if let battery = bridge.phoneBattery {
+                HStack(spacing: 2) {
+                    Image(systemName: bridge.phoneCharging ? "battery.100percent.bolt" : batterySymbol(battery))
+                    Text("\(battery)%")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(battery < 20 && !bridge.phoneCharging ? Color.orange : bridge.phoneCharging ? Color.green : Color.secondary)
+                .hoverHint(bridge.phoneCharging ? "Charging" : "Battery")
+            }
+        }
+    }
+
+    /// Nearby (Bluetooth) or Anywhere (globe). Hover for the name.
+    @ViewBuilder private var modeIcon: some View {
+        switch bridge.phoneMode {
+        case "anywhere":
+            Image(systemName: "globe").font(.system(size: 11)).foregroundStyle(Color.accentColor).hoverHint("Anywhere mode")
+        case "nearby":
+            BluetoothGlyph().stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
+                .frame(width: 7, height: 11).hoverHint("Nearby mode")
+        default:
+            EmptyView()
+        }
+    }
+
+    private func batterySymbol(_ level: Int) -> String {
+        switch level {
+        case ..<13: return "battery.0percent"
+        case ..<38: return "battery.25percent"
+        case ..<63: return "battery.50percent"
+        case ..<88: return "battery.75percent"
+        default: return "battery.100percent"
+        }
+    }
+
+    private var networkLabel: (String, String)? {
+        switch bridge.phoneNetwork {
+        case "wifi": return ("Wi-Fi", "wifi")
+        case "cell": return ("Mobile", "antenna.radiowaves.left.and.right")
+        case "none": return ("Offline", "wifi.slash")
+        default: return nil
+        }
     }
 
     private var primaryButton: some View {
@@ -133,6 +193,14 @@ struct MenuView: View {
                         help: "Switches the phone's internet tunnel over Bluetooth") {
                     bridge.togglePhoneTunnel()
                 }
+            }
+
+            if bridge.isPaired {
+                MenuRow("Phone Files…", systemImage: "folder",
+                        help: "Browse the phone's storage and download files; drop files on the window to send them. Works without mirroring.") {
+                    bridge.openPhoneFiles()
+                }
+                .disabled(bridge.isBusy)
             }
 
             MenuRow("Set Up Over USB…", systemImage: "cable.connector",
@@ -221,6 +289,11 @@ struct MenuView: View {
             return Reach(title: "Mirroring", detail: "Screen, audio and clipboard are live",
                          symbol: "checkmark.circle.fill", tint: .green)
         }
+        if bridge.filesSession {
+            return Reach(title: "Connected for files",
+                         detail: "The tunnel and the phone's helper are up for Phone Files. Closing that window ends it.",
+                         symbol: "folder.fill", tint: .green)
+        }
         if bridge.phonePausedForBanking {
             return Reach(title: "Phone paused", detail: "USB debugging off for banking apps",
                          symbol: "pause.circle.fill", tint: .orange)
@@ -229,7 +302,7 @@ struct MenuView: View {
             return Reach(title: "Phone nearby",
                          detail: bridge.phoneTunnelOn
                             ? "Bluetooth linked, and reachable from anywhere"
-                            : "Bluetooth linked · tunnel off, so no remote mirroring",
+                            : "Bluetooth linked · Mirror wakes the tunnel",
                          symbol: "dot.radiowaves.left.and.right", tint: .green)
         }
         switch bridge.bluetoothState {
@@ -242,11 +315,13 @@ struct MenuView: View {
                          detail: "Allow Bridge to use Bluetooth in System Settings › Privacy & Security.",
                          symbol: "exclamationmark.triangle.fill", tint: .orange)
         case .off:
-            return Reach(title: "Phone not nearby",
-                         detail: bridge.useBluetooth
-                            ? "Bluetooth is off on this Mac."
-                            : "Bluetooth is switched off in Bridge's settings.",
-                         symbol: "iphone.slash", tint: .secondary)
+            return bridge.useBluetooth
+                ? Reach(title: "Bluetooth is off",
+                        detail: "Turn Bluetooth on in Control Center for notifications and clipboard. Mirroring still works if the phone's tunnel is on.",
+                        symbol: "exclamationmark.triangle.fill", tint: .orange)
+                : Reach(title: "Phone not nearby",
+                        detail: "Bluetooth is switched off in Bridge's settings.",
+                        symbol: "iphone.slash", tint: .secondary)
         case .linked:
             break   // handled above
         }
@@ -369,4 +444,170 @@ private func openSettingsWindow() {
         let selector = Selector((name))
         if NSApp.sendAction(selector, to: nil, from: nil) { return }
     }
+}
+
+
+// MARK: - Now Playing
+
+/// Drag state for the seek bar. `@StateObject`, not `@State`: the Command
+/// Line Tools can't expand the `@State` macro (see CLAUDE.md).
+private final class ScrubState: ObservableObject {
+    @Published var fraction: Double?
+}
+
+/// What the phone is playing: the cover, title, artist and app, a seek bar
+/// you can drag, and previous / play-pause / next.
+struct NowPlayingCard: View {
+    @ObservedObject var bridge: BridgeController
+    @StateObject private var scrub = ScrubState()
+
+    private var m: [String: String] { bridge.media }
+    private var playing: Bool { m["state"] == "playing" }
+    private var duration: Double { Double(m["dur"] ?? "") ?? 0 }
+
+    /// The phone sends the position only when something changes; between
+    /// updates the clock runs here, from when the update arrived.
+    private func position(at now: Date) -> Double {
+        let pos = Double(m["pos"] ?? "") ?? 0
+        let moved = playing ? now.timeIntervalSince(bridge.mediaReceivedAt) * 1000 : 0
+        return duration > 0 ? min(pos + moved, duration) : pos + moved
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            cover
+            VStack(alignment: .leading, spacing: 2) {
+                Text(m["title"] ?? "").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text([m["artist"], m["app"]].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "))
+                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                if duration > 0 {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        seekBar(position: position(at: context.date))
+                    }
+                    .padding(.top, 3)
+                }
+            }
+            Spacer(minLength: 0)
+            controls
+        }
+        .padding(10)
+        .innerCard()
+    }
+
+    private var cover: some View {
+        Group {
+            if let art = bridge.mediaArt {
+                Image(nsImage: art).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "music.note").font(.system(size: 18)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.secondary.opacity(0.15))
+            }
+        }
+        .frame(width: 48, height: 48)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func seekBar(position: Double) -> some View {
+        let shown = scrub.fraction ?? (duration > 0 ? position / duration : 0)
+        return VStack(spacing: 2) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.25))
+                    Capsule().fill(Color.accentColor).frame(width: max(3, geo.size.width * shown))
+                }
+                .frame(height: scrub.fraction == nil ? 3 : 5)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { v in scrub.fraction = min(max(v.location.x / geo.size.width, 0), 1) }
+                    .onEnded { v in
+                        let f = min(max(v.location.x / geo.size.width, 0), 1)
+                        bridge.mediaCommand("seek \(Int(f * duration))")
+                        scrub.fraction = nil
+                    })
+            }
+            .frame(height: 10)
+            HStack {
+                Text(clock(shown * duration))
+                Spacer()
+                Text(clock(duration))
+            }
+            .font(.system(size: 9).monospacedDigit()).foregroundStyle(.tertiary)
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: 8) {
+            Button { bridge.mediaCommand("prev") } label: { Image(systemName: "backward.fill") }
+            Button { bridge.mediaCommand("toggle") } label: {
+                Image(systemName: playing ? "pause.fill" : "play.fill").font(.system(size: 16))
+            }
+            Button { bridge.mediaCommand("next") } label: { Image(systemName: "forward.fill") }
+        }
+        .font(.system(size: 12))
+        .buttonStyle(.plain)
+    }
+
+    private func clock(_ ms: Double) -> String {
+        let s = Int(ms / 1000)
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                         : String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+/// The Bluetooth rune, which SF Symbols doesn't have.
+struct BluetoothGlyph: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let x0 = r.minX, x1 = r.maxX, mx = r.midX
+        p.move(to: CGPoint(x: x0, y: r.minY + r.height * 0.27))
+        p.addLine(to: CGPoint(x: x1, y: r.minY + r.height * 0.73))
+        p.addLine(to: CGPoint(x: mx, y: r.maxY))
+        p.addLine(to: CGPoint(x: mx, y: r.minY))
+        p.addLine(to: CGPoint(x: x1, y: r.minY + r.height * 0.27))
+        p.addLine(to: CGPoint(x: x0, y: r.minY + r.height * 0.73))
+        return p
+    }
+}
+
+// MARK: - Hover labels
+
+/// macOS shows `.help` tooltips only in the active app's key window, and
+/// this panel deliberately never takes focus, so they never appeared. This
+/// draws its own small label under the view while the pointer is over it.
+private final class HintState: ObservableObject {
+    @Published var showing = false
+}
+
+private struct HoverHint: ViewModifier {
+    let text: String
+    @StateObject private var state = HintState()
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .onHover { inside in
+                withAnimation(.easeOut(duration: 0.12)) { state.showing = inside }
+            }
+            .overlay(alignment: .top) {
+                if state.showing {
+                    Text(text)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .fixedSize()
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(.regularMaterial))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.12)))
+                        .offset(y: 18)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+extension View {
+    func hoverHint(_ text: String) -> some View { modifier(HoverHint(text: text)) }
 }

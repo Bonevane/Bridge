@@ -18,7 +18,7 @@ import java.net.Socket
  *    "MODE keep|lock" sets the keep-ready choice; "STATUS".
  *
  * Careful: streams are matched on their first four bytes, so no control command
- * may begin with VIDE, AUDI, CTRL, CLIP, INST, PUSH or NOTI.
+ * may begin with VIDE, AUDI, CTRL, CLIP, INST, PUSH, LIST, PULL or NOTI.
  *    Replies are one line: "OK …" or "ERR …".
  *
  * One ticket and one port carry everything, so the Mac's Connect button can
@@ -66,7 +66,7 @@ class ControlProxy(private val ctx: Context) {
                 n += r
             }
             when (String(head)) {
-                "VIDE", "AUDI", "CTRL", "CLIP", "INST", "PUSH" -> pipeToDaemon(it, head)   // daemon streams
+                "VIDE", "AUDI", "CTRL", "CLIP", "INST", "PUSH", "LIST", "PULL" -> pipeToDaemon(it, head)   // daemon streams
                 "NOTI" -> notifications(it)
                 else -> control(it, head)
             }
@@ -80,10 +80,14 @@ class ControlProxy(private val ctx: Context) {
         if (TunnelState.openStreams.incrementAndGet() == 1) {
             TunnelService.current?.holdWifiAwake(true)
         }
+        // The video stream is what "mirroring" means on the phone's screen.
+        val video = String(head) == "VIDE"
+        if (video && TunnelState.videoStreams.incrementAndGet() == 1) TunnelState.notifyListeners()
         try { pipeToDaemonInner(client, head) } finally {
             if (TunnelState.openStreams.decrementAndGet() == 0) {
                 TunnelService.current?.holdWifiAwake(false)
             }
+            if (video && TunnelState.videoStreams.decrementAndGet() == 0) TunnelState.notifyListeners()
             TunnelState.macSeen()
         }
     }
@@ -168,14 +172,18 @@ class ControlProxy(private val ctx: Context) {
         fun reply(s: String) { out.write("$s\n".toByteArray()); out.flush() }
         TunnelState.log("Mac: $line")
         when (line.substringBefore(' ')) {
-            "START" -> runCatching { DaemonManager.start(ctx) }
+            // "START by=<computer name>": the name is for "Mirroring to …".
+            "START" -> runCatching {
+                line.substringAfter("by=", "").trim().takeIf { it.isNotEmpty() }?.let { TunnelState.sessionBy = it.take(60) }
+                DaemonManager.start(ctx)
+            }
                 .onSuccess { reply("OK daemon running") }
                 .onFailure { reply("ERR ${it.message}") }
             "STOP" -> {
-                reply("OK " + DaemonManager.stop(ctx))
-                // The reply just went over the tunnel; give it a moment to
-                // leave before the tunnel itself is switched off.
-                Thread { Thread.sleep(1500); TunnelService.settleTunnelAfterSession(ctx) }.start()
+                // Reply first: the reply goes over the tunnel, which may be
+                // about to be switched off. endSession waits for the streams.
+                reply("OK session over")
+                TunnelService.endSession(ctx, "A computer (over the tunnel)")
             }
             "LOCKDOWN" -> reply("OK " + DaemonManager.stop(ctx, force = true))
             "PAUSE" -> {

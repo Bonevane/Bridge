@@ -17,6 +17,7 @@
 mod audio;
 mod ble;
 mod clipboard;
+mod files;
 mod log;
 mod notify;
 mod protocol;
@@ -47,6 +48,16 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 struct App {
     window: MainWindow,
     settings_window: SettingsWindow,
+    files_window: FilesWindow,
+    /// The phone folder the files window shows, as the phone resolved it.
+    files_path: String,
+    files_entries: Vec<files::Entry>,
+    /// Which entries the search box lets through, by index into files_entries.
+    files_shown: Vec<usize>,
+    files_filter: String,
+    /// One transfer at a time: dropping ten files queues them rather than
+    /// opening ten streams at once.
+    transfer_lock: std::sync::Arc<std::sync::Mutex<()>>,
     settings: settings::Settings,
     creds: store::Credentials,
     ble: Option<ble::Ble>,
@@ -63,9 +74,16 @@ struct App {
     mirror_window: Option<MirrorWindow>,
     /// The video size the window's input callbacks scale coordinates against.
     mirror_size: Option<Rc<RefCell<(u16, u16)>>>,
+    /// When the pointer last moved over the phone window: the control bar is
+    /// full strength for 3 s after, faint otherwise.
+    mirror_pointer: Rc<std::cell::Cell<Instant>>,
     /// Last text we synced with the phone over the session, to stop ping-pong.
     last_synced: Option<String>,
     mirroring: bool,
+    /// The tunnel and helper are up for the files window only (no video).
+    files_session: bool,
+    /// The connect in progress is for the files window, not for mirroring.
+    connect_for_files: bool,
     /// Which Connect this is. A result from an earlier, cancelled attempt is
     /// ignored, and the thread behind it stops retrying as soon as it sees
     /// the number move on (it used to keep hammering START, and once it got
@@ -79,21 +97,44 @@ struct App {
     rescan_at: Option<Instant>,
     /// Bluetooth couldn't start (radio off, or not ready yet at login): try again then.
     retry_ble_at: Option<Instant>,
+    /// This PC's Bluetooth radio (kept alive for its change events) and
+    /// whether it's on: None until known, or if there's no adapter at all.
+    radio: Option<windows::Devices::Radios::Radio>,
+    pc_bluetooth: Option<bool>,
+    no_adapter: bool,
+    /// The phone is paired in Windows' Bluetooth settings: its name and address.
+    paired_in_windows: Option<(String, u64)>,
+    /// Now Playing from the phone (see protocol::parse_media), when it came,
+    /// and album art by key.
+    media: std::collections::HashMap<String, String>,
+    media_received: Instant,
+    art: std::collections::HashMap<String, slint::Image>,
+    /// The mirroring watchdog (see watch_session): when it last asked, and
+    /// how many asks in a row went unanswered.
+    session_ping_at: Instant,
+    session_ping_misses: u32,
+    /// The phone's last status report (battery, network, mode, model…).
+    phone_status: std::collections::HashMap<String, String>,
     usb_busy: bool,
     /// The last failure (title, detail, from USB setup?). Stays on the hero
     /// card until the next action, so a heartbeat can't wipe it before it's read.
     error: Option<(String, String, bool)>,
     /// Packages whose icon we've already asked the phone for this link.
     icons_requested: BTreeSet<String>,
-    log_lines: Vec<String>,
 }
 
 impl App {
-    fn new(window: MainWindow, settings_window: SettingsWindow) -> Self {
+    fn new(window: MainWindow, settings_window: SettingsWindow, files_window: FilesWindow) -> Self {
         let (events_tx, events) = mpsc::channel();
         App {
             window,
             settings_window,
+            files_window,
+            files_path: String::new(),
+            files_entries: Vec::new(),
+            files_shown: Vec::new(),
+            files_filter: String::new(),
+            transfer_lock: Default::default(),
             settings: settings::Settings::load(),
             creds: store::load().unwrap_or_default(),
             ble: None,
@@ -109,8 +150,11 @@ impl App {
             session_events: None,
             mirror_window: None,
             mirror_size: None,
+            mirror_pointer: Rc::new(std::cell::Cell::new(Instant::now())),
             last_synced: None,
             mirroring: false,
+            files_session: false,
+            connect_for_files: false,
             attempt: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             connecting: false,
             woke_tunnel: false,
@@ -118,22 +162,34 @@ impl App {
             last_tick: Instant::now(),
             rescan_at: None,
             retry_ble_at: None,
+            radio: None,
+            pc_bluetooth: None,
+            no_adapter: false,
+            paired_in_windows: None,
+            media: Default::default(),
+            media_received: Instant::now(),
+            art: Default::default(),
+            phone_status: Default::default(),
+            session_ping_at: Instant::now(),
+            session_ping_misses: 0,
             usb_busy: false,
             error: None,
             icons_requested: BTreeSet::new(),
-            log_lines: Vec::new(),
         }
     }
 
     fn log(&mut self, source: &str, text: &str) {
         crate::log::line(source, text);
-        let stamp = chrono::Local::now().format("%H:%M:%S");
-        let line = if source.is_empty() { format!("{stamp} {text}") } else { format!("{stamp} [{source}] {text}") };
-        self.log_lines.push(line);
-        if self.log_lines.len() > 200 {
-            self.log_lines.remove(0);
+        self.show_log();
+    }
+
+    /// The panel shows every line the app logs, from every thread, newest
+    /// first (the text box can't follow the end by itself, and the latest line
+    /// is what you open it for). The file (Open log folder) stays in time order.
+    fn show_log(&self) {
+        if let Some(text) = crate::log::take_recent() {
+            self.window.global::<AppState>().set_log_text(text.into());
         }
-        self.window.global::<AppState>().set_log_text(self.log_lines.join("\n").into());
     }
 
     // MARK: - State → UI
@@ -147,29 +203,51 @@ impl App {
         ui.set_phone_paused(self.phone_paused);
         ui.set_mirroring(self.mirroring);
         ui.set_version(VERSION.into());
+        // The phone in the top bar, while it's linked.
+        let ps = &self.phone_status;
+        let battery = ps.get("battery").and_then(|b| b.parse::<i32>().ok()).filter(|b| *b >= 0);
+        ui.set_phone_battery(if self.linked { battery.unwrap_or(-1) } else { -1 });
+        ui.set_phone_charging(ps.get("charging").map(|v| v == "1").unwrap_or(false));
+        ui.set_phone_model(ps.get("model").map(|m| m.replace('_', " ")).unwrap_or_default().into());
+        ui.set_phone_mode(ps.get("mode").cloned().unwrap_or_default().into());
+        ui.set_phone_network(match ps.get("net").map(String::as_str) {
+            Some("wifi") => "Wi-Fi",
+            Some("cell") => "Mobile",
+            Some("none") => "Offline",
+            _ => "",
+        }.into());
 
         let usb_failed = matches!(&self.error, Some((_, _, true)));
         ui.set_usb_retry(usb_failed && !self.usb_busy && !self.connecting && !self.mirroring);
+        ui.set_windows_paired(self.paired_in_windows.is_some() && !self.linked && !self.mirroring && !self.connecting);
         let (title, detail, tint) = if let Some((title, detail, _)) = &self.error {
             (title.as_str(), detail.as_str(), 3)
         } else if !self.creds.is_paired() {
-            ("Pair your phone first", "On the phone tap Copy under Ticket, get it onto this PC's clipboard, then click Pair.", 0)
+            ("Pair your phone first", "Install Bridge on the phone, turn on USB debugging, plug it in, and click Set up over USB.", 0)
         } else if self.usb_busy {
             ("Setting up over USB", "Follow the phone's prompts", 2)
         } else if self.connecting {
             ("Connecting", "Starting the tunnel and the phone's helper…", 2)
         } else if self.mirroring {
             ("Mirroring", "Video, audio and input over the tunnel", 1)
+        } else if self.paired_in_windows.is_some() && !self.linked {
+            ("Unpair the phone in Windows", "It's paired in Windows' Bluetooth settings, and that stops Bridge's link working: Bridge connects without pairing and encrypts the link itself. Click below to unpair it (Bridge keeps working), or remove it in Settings › Bluetooth & devices.", 2)
+        } else if self.files_session {
+            ("Connected for files", "The tunnel and the phone's helper are up for Phone files. Closing that window ends it.", 1)
         } else if self.phone_paused {
             ("Phone paused", "USB debugging off for banking apps", 2)
         } else if self.linked {
             (
                 "Phone nearby",
-                if self.phone_tunnel_on { "Bluetooth linked, and reachable from anywhere" } else { "Bluetooth linked · tunnel off, so no remote mirroring" },
+                if self.phone_tunnel_on { "Bluetooth linked, and reachable from anywhere" } else { "Bluetooth linked · Mirror wakes the tunnel" },
                 1,
             )
         } else if !self.settings.use_bluetooth {
             ("Phone not nearby", "Bluetooth is switched off in Bridge's settings.", 0)
+        } else if self.no_adapter {
+            ("No Bluetooth on this PC", "Notifications and clipboard need Bluetooth. Mirroring still works if the phone's tunnel is on (Anywhere).", 2)
+        } else if self.pc_bluetooth == Some(false) {
+            ("Bluetooth is off", "Turn it on in Quick Settings (Win+A) for notifications and clipboard. Mirroring still works if the phone's tunnel is on.", 2)
         } else {
             ("Looking for your phone", "Searching over Bluetooth. Mirroring still works if its tunnel is on.", 0)
         };
@@ -179,19 +257,19 @@ impl App {
 
         ui.set_screen(Capability {
             name: "Screen".into(),
-            detail: if self.mirroring { "Live" } else if self.phone_paused { "Paused for banking" } else if self.phone_tunnel_on { "Ready to mirror" } else if self.linked { "Click Mirror: the tunnel comes up over Bluetooth" } else { "Needs the phone's tunnel, or Bluetooth to wake it" }.into(),
-            state: if self.mirroring || self.phone_tunnel_on { 2 } else if self.linked { 1 } else { 0 },
+            detail: if self.mirroring { "Live" } else if self.phone_paused { "Paused for banking" } else if self.phone_tunnel_on || self.linked { "Ready to mirror" } else { "Needs the phone nearby, or set to Anywhere" }.into(),
+            state: if self.mirroring || self.phone_tunnel_on || self.linked { 2 } else { 0 },
         });
         let notif_on = self.settings.mirror_notifications;
         ui.set_notifications(Capability {
             name: "Notifications".into(),
-            detail: if !notif_on { "Off in Settings" } else if self.linked { "Over Bluetooth" } else { "When the phone is nearby" }.into(),
+            detail: if !notif_on { "Off in Settings" } else if self.linked { "Over Bluetooth" } else if self.pc_bluetooth == Some(false) { "Bluetooth is off on this PC" } else { "When the phone is nearby" }.into(),
             state: if notif_on && self.linked { 2 } else { 0 },
         });
         let clip_on = self.settings.sync_clipboard;
         ui.set_clipboard(Capability {
             name: "Clipboard".into(),
-            detail: if !clip_on { "Off in Settings" } else if self.linked { "Both ways, over Bluetooth" } else { "When the phone is nearby" }.into(),
+            detail: if !clip_on { "Off in Settings" } else if self.linked { "Both ways, over Bluetooth" } else if self.pc_bluetooth == Some(false) { "Bluetooth is off on this PC" } else { "When the phone is nearby" }.into(),
             state: if clip_on && self.linked { 2 } else { 0 },
         });
 
@@ -208,6 +286,7 @@ impl App {
         st.set_bitrate_mbps(self.settings.bitrate_mbps);
         st.set_turn_screen_off(self.settings.turn_screen_off);
         st.set_mute_phone(self.settings.mute_phone);
+        st.set_sync_dismiss(self.settings.sync_dismiss);
         st.set_usb_busy(self.usb_busy);
         let t = &self.creds.ticket;
         st.set_ticket_short(if t.is_empty() { "Not paired".into() } else if t.len() > 28 { format!("{}…{}", &t[..14], &t[t.len() - 8..]).into() } else { t.clone().into() });
@@ -227,6 +306,7 @@ impl App {
         self.settings.bitrate_mbps = st.get_bitrate_mbps();
         self.settings.turn_screen_off = st.get_turn_screen_off();
         self.settings.mute_phone = st.get_mute_phone();
+        self.settings.sync_dismiss = st.get_sync_dismiss();
         let keep = st.get_keep_ready();
         if keep != self.settings.keep_ready {
             self.settings.keep_ready = keep;
@@ -280,10 +360,15 @@ impl App {
                 self.retry_ble_at = None;
             }
             Err(e) => {
-                // At login the radio can take a while to come up (0x800710DF,
-                // "the device is not ready"); don't give up on it.
-                self.log("bluetooth", &format!("couldn't start: {e:#}; trying again in 10 s"));
-                self.retry_ble_at = Some(Instant::now() + Duration::from_secs(10));
+                if self.pc_bluetooth == Some(false) {
+                    // Off: the radio watcher starts the link when it's switched on.
+                    self.log("bluetooth", "Bluetooth is off on this PC; waiting for it to be turned on");
+                } else {
+                    // At login the radio can take a while to come up (0x800710DF,
+                    // "the device is not ready"); don't give up on it.
+                    self.log("bluetooth", &format!("couldn't start: {e:#}; trying again in 10 s"));
+                    self.retry_ble_at = Some(Instant::now() + Duration::from_secs(10));
+                }
             }
         }
         self.refresh();
@@ -361,6 +446,214 @@ impl App {
         true
     }
 
+    // MARK: - Phone files
+
+    fn open_files(&mut self) {
+        let _ = self.files_window.show();
+        let path = self.files_path.clone();
+        self.list_files(&path);
+    }
+
+    fn list_files(&mut self, path: &str) {
+        let fw = &self.files_window;
+        if !self.mirroring && !self.files_session {
+            // No session: bring the tunnel and helper up just for files (no
+            // video), and list once they're there. See connect_with().
+            fw.set_crumbs(std::rc::Rc::new(slint::VecModel::from(vec![slint::SharedString::from("Phone storage")])).into());
+            if self.connecting {
+                fw.set_status("Connecting to the phone…".into());
+            } else if !self.creds.is_paired() {
+                fw.set_status("Pair your phone first.".into());
+            } else {
+                fw.set_status("Connecting to the phone…".into());
+                self.files_path = path.to_string();
+                self.connect_with(true);
+            }
+            return;
+        }
+        fw.set_loading(true);
+        fw.set_status("Loading…".into());
+        let (secret, tx, path) = (self.creds.secret.clone(), self.events_tx.clone(), path.to_string());
+        std::thread::spawn(move || {
+            let _ = tx.send(Event::FilesListed(files::list(&secret, &path).map_err(|e| format!("{e:#}"))));
+        });
+    }
+
+    fn files_open(&mut self, index: usize) {
+        // `index` is a row as shown, which the search box may have narrowed.
+        let Some(entry) = self.files_shown.get(index).and_then(|&i| self.files_entries.get(i)).cloned() else { return };
+        let full = format!("{}/{}", self.files_path.trim_end_matches('/'), entry.name);
+        if entry.dir {
+            self.list_files(&full);
+        } else {
+            self.files_window.set_status(format!("Downloading {}…", entry.name).into());
+            let (secret, tx, lock) = (self.creds.secret.clone(), self.events_tx.clone(), self.transfer_lock.clone());
+            std::thread::spawn(move || {
+                let _guard = lock.lock();
+                let name = entry.name.clone();
+                let ptx = tx.clone();
+                let result = files::pull(&secret, &full, |done, total| {
+                    let frac = if total > 0 { done as f32 / total as f32 } else { 1.0 };
+                    let _ = ptx.send(Event::FileProgress(format!("Downloading {name} · {} of {}", files::human_size(done), files::human_size(total)), frac));
+                });
+                let _ = tx.send(Event::FileDone(
+                    result.map(|p| format!("Saved {} to Downloads", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())).map_err(|e| format!("{e:#}")),
+                ));
+            });
+        }
+    }
+
+    fn files_up(&mut self) {
+        if let Some((parent, _)) = self.files_path.rsplit_once('/') {
+            if !parent.is_empty() {
+                let parent = parent.to_string();
+                self.list_files(&parent);
+            }
+        }
+    }
+
+    fn show_listing(&mut self, resolved: String, entries: Vec<files::Entry>) {
+        const ROOT: &str = "/storage/emulated/0";
+        let fw = &self.files_window;
+        fw.set_loading(false);
+        let crumbs: Vec<slint::SharedString> = match resolved.strip_prefix(ROOT) {
+            Some(rest) => std::iter::once("Phone storage".to_string())
+                .chain(rest.split('/').filter(|p| !p.is_empty()).map(String::from))
+                .map(Into::into)
+                .collect(),
+            None => vec![resolved.clone().into()],
+        };
+        fw.set_crumbs(std::rc::Rc::new(slint::VecModel::from(crumbs)).into());
+        fw.set_at_top(resolved == ROOT);
+        fw.set_filter("".into());
+        self.files_filter.clear();
+        self.files_path = resolved;
+        self.files_entries = entries;
+        self.render_files();
+    }
+
+    /// The listing, narrowed by the search box (case-insensitive, by name).
+    fn render_files(&mut self) {
+        let needle = self.files_filter.to_lowercase();
+        self.files_shown = (0..self.files_entries.len())
+            .filter(|&i| needle.is_empty() || self.files_entries[i].name.to_lowercase().contains(&needle))
+            .collect();
+        let rows: Vec<FileEntry> = self
+            .files_shown
+            .iter()
+            .map(|&i| {
+                let e = &self.files_entries[i];
+                let when = chrono::DateTime::from_timestamp_millis(e.modified_ms)
+                    .map(|d| d.with_timezone(&chrono::Local).format("%-d %b %Y, %H:%M").to_string())
+                    .unwrap_or_default();
+                FileEntry {
+                    name: e.name.clone().into(),
+                    detail: if e.dir { when.into() } else { format!("{} · {when}", files::human_size(e.size)).into() },
+                    is_dir: e.dir,
+                }
+            })
+            .collect();
+        let fw = &self.files_window;
+        fw.set_entries(std::rc::Rc::new(slint::VecModel::from(rows)).into());
+        let total = self.files_entries.len();
+        fw.set_status(if total == 0 {
+            "Empty folder".into()
+        } else if needle.is_empty() {
+            format!("{total} items").into()
+        } else {
+            format!("{} of {total} items match", self.files_shown.len()).into()
+        });
+    }
+
+    /// A step of the path was clicked: 0 is the top.
+    fn files_crumb(&mut self, index: usize) {
+        const ROOT: &str = "/storage/emulated/0";
+        let rest: Vec<&str> = self.files_path.strip_prefix(ROOT).unwrap_or("").split('/').filter(|p| !p.is_empty()).collect();
+        let target = format!("{ROOT}{}", rest.iter().take(index).map(|p| format!("/{p}")).collect::<String>());
+        self.list_files(&target);
+    }
+
+    /// A progress bar on the files window and, while mirroring, over the
+    /// bottom of the phone window, like Blip's.
+    fn show_transfer(&mut self, text: &str, frac: f32) {
+        self.files_window.set_status(text.into());
+        self.files_window.set_progress(frac);
+        if let Some(w) = &self.mirror_window {
+            w.set_transfer_text(text.into());
+            w.set_transfer_progress(frac);
+            w.set_transfer_visible(true);
+        }
+    }
+
+    /// The result stays on the bar for a few seconds, then the bar goes.
+    fn end_transfer(&mut self, text: String) {
+        self.files_window.set_progress(-1.0);
+        if let Some(w) = &self.mirror_window {
+            w.set_transfer_text(text.into());
+            w.set_transfer_progress(1.0);
+            let weak = w.as_weak();
+            Timer::single_shot(Duration::from_secs(3), move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_transfer_visible(false);
+                }
+            });
+        }
+    }
+
+    /// Video alone can't tell us the phone is gone: a still screen sends
+    /// nothing for a long time, and dumbpipe keeps the local socket open after
+    /// the far end vanishes, so the picture just froze (for up to the 10-minute
+    /// read timeout). As on the Mac: ask the phone something small every 15 s
+    /// while mirroring, and end the session after two silences.
+    fn watch_session(&mut self) {
+        if !self.mirroring {
+            self.session_ping_misses = 0;
+            self.session_ping_at = Instant::now();
+            return;
+        }
+        if self.session_ping_at.elapsed() < Duration::from_secs(15) {
+            return;
+        }
+        self.session_ping_at = Instant::now();
+        let (secret, tx) = (self.creds.secret.clone(), self.events_tx.clone());
+        std::thread::spawn(move || {
+            let ok = tunnel::control(&secret, "STATUS", Duration::from_secs(6)).is_ok();
+            let _ = tx.send(Event::SessionPing(ok));
+        });
+    }
+
+    /// Now Playing → the card. Called when the phone sends something and on
+    /// every tick: the phone only sends the position when it changes, so the
+    /// clock runs here between updates.
+    fn show_media(&self) {
+        let ui = self.window.global::<AppState>();
+        let m = &self.media;
+        let visible = self.linked && !m.is_empty() && m.get("state").map(String::as_str) != Some("none");
+        ui.set_media_visible(visible);
+        if !visible {
+            return;
+        }
+        let playing = m.get("state").map(String::as_str) == Some("playing");
+        let dur = m.get("dur").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let pos = m.get("pos").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let now = pos + if playing { self.media_received.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+        let now = if dur > 0.0 { now.min(dur) } else { now };
+        ui.set_media_title(m.get("title").cloned().unwrap_or_default().into());
+        let sub: Vec<&str> = [m.get("artist"), m.get("app")].into_iter().flatten().map(String::as_str).filter(|s| !s.is_empty()).collect();
+        ui.set_media_subtitle(sub.join(" · ").into());
+        ui.set_media_playing(playing);
+        ui.set_media_position(if dur > 0.0 { (now / dur) as f32 } else { 0.0 });
+        ui.set_media_elapsed(if dur > 0.0 { clock(now).into() } else { "".into() });
+        ui.set_media_length(if dur > 0.0 { clock(dur).into() } else { "".into() });
+        match m.get("art").and_then(|k| self.art.get(k)) {
+            Some(img) => {
+                ui.set_media_art(img.clone());
+                ui.set_media_has_art(true);
+            }
+            None => ui.set_media_has_art(false),
+        }
+    }
+
     // MARK: - Tunnel and mirroring
 
     fn toggle_phone_tunnel(&mut self) {
@@ -392,11 +685,31 @@ impl App {
 
     /// Mirror Phone: wake the tunnel if needed, connect, START.
     fn connect(&mut self) {
+        if self.files_session && !self.mirroring {
+            // The tunnel and helper are already up for the files window:
+            // just open the video.
+            match self.open_session() {
+                Ok(()) => self.mirroring = true,
+                Err(e) => {
+                    self.log("", &format!("couldn't start mirroring: {e:#}"));
+                    self.error = Some(("Couldn't mirror".into(), format!("{e:#}"), false));
+                }
+            }
+            self.refresh();
+            return;
+        }
+        self.connect_with(false);
+    }
+
+    /// Tunnel up (waking it over Bluetooth if needed), then START the helper.
+    /// `for_files`: stop there, for the files window, instead of opening video.
+    fn connect_with(&mut self, for_files: bool) {
         if self.mirroring || self.tunnel.is_some() {
             return;
         }
         use std::sync::atomic::Ordering;
         let attempt = self.attempt.fetch_add(1, Ordering::SeqCst) + 1;
+        self.connect_for_files = for_files;
         self.connecting = true;
         self.error = None;
         self.woke_tunnel = false;
@@ -435,7 +748,7 @@ impl App {
                 if current.load(Ordering::SeqCst) != attempt {
                     return; // cancelled, or superseded by a newer Connect
                 }
-                match tunnel::control(&secret, "START", Duration::from_secs(40)) {
+                match tunnel::control(&secret, &format!("START by={}", computer_name()), Duration::from_secs(40)) {
                     Ok(r) if r.starts_with("OK") => { result = Ok(r); break; }
                     Ok(r) => { crate::log!("phone", "START: {r}"); result = Err(r); break; }
                     Err(e) => crate::log!("phone", "START {try_}/12: {e:#}"),
@@ -491,10 +804,19 @@ impl App {
         *s.borrow_mut() = Some(session.clone());
         let size = Rc::new(RefCell::new((0u16, 0u16)));
         let (s1, z1) = (s.clone(), size.clone());
+        let first_input = Rc::new(std::cell::Cell::new(true));
+        let pointer_seen = self.mirror_pointer.clone();
         window.on_pointer(move |x, y, kind, button| {
+            pointer_seen.set(Instant::now());
             let Some(sess) = s1.borrow().clone() else { return };
             let (w, h) = *z1.borrow();
-            if w == 0 { return; }
+            if first_input.replace(false) {
+                crate::log!("input", "first pointer event at ({x}, {y}) on a {w}×{h} video");
+            }
+            if w == 0 {
+                crate::log!("input", "pointer dropped: the video size isn't known yet");
+                return;
+            }
             let p = scrcpy::Position { x, y, width: w, height: h };
             let msg = match (kind, button) {
                 (0, 1) => scrcpy::back(true),
@@ -564,12 +886,44 @@ impl App {
                 sess.send(&scrcpy::text(&text));
             }
         });
+        // The bar beside the picture: the same keys and messages as the shortcuts.
+        let s4 = s.clone();
+        let tx_bar = self.events_tx.clone();
+        let screen_off = Rc::new(std::cell::Cell::new(false));
+        window.on_bar(move |action| {
+            if action.as_str() == "files" {
+                let _ = tx_bar.send(Event::OpenFiles);
+                return;
+            }
+            let Some(sess) = s4.borrow().clone() else { return };
+            use scrcpy::android_key as k;
+            let press = |code: i32| {
+                sess.send(&scrcpy::key(true, code, 0));
+                sess.send(&scrcpy::key(false, code, 0));
+            };
+            match action.as_str() {
+                "back" => press(k::BACK),
+                "home" => press(k::HOME),
+                "recents" => press(k::APP_SWITCH),
+                "volume-up" => press(24),
+                "volume-down" => press(25),
+                "screenshot" => press(120),                      // KEYCODE_SYSRQ
+                "rotate" => sess.send(&scrcpy::simple(11)),       // scrcpy ROTATE_DEVICE
+                "notifications" => sess.send(&scrcpy::simple(scrcpy::EXPAND_NOTIFICATION_PANEL)),
+                "screen-off" => {
+                    screen_off.set(!screen_off.get());
+                    sess.send(&scrcpy::display_power(!screen_off.get()));
+                }
+                _ => {}
+            }
+        });
         // Closing the window ends the session, via the same path a dead stream takes.
         let closer = tx_close.clone();
         window.window().on_close_requested(move || {
             let _ = closer.send(SessionEvent::Ended("window closed".into()));
             slint::CloseRequestResponse::HideWindow
         });
+        accept_drops(window.window(), self.creds.secret.clone(), self.events_tx.clone(), self.transfer_lock.clone());
         let _ = window.show();
         self.session_events = Some(rx);
         self.session = Some(session);
@@ -580,6 +934,8 @@ impl App {
     }
 
     fn fail(&mut self, message: String) {
+        self.log("", &format!("error: {message}"));   // the raw text, for the log
+        let message = friendly(&message);
         self.connecting = false;
         // We switched the phone's tunnel on for this; it costs battery and
         // data all the while, so put it back if nothing came of it.
@@ -591,6 +947,10 @@ impl App {
         }
         self.woke_tunnel = false;
         self.window.global::<AppState>().set_busy(false);
+        if self.connect_for_files {
+            self.files_window.set_loading(false);
+            self.files_window.set_status(format!("Couldn't connect: {message}").into());
+        }
         self.error = Some(("Couldn't connect".into(), message, false));
         if let Some(mut t) = self.tunnel.take() {
             t.stop();
@@ -599,13 +959,17 @@ impl App {
     }
 
     fn disconnect(&mut self) {
-        if !self.mirroring && !self.connecting && self.tunnel.is_none() {
+        if !self.mirroring && !self.connecting && !self.files_session && self.tunnel.is_none() {
             return;
         }
-        let was_mirroring = self.mirroring || self.connecting;   // a cancelled connect may have STARTed the helper
+        // A cancelled connect may have STARTed the helper; so has a files session.
+        let was_mirroring = self.mirroring || self.connecting || self.files_session;
         self.mirroring = false;
         self.connecting = false;
+        self.files_session = false;
         self.woke_tunnel = false;   // "session over" below settles the tunnel
+        self.files_window.set_status("Disconnected from the phone. Refresh to connect again.".into());
+        self.files_window.set_loading(false);
         if let Some(sess) = self.session.take() {
             sess.stop();
         }
@@ -655,6 +1019,12 @@ impl App {
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
         }
+        self.show_log();   // lines logged from other threads since the last tick
+        self.show_media(); // the Now Playing clock
+        self.watch_session();
+        if let Some(w) = &self.mirror_window {
+            w.set_bar_awake(self.mirror_pointer.get().elapsed() < Duration::from_secs(3));
+        }
         self.poll_session();
         if self.settings.sync_clipboard && (self.linked || self.mirroring) {
             if let Some(text) = self.clipboard.poll() {
@@ -703,7 +1073,7 @@ impl App {
                 if !t.is_running() {
                     self.log("tunnel", "dumbpipe exited");
                     self.tunnel = None;
-                    if self.mirroring || self.connecting {
+                    if self.mirroring || self.connecting || self.files_session {
                         // Close the session and its window properly (this used
                         // to leave both up, with disconnect() then refusing to
                         // run because it saw no tunnel and no mirroring).
@@ -745,6 +1115,11 @@ impl App {
                     }
                 }
                 SessionEvent::Log(line) => self.log("video", &line),
+                SessionEvent::Device(name) => {
+                    if let Some(win) = &self.mirror_window {
+                        win.set_phone_name(name.into());
+                    }
+                }
                 _ => {}
             }
         }
@@ -765,10 +1140,13 @@ impl App {
             Event::Linked => {
                 self.linked = true;
                 self.searching = false;
+                self.paired_in_windows = None;   // linked, so whatever it was, it's fine now
                 self.icons_requested.clear();
                 self.log("bluetooth", "linked to the phone");
                 self.report_twins(true);
                 if let Some(b) = &self.ble {
+                    // Who we are, for the phone's Computers list and chips.
+                    let _ = b.send_command(&format!("hello windows {}", computer_name()));
                     let _ = b.send_command("status");
                 }
             }
@@ -778,18 +1156,71 @@ impl App {
                 self.log("bluetooth", &format!("dropped ({why})"));
                 self.rescan_at = Some(Instant::now() + Duration::from_secs(3));
             }
-            Event::Notification { app, title, body, package } => {
+            Event::Notification(n) => {
                 if self.settings.mirror_notifications {
-                    self.log("notify", &format!("{app}: {title}"));
+                    self.log("notify", &format!("{}: {}", n.app, n.title));
                     // First notification from an app: ask the phone for its
                     // icon (96 px PNG over Bluetooth, cached for good). This
                     // toast goes out without it; the next one has it.
-                    if !package.is_empty() && !notify::icon_path(&package).exists() && self.icons_requested.insert(package.clone()) {
+                    if !n.package.is_empty() && !notify::icon_path(&n.package).exists() && self.icons_requested.insert(n.package.clone()) {
                         if let Some(b) = &self.ble {
-                            let _ = b.send_command(&format!("icon {package}"));
+                            let _ = b.send_command(&format!("icon {}", n.package));
                         }
                     }
-                    notify::show_with_icon(&app, &title, &body, if package.is_empty() { None } else { Some(&package) });
+                    notify::show_phone(&n, self.events_tx.clone());
+                }
+            }
+            Event::NotificationRemoved(id) => {
+                if self.settings.sync_dismiss {
+                    notify::remove(id);
+                }
+            }
+            Event::ToastReply { id, text } => {
+                // One line: the phone reads the rest of the line as the reply.
+                let text = text.replace(['\r', '\n'], " ");
+                match &self.ble {
+                    Some(b) if self.linked => {
+                        let _ = b.send_command(&format!("reply {id} {text}"));
+                        self.log("notify", "reply sent to the phone");
+                    }
+                    _ => {
+                        self.log("notify", "couldn't reply: the phone isn't linked over Bluetooth");
+                        notify::show("Bridge", "Reply not sent", "The phone isn't linked over Bluetooth right now.");
+                    }
+                }
+            }
+            Event::ToastDismissed(id) => {
+                if !self.settings.sync_dismiss {
+                    return;
+                }
+                if let Some(b) = &self.ble {
+                    let _ = b.send_command(&format!("dismiss {id}"));
+                }
+            }
+            Event::Media(fields) => {
+                self.media = fields;
+                self.media_received = Instant::now();
+                self.show_media();
+            }
+            Event::Art { key, jpeg } => {
+                match image::load_from_memory(&jpeg) {
+                    Ok(img) => {
+                        let rgba = img.into_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h);
+                        if self.art.len() > 30 {
+                            // Keep the current cover; drop the rest.
+                            let keep = self.media.get("art").cloned().unwrap_or_default();
+                            self.art.retain(|k, _| *k == keep);
+                        }
+                        // A late cover for the song on screen comes by itself; attach it.
+                        if self.media.get("art").map(|a| a.is_empty()).unwrap_or(false) {
+                            self.media.insert("art".into(), key.clone());
+                        }
+                        self.art.insert(key, slint::Image::from_rgba8(buf));
+                        self.show_media();
+                    }
+                    Err(e) => self.log("media", &format!("couldn't read the album art: {e}")),
                 }
             }
             Event::Icon { package, png } => {
@@ -798,6 +1229,110 @@ impl App {
                     Ok(()) => self.log("notify", &format!("cached the icon for {package}")),
                     Err(e) => self.log("notify", &format!("couldn't cache the icon for {package}: {e}")),
                 }
+            }
+            Event::FilesListed(result) => {
+                match result {
+                    Ok((resolved, entries)) => self.show_listing(resolved, entries),
+                    Err(e) => {
+                        self.files_window.set_loading(false);
+                        self.files_window.set_status(friendly(&e).into());
+                        self.log("files", &e);
+                    }
+                }
+                return;
+            }
+            Event::PairedInWindows { name, address } => {
+                if self.paired_in_windows.is_none() {
+                    self.log("bluetooth", &format!("{name} is paired in Windows' Bluetooth settings; that breaks Bridge's link. Asking to unpair it."));
+                }
+                self.paired_in_windows = Some((name, address));
+            }
+            Event::UnpairedInWindows(result) => {
+                match result {
+                    Ok(name) => {
+                        self.log("bluetooth", &format!("unpaired {name} in Windows; looking for it again"));
+                        self.paired_in_windows = None;
+                        if let Some(mut b) = self.ble.take() {
+                            b.stop();
+                        }
+                        self.start_bluetooth();
+                    }
+                    Err(e) => {
+                        self.log("bluetooth", &format!("couldn't unpair: {e}"));
+                        self.error = Some(("Couldn't unpair the phone".into(), format!("{e}. Remove it in Settings › Bluetooth & devices instead."), false));
+                    }
+                }
+            }
+            Event::SessionPing(ok) => {
+                if !self.mirroring {
+                    return;
+                }
+                if ok {
+                    self.session_ping_misses = 0;
+                } else {
+                    self.session_ping_misses += 1;
+                    if self.session_ping_misses >= 2 {
+                        self.log("", "the phone stopped answering; ending the session");
+                        self.disconnect();
+                        self.fail("Lost the connection".into());
+                    }
+                }
+                return;
+            }
+            Event::OpenFiles => {
+                self.open_files();
+                return;
+            }
+            Event::Radio(state) => {
+                self.no_adapter = state.is_none();
+                let was = self.pc_bluetooth;
+                self.pc_bluetooth = state;
+                match state {
+                    Some(false) if was != Some(false) => {
+                        self.log("bluetooth", "Bluetooth was turned off on this PC");
+                        self.linked = false;
+                        self.retry_ble_at = None;
+                    }
+                    Some(true) if was == Some(false) => {
+                        self.log("bluetooth", "Bluetooth is back on; reconnecting");
+                        if let Some(mut b) = self.ble.take() {
+                            b.stop();
+                        }
+                        self.start_bluetooth();
+                    }
+                    None => self.log("bluetooth", "this PC has no Bluetooth adapter"),
+                    _ => {}
+                }
+            }
+            Event::FileProgress(text, frac) => {
+                self.show_transfer(&text, frac);
+                return;
+            }
+            Event::FileDone(result) => {
+                self.end_transfer(match &result { Ok(m) => m.clone(), Err(e) => format!("Failed: {e}") });
+                match result {
+                    Ok(msg) => {
+                        self.log("files", &msg);
+                        self.files_window.set_status(msg.clone().into());
+                        // The files window or the phone window's bar shows it
+                        // already; a toast only when neither is open.
+                        if !self.files_window.window().is_visible() && self.mirror_window.is_none() {
+                            notify::show("Bridge", "File transfer", &msg);
+                        }
+                        // A drop went into the phone's Download folder; if that's
+                        // what's on screen, show it.
+                        if self.files_path.ends_with("/Download") {
+                            let p = self.files_path.clone();
+                            self.list_files(&p);
+                        }
+                    }
+                    Err(e) => {
+                        self.log("files", &format!("transfer failed: {e}"));
+                        self.files_window.set_status(friendly(&e).into());
+                        notify::show("Bridge", "File transfer failed", &e);
+                    }
+                }
+                return;
             }
             Event::UsbProgress(text) => {
                 self.settings_window.global::<SettingsState>().set_usb_status(text.into());
@@ -829,6 +1364,7 @@ impl App {
                 }
             }
             Event::Status(fields) => {
+                self.phone_status = fields.clone();
                 self.phone_tunnel_on = fields.get("tunnel").map(|v| v == "1").unwrap_or(false);
                 self.phone_paused = fields.get("paused").map(|v| v == "1").unwrap_or(false);
                 if self.connecting && !self.phone_tunnel_on {
@@ -854,6 +1390,15 @@ impl App {
                 match result {
                     Ok(reply) => {
                         self.log("phone", &reply);
+                        if self.connect_for_files {
+                            self.files_session = true;
+                            self.connecting = false;
+                            self.window.global::<AppState>().set_busy(false);
+                            let p = self.files_path.clone();
+                            self.list_files(&p);
+                            self.refresh();
+                            return;
+                        }
                         if let Err(e) = self.open_session() {
                             self.log("", &format!("couldn't start mirroring: {e:#}"));
                             // Still "connecting" here, so disconnect() tells the phone
@@ -891,6 +1436,82 @@ impl App {
     }
 }
 
+/// Sends a dropped file to the phone's Download folder, on its own thread,
+/// one transfer at a time. Used by the mirror window and the files window.
+fn start_push(secret: String, tx: mpsc::Sender<Event>, lock: std::sync::Arc<std::sync::Mutex<()>>, path: std::path::PathBuf) {
+    if path.is_dir() {
+        let _ = tx.send(Event::FileDone(Err(format!("{} is a folder; drop files, not folders", path.display()))));
+        return;
+    }
+    std::thread::spawn(move || {
+        let _guard = lock.lock();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let ptx = tx.clone();
+        let result = files::push(&secret, &path, |done, total| {
+            let frac = if total > 0 { done as f32 / total as f32 } else { 1.0 };
+            let _ = ptx.send(Event::FileProgress(format!("Sending {name} · {} of {}", files::human_size(done), files::human_size(total)), frac));
+        });
+        let _ = tx.send(Event::FileDone(result.map(|r| format!("{name}: {r}")).map_err(|e| format!("{name}: {e:#}"))));
+    });
+}
+
+/// Files dragged from Explorer onto a window go to the phone. Slint has no
+/// drop event of its own; winit does.
+fn accept_drops(window: &slint::Window, secret: String, tx: mpsc::Sender<Event>, lock: std::sync::Arc<std::sync::Mutex<()>>) {
+    use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+    window.on_winit_window_event(move |_, event| {
+        if let WindowEvent::DroppedFile(path) = event {
+            crate::log!("files", "dropped {}", path.display());
+            start_push(secret.clone(), tx.clone(), lock.clone(), path.clone());
+        }
+        EventResult::Propagate
+    });
+}
+
+/// Known errors in plain words, with what to do; anything else as it came.
+/// The raw text always goes to the log first.
+fn friendly(raw: &str) -> String {
+    const RULES: &[(&str, &str)] = &[
+        ("wireless debugging port not found", "Your phone needs Wi-Fi to restart its helper. Connect it to Wi-Fi, or plug it in and use Set up over USB."),
+        ("daemon did not answer", "Your phone's helper didn't start. Plug the phone in and use Set up over USB."),
+        ("WRITE_SECURE_SETTINGS", "This phone hasn't been set up yet. Plug it in and use Set up over USB."),
+        ("unauthorized", "The pairing doesn't match this phone any more. Pair again with Set up over USB."),
+        ("scrcpy jar not found", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("scrcpy-server did not start", "Your phone couldn't start screen sharing. Update the Bridge app on your phone, then try again."),
+        ("restart failed", "Mirroring stopped because the connection dropped. Click Mirror phone to start again."),
+        ("tunnel dropped", "Lost the connection to your phone."),
+        ("Lost the connection", "Lost the connection to your phone."),
+        ("didn't start its tunnel", "Your phone didn't respond over Bluetooth. Open Bridge on the phone, or switch it to Anywhere."),
+        ("tunnel not listening", "Bridge's connection to your phone didn't start. Try again; if it repeats, restart Bridge."),
+        ("didn't answer", "Your phone didn't answer. Make sure it's on and has internet, or bring it near this computer so Bluetooth can wake it."),
+        ("adb.exe isn't available", "Bridge is missing a file it needs. Download Bridge again and keep all its files together."),
+        ("not a folder in shared storage", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("can't read", "That folder can't be opened. Android keeps some folders private to their apps."),
+        ("stopped sending at", "The download was interrupted. Try again."),
+    ];
+    RULES.iter().find(|(k, _)| raw.contains(k)).map(|(_, v)| v.to_string()).unwrap_or_else(|| raw.to_string())
+}
+
+/// This PC's name as shown in Settings › System › About, case kept
+/// (COMPUTERNAME is the all-caps NetBIOS form).
+fn computer_name() -> String {
+    use windows::Win32::System::SystemInformation::{ComputerNamePhysicalDnsHostname, GetComputerNameExW};
+    let mut buf = [0u16; 256];
+    let mut len = buf.len() as u32;
+    let ok = unsafe { GetComputerNameExW(ComputerNamePhysicalDnsHostname, windows::core::PWSTR(buf.as_mut_ptr()), &mut len) }.is_ok();
+    if ok && len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into())
+    }
+}
+
+/// 125000 ms → "2:05"; an hour or more → "1:02:05".
+fn clock(ms: f64) -> String {
+    let s = (ms / 1000.0) as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
 /// The navy square with the white mark (assets/icon-32.png, from make-icons.sh).
 fn tray_icon() -> tray_icon::Icon {
     let img = image::load_from_memory(include_bytes!("../assets/icon-32.png")).expect("tray icon png").into_rgba8();
@@ -898,13 +1519,39 @@ fn tray_icon() -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("icon")
 }
 
+/// One Bridge at a time. A second copy would link to the phone over
+/// Bluetooth from the same PC (the phone saw two subscriptions from one
+/// device and one failed its handshake) and fight the first over the tunnel
+/// port. A second launch asks the running one to show its window, then quits.
+/// Returns the "show yourself" event the running instance waits on.
+fn single_instance() -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+    unsafe {
+        // Never closed: it lives as long as this process, which is the point.
+        let _mutex = CreateMutexW(None, true, w!("Local\\Bridge-Bonevane-instance"));
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            if !std::env::args().any(|a| a == "--tray") {
+                if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, w!("Local\\Bridge-Bonevane-show")) {
+                    let _ = SetEvent(ev);
+                }
+            }
+            std::process::exit(0);
+        }
+        CreateEventW(None, false, false, w!("Local\\Bridge-Bonevane-show")).ok()
+    }
+}
+
 fn main() {
+    let show_event = single_instance();
     log::init();
     crate::log!("", "Bridge {VERSION} starting");
 
     let window = MainWindow::new().expect("window");
     let settings_window = SettingsWindow::new().expect("settings window");
-    let app = Rc::new(RefCell::new(App::new(window.clone_strong(), settings_window.clone_strong())));
+    let files_window = FilesWindow::new().expect("files window");
+    let app = Rc::new(RefCell::new(App::new(window.clone_strong(), settings_window.clone_strong(), files_window.clone_strong())));
 
     // Tray: left-click shows the window; the menu has Open, Settings and Quit.
     let menu = tray_icon::menu::Menu::new();
@@ -930,20 +1577,33 @@ fn main() {
                 app.disconnect();
             } else if matches!(app.error, Some((_, _, true))) {
                 app.set_up_over_usb();
+            } else if let (Some((_, address)), false) = (app.paired_in_windows.clone(), app.linked) {
+                app.log("bluetooth", "unpairing the phone in Windows");
+                ble::Ble::unpair_device(address, app.events_tx.clone());
             } else if !app.creds.is_paired() {
-                app.pair_from_clipboard();
+                app.set_up_over_usb();
             } else {
                 app.connect();
             }
         });
         let a = app.clone();
+        // Refresh. Linked: the phone resends everything (status, battery,
+        // mode, Now Playing and its cover). Not linked: any half-made
+        // connection is dropped and the search starts over. The icon spins.
+        let a2 = app.clone();
         ui.on_refresh(move || {
-            let mut app = a.borrow_mut();
-            if app.linked {
-                if let Some(b) = &app.ble { let _ = b.send_command("status"); }
-            } else {
-                app.rescan();
-            }
+            let mut app = a2.borrow_mut();
+            app.window.global::<AppState>().set_refreshing(true);
+            // Always a fresh connection: the link can look linked long after
+            // it has died. The phone resends everything on the new link.
+            if let Some(mut b) = app.ble.take() { b.stop(); }
+            app.linked = false;
+            app.log("bluetooth", "refreshing: reconnecting to the phone");
+            app.start_bluetooth();
+            let w = app.window.as_weak();
+            Timer::single_shot(Duration::from_millis(1200), move || {
+                if let Some(w) = w.upgrade() { w.global::<AppState>().set_refreshing(false); }
+            });
         });
         let a = app.clone();
         ui.on_pause_phone(move || a.borrow_mut().pause_phone());
@@ -951,6 +1611,63 @@ fn main() {
         ui.on_toggle_phone_tunnel(move || a.borrow_mut().toggle_phone_tunnel());
         let a = app.clone();
         ui.on_set_up_over_usb(move || a.borrow_mut().set_up_over_usb());
+        let a = app.clone();
+        ui.on_open_files(move || a.borrow_mut().open_files());
+        let a = app.clone();
+        ui.on_pair_from_clipboard(move || a.borrow_mut().pair_from_clipboard());
+        let a = app.clone();
+        ui.on_media(move |cmd| {
+            let app = a.borrow();
+            match &app.ble {
+                Some(b) if app.linked => {
+                    let _ = b.send_command(&format!("media {cmd}"));
+                    crate::log!("media", "{cmd}");
+                }
+                _ => {
+                    crate::log!("media", "{cmd} not sent, the phone isn't linked over Bluetooth");
+                    return;
+                }
+            }
+            drop(app);
+            // React now instead of waiting a round trip for the phone to
+            // confirm; its next update puts things right.
+            let mut app = a.borrow_mut();
+            let playing = app.media.get("state").map(String::as_str) == Some("playing");
+            let pos = app.media.get("pos").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0)
+                + if playing { app.media_received.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+            match cmd.as_str() {
+                "toggle" => {
+                    app.media.insert("state".into(), if playing { "paused" } else { "playing" }.into());
+                    app.media.insert("pos".into(), (pos as i64).to_string());
+                    app.media_received = Instant::now();
+                }
+                "next" | "prev" => {
+                    app.media.insert("pos".into(), "0".into());
+                    app.media_received = Instant::now();
+                }
+                _ => {}
+            }
+            app.show_media();
+        });
+        let a = app.clone();
+        ui.on_seek(move |fraction| {
+            let app = a.borrow();
+            let dur = app.media.get("dur").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let mut sent = None;
+            if let (Some(b), true) = (&app.ble, dur > 0.0) {
+                let ms = (dur * fraction as f64) as i64;
+                let _ = b.send_command(&format!("media seek {ms}"));
+                sent = Some(ms);
+            }
+            drop(app);
+            if let Some(ms) = sent {
+                // Move the bar now; the phone's next update confirms it.
+                let mut app = a.borrow_mut();
+                app.media.insert("pos".into(), ms.to_string());
+                app.media_received = Instant::now();
+                app.show_media();
+            }
+        });
         let sw = settings_window.as_weak();
         ui.on_open_settings(move || { if let Some(w) = sw.upgrade() { let _ = w.show(); } });
         ui.on_open_log_folder(move || {
@@ -1010,6 +1727,63 @@ fn main() {
         });
     }
 
+    // Files window callbacks. Closing it just hides it.
+    {
+        let a = app.clone();
+        files_window.on_open(move |i| a.borrow_mut().files_open(i as usize));
+        let a = app.clone();
+        files_window.on_up(move || a.borrow_mut().files_up());
+        let a = app.clone();
+        files_window.on_crumb(move |i| a.borrow_mut().files_crumb(i as usize));
+        let a = app.clone();
+        files_window.on_filter_changed(move |t| {
+            let mut app = a.borrow_mut();
+            app.files_filter = t.to_string();
+            app.render_files();
+        });
+        let a = app.clone();
+        files_window.on_refresh(move || {
+            let mut app = a.borrow_mut();
+            let p = app.files_path.clone();
+            app.list_files(&p);
+        });
+        files_window.on_open_downloads(|| {
+            let _ = std::process::Command::new("explorer").arg(files::downloads_dir()).spawn();
+        });
+        // Drops need the secret at drop time (it changes on re-pairing), so
+        // read it from the app then rather than capturing it now.
+        let a = app.clone();
+        {
+            use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+            files_window.window().on_winit_window_event(move |_, event| {
+                if let WindowEvent::DroppedFile(path) = event {
+                    if let Ok(app) = a.try_borrow() {
+                        if app.mirroring || app.files_session {
+                            start_push(app.creds.secret.clone(), app.events_tx.clone(), app.transfer_lock.clone(), path.clone());
+                        } else {
+                            app.files_window.set_status("Not connected yet: wait for the folder to load, then drop again.".into());
+                        }
+                    }
+                }
+                EventResult::Propagate
+            });
+        }
+        // Closing it ends a files-only session (tunnel and helper were up just
+        // for it); a mirroring session carries on.
+        let a = app.clone();
+        files_window.window().on_close_requested(move || {
+            if let Ok(mut app) = a.try_borrow_mut() {
+                if app.files_session && !app.mirroring {
+                    app.log("files", "files window closed; ending the files session");
+                    app.disconnect();
+                } else if app.connecting && app.connect_for_files {
+                    app.disconnect();
+                }
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+
     // Closing the window hides it; the tray brings it back.
     {
         let w = window.as_weak();
@@ -1021,8 +1795,12 @@ fn main() {
         });
     }
 
-    app.borrow_mut().start_bluetooth();
-    app.borrow_mut().refresh();
+    {
+        let mut a = app.borrow_mut();
+        a.radio = ble::watch_radio(a.events_tx.clone());
+        a.start_bluetooth();
+        a.refresh();
+    }
 
     // Drain events, the clipboard and the tray on the UI thread.
     let timer = Timer::default();
@@ -1061,6 +1839,16 @@ fn main() {
                 } else if e.id == quit.id() {
                     a.borrow_mut().disconnect();
                     let _ = slint::quit_event_loop();
+                }
+            }
+            // Someone launched Bridge again: show this one instead.
+            if let Some(ev) = show_event {
+                use windows::Win32::Foundation::WAIT_OBJECT_0;
+                use windows::Win32::System::Threading::WaitForSingleObject;
+                if unsafe { WaitForSingleObject(ev, 0) } == WAIT_OBJECT_0 {
+                    if let Some(w) = w.upgrade() {
+                        let _ = w.show();
+                    }
                 }
             }
             while let Ok(e) = tray_clicks.try_recv() {

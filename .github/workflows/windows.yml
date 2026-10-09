@@ -2,7 +2,7 @@ name: Windows
 
 on:
   push:
-    branches: [windows, main]
+    branches: [windows, main, next]
     paths: ["windows/**", ".github/workflows/windows.yml"]
   workflow_dispatch:
 

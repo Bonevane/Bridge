@@ -41,6 +41,18 @@ object DaemonManager {
         }
     }.getOrNull()
 
+    /** The phone's "Stop mirroring": asks the helper to end every screen session. Blocking. */
+    fun endSessions(): String = runCatching {
+        Socket("127.0.0.1", DAEMON_PORT).use { s ->
+            s.soTimeout = 3000
+            s.getOutputStream().write((Pairing.authLine(AppContext.value) + "\nENDSESSIONS\n").toByteArray())
+            s.getOutputStream().flush()
+            val input = s.getInputStream().bufferedReader()
+            input.readLine()            // hello
+            input.readLine() ?: "no reply"
+        }
+    }.getOrElse { "couldn't reach the helper: ${it.message}" }
+
     /** Blocking; call from a background thread. Throws with a readable message on failure. */
     fun start(ctx: Context) {
         val squatter = probe(DAEMON_PORT) == null && portOpen(DAEMON_PORT)

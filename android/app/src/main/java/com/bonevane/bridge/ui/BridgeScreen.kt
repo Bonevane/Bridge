@@ -1,10 +1,21 @@
 package com.bonevane.bridge.ui
 
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.CastConnected
+import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -101,8 +112,10 @@ fun BridgeScreen(
     onLockDown: () -> Unit,
     onKeepReadyChange: (Boolean) -> Unit,
     onAutostartChange: (Boolean) -> Unit,
-    onQuietStatusChange: (Boolean) -> Unit,
-    onBatteryExemption: () -> Unit,
+    onStatusNotificationSettings: () -> Unit,
+    onStopMirroring: () -> Unit,
+    onResumePause: () -> Unit,
+    onShareLog: () -> Unit,
     onNewIdentity: () -> Unit,
     onGrantAccess: (Access) -> Unit,
     onOpenLink: (String) -> Unit,
@@ -129,7 +142,6 @@ fun BridgeScreen(
     val ticket = TunnelState.ticket ?: Prefs.ticket(context)
     var keepReady by remember { mutableStateOf(Prefs.keepReady(context)) }
     var autostart by remember { mutableStateOf(Prefs.autostart(context)) }
-    var quietStatus by remember { mutableStateOf(Prefs.quietStatus(context)) }
     var showLog by remember { mutableStateOf(false) }
 
     // The helper is a shell-uid process; the only way to know it's alive is to
@@ -175,14 +187,60 @@ fun BridgeScreen(
             HeroCard(
                 mode = mode,
                 status = TunnelState.status,
-                macLinked = TunnelState.macLinked,
+                linked = TunnelState.linkedComputers,
                 helperAlive = helperAlive,
+                mirroring = TunnelState.mirroring,
+                sessionBy = TunnelState.sessionBy,
                 onModeChange = onModeChange,
+                onStopMirroring = onStopMirroring,
             )
 
             val setupDone = Prefs.setupDone(context)
+            if (mode != Mode.OFF && TunnelState.bluetoothOff) {
+                // Say it plainly: with Bluetooth off nothing reaches the
+                // computer and it can't wake the tunnel for mirroring.
+                Notice(
+                    icon = Icons.Rounded.BluetoothDisabled,
+                    title = "Bluetooth is off",
+                    body = "Notifications and clipboard can't reach your computer, and it can't wake the " +
+                        "phone for mirroring unless the mode is Anywhere.",
+                    action = "Turn on" to {
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    },
+                )
+            }
+            // Permissions first while any is missing, expanded; once they're
+            // all granted they fold into one row further down. Before setup the
+            // USB items count too; after it they're setup history, not to-dos
+            // (USB debugging is off whenever "keep ready" is).
+            val userGrantable = accessItems.filter { it.intent != null || it.runtimePermissions.isNotEmpty() }
+            val counted = if (setupDone) userGrantable.filter { it.intent?.action != android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS } else userGrantable
+            val missing = counted.count { !it.granted }
+            if (missing > 0 || !setupDone) {
+                Section("Permissions · ${counted.size - missing} of ${counted.size} allowed") {
+                    accessItems.forEach { access ->
+                        item { AccessRow(item = access, onGrant = { onGrantAccess(access) }) }
+                    }
+                }
+            }
             if (!setupDone) {
-                GettingStarted(accessItems = accessItems, ticket = ticket, onGrantAccess = onGrantAccess)
+                Section("Next") {
+                    item {
+                        StepRow(
+                            number = 2, done = ticket != null,
+                            title = "Plug into your computer once",
+                            body = "Open Bridge on your Mac or PC and click Set up over USB. The phone asks to " +
+                                "\"Allow USB debugging?\" (tick Always allow, then Allow). A Mac also asks to pair " +
+                                "over Bluetooth (Pair); a PC doesn't.",
+                            onClick = null,
+                        )
+                    }
+                }
             } else if (keepReady && helperAlive == false) {
                 // Typical after a reboot: the setting says "ready", but the
                 // helper died with the phone and can't come back by itself
@@ -191,56 +249,36 @@ fun BridgeScreen(
                     icon = Icons.Rounded.RestartAlt,
                     title = "The helper isn't running",
                     body = "Usually because the phone restarted. It comes back on its own on Wi-Fi, " +
-                        "or plug into the Mac and use Set Up Over USB.",
+                        "or plug into your computer and use Set up over USB.",
                     action = "Start it now" to onGetReady,
                 )
             }
 
-            Section("Ticket") {
+            ComputersSection(linked = TunnelState.linkedComputers, tick = tick.intValue)
+
+            Section("Banking and security") {
                 item {
-                    Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-                           verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(
-                            ticket ?: "No ticket yet. Turn on Anywhere to create one.",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        FilledTonalButton(onClick = onCopyTicket, enabled = ticket != null, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Copy")
-                        }
-                        Text(
-                            "This is a key to your phone, not an address. Don't share it: paste it only into Bridge " +
-                                "on your own Mac. Set Up Over USB does this for you.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    val pausedUntil = Prefs.pausedUntil(context)
+                    if (pausedUntil > System.currentTimeMillis()) {
+                        val until = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(pausedUntil))
+                        ActionRow(Icons.Rounded.PauseCircle, "Paused until $until",
+                                  "USB debugging is off. Tap to resume now.", onResumePause, trailing = Icons.Rounded.PlayArrow)
+                    } else {
+                        ActionRow(Icons.Rounded.PauseCircle, "Pause for 15 minutes", "USB debugging off while a banking app runs", onPause)
                     }
                 }
-            }
-
-            Section("Readiness") {
                 item {
                     SwitchRow(
                         icon = Icons.Rounded.Bolt,
-                        label = "Keep ready after disconnect",
-                        detail = if (keepReady) "USB debugging stays on between sessions, so the Mac can connect from anywhere, including cellular."
+                        label = "Keep ready between sessions",
+                        detail = if (keepReady) "USB debugging stays on, so your computer can connect from anywhere, including cellular."
                                  else "USB debugging turns off after each session. Starting again needs Wi-Fi.",
                         checked = keepReady,
                         onCheckedChange = { keepReady = it; onKeepReadyChange(it) },
                     )
                 }
-                item { ActionRow(Icons.Rounded.Laptop, "Get ready now", "Start the helper so the Mac can connect", onGetReady) }
-                item { ActionRow(Icons.Rounded.PauseCircle, "Pause for 15 minutes", "USB debugging off while a banking app runs", onPause) }
+                item { ActionRow(Icons.Rounded.PlayArrow, "Get ready now", "Start the helper so your computer can connect", onGetReady) }
                 item { ActionRow(Icons.Rounded.Lock, "Turn USB debugging off now", null, onLockDown) }
-            }
-
-            Section("Permissions") {
-                accessItems.forEach { access ->
-                    item { AccessRow(item = access, onGrant = { onGrantAccess(access) }) }
-                }
             }
 
             NotificationsSection(tick = tick.intValue)
@@ -252,26 +290,84 @@ fun BridgeScreen(
                     }
                 }
                 item {
-                    SwitchRow(
-                        Icons.Rounded.NotificationsOff, "Quiet status notification",
-                        "Keeps the \"Bridge is on\" notification out of the status bar",
-                        quietStatus,
-                    ) { quietStatus = it; onQuietStatusChange(it) }
-                }
-                if (!isIgnoringBatteryOptimisations()) {
-                    item { ActionRow(Icons.Rounded.Bolt, "Allow running in the background", "Stops Android suspending Bridge", onBatteryExemption) }
+                    ActionRow(
+                        Icons.Rounded.NotificationsOff, "Status notification",
+                        "Android keeps it visible while Bridge runs. Make it silent or minimise it here, or swipe it away.",
+                        onStatusNotificationSettings,
+                    )
                 }
                 item { ActionRow(Icons.Rounded.Key, "Create a new identity", "Invalidates the ticket; set up over USB again", onNewIdentity) }
+            }
+
+            if (missing == 0 && setupDone) {
+                var showPermissions by remember { mutableStateOf(false) }
+                Section("Permissions") {
+                    item {
+                        ActionRow(
+                            Icons.Rounded.CheckCircle, "All ${counted.size} allowed", null,
+                            trailing = if (showPermissions) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            onClick = { showPermissions = !showPermissions },
+                        )
+                    }
+                    if (showPermissions) accessItems.forEach { access ->
+                        item { AccessRow(item = access, onGrant = { onGrantAccess(access) }) }
+                    }
+                }
+            }
+
+            var showTicket by remember { mutableStateOf(false) }
+            Section("Pair a computer without a cable") {
+                item {
+                    Column {
+                        ActionRow(
+                            icon = Icons.Rounded.Key, label = "Ticket",
+                            detail = if (ticket == null) "None yet: turn on Anywhere to create one" else "Copy it to pair by pasting",
+                            trailing = if (showTicket) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            onClick = { showTicket = !showTicket },
+                        )
+                        AnimatedVisibility(showTicket) {
+                            Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+                                   verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    ticket ?: "No ticket yet. Turn on Anywhere to create one.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                FilledTonalButton(onClick = onCopyTicket, enabled = ticket != null, modifier = Modifier.fillMaxWidth()) {
+                                    Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Copy")
+                                }
+                                Text(
+                                    "This is a key to your phone, not an address. Don't share it: paste it only into Bridge " +
+                                        "on your own computer. Set up over USB does this for you.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             Section("Log") {
                 item {
                     Column {
-                        ActionRow(
-                            icon = null, label = "Activity log", detail = null,
-                            trailing = if (showLog) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            onClick = { showLog = !showLog },
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                ActionRow(
+                                    icon = null, label = "Activity log", detail = null,
+                                    trailing = if (showLog) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                    onClick = { showLog = !showLog },
+                                )
+                            }
+                            FilledTonalButton(onClick = onShareLog, modifier = Modifier.padding(end = 12.dp)) {
+                                Icon(Icons.Rounded.Share, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Share")
+                            }
+                        }
                         AnimatedVisibility(showLog) {
                             Text(
                                 TunnelState.logText().takeLast(4000),
@@ -293,24 +389,28 @@ fun BridgeScreen(
 
 // MARK: - Hero
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HeroCard(
     mode: Mode,
     status: String,
-    macLinked: Boolean,
+    linked: List<String>,
     helperAlive: Boolean?,
+    mirroring: Boolean,
+    sessionBy: String,
     onModeChange: (Mode) -> Unit,
+    onStopMirroring: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
     // Each mode has its own colour, so a glance at the card says which one it is.
     val container by animateColorAsState(
-        when (mode) {
+        if (mirroring) scheme.errorContainer else when (mode) {
             Mode.OFF -> scheme.surfaceContainerHigh
             Mode.NEARBY -> scheme.secondaryContainer
             Mode.ANYWHERE -> scheme.primaryContainer
         }, label = "hero",
     )
-    val onContainer = when (mode) {
+    val onContainer = if (mirroring) scheme.onErrorContainer else when (mode) {
         Mode.OFF -> scheme.onSurface
         Mode.NEARBY -> scheme.onSecondaryContainer
         Mode.ANYWHERE -> scheme.onPrimaryContainer
@@ -323,7 +423,7 @@ private fun HeroCard(
     ) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                when (mode) {
+                if (mirroring) "Mirroring" else when (mode) {
                     Mode.OFF -> "Off"
                     Mode.NEARBY -> "Nearby"
                     Mode.ANYWHERE -> "Anywhere"
@@ -331,21 +431,44 @@ private fun HeroCard(
                 style = MaterialTheme.typography.displaySmall,
             )
             Text(
-                when (mode) {
+                if (mirroring) "Your screen is shown on ${sessionBy.ifEmpty { "your computer" }}."
+                else when (mode) {
                     Mode.OFF -> "Nothing is running."
-                    Mode.NEARBY -> "Bluetooth only: notifications and clipboard reach a Mac in the same room."
+                    Mode.NEARBY -> "Bluetooth only: notifications and clipboard reach a computer in the same room."
                     Mode.ANYWHERE -> status
                 },
                 style = MaterialTheme.typography.bodyLarge,
             )
+            if (mirroring) {
+                Spacer(Modifier.height(4.dp))
+                Button(
+                    onClick = onStopMirroring,
+                    colors = ButtonDefaults.buttonColors(containerColor = scheme.error, contentColor = scheme.onError),
+                ) {
+                    Icon(Icons.Rounded.Stop, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Stop mirroring")
+                }
+            }
             if (mode != Mode.OFF) {
                 Spacer(Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusChip(
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // One chip per linked computer, so a Mac and a PC both show.
+                    if (linked.isEmpty()) StatusChip(
                         icon = Icons.Rounded.Laptop,
-                        text = if (macLinked) "Mac linked" else "No Mac nearby",
-                        on = macLinked,
-                    )
+                        text = "No computer nearby",
+                        on = false,
+                    ) else linked.forEach { name ->
+                        // The Bluetooth link often drops while mirroring (the video
+                        // and Bluetooth share the phone's radio); the chip says
+                        // mirroring regardless, so that doesn't look like a failure.
+                        val isMirroring = mirroring && sessionBy == name
+                        StatusChip(icon = if (isMirroring) Icons.Rounded.CastConnected else Icons.Rounded.Laptop,
+                                   text = if (isMirroring) "$name · mirroring" else name, on = true)
+                    }
+                    if (mirroring && sessionBy.isNotEmpty() && sessionBy !in linked) {
+                        StatusChip(icon = Icons.Rounded.CastConnected, text = "$sessionBy · mirroring", on = true)
+                    }
                     if (mode == Mode.ANYWHERE) StatusChip(
                         icon = Icons.Rounded.Bolt,
                         text = when (helperAlive) { true -> "Helper running"; false -> "Helper off"; null -> "Checking…" },
@@ -407,37 +530,6 @@ private fun StatusChip(icon: ImageVector, text: String, on: Boolean) {
 
 // MARK: - First run
 
-/**
- * Shown until the phone has a ticket and the USB-granted permission. Two steps,
- * each ticked off as it happens, so a new user isn't left reading the whole
- * screen to work out what to do first.
- */
-@Composable
-private fun GettingStarted(accessItems: List<Access>, ticket: String?, onGrantAccess: (Access) -> Unit) {
-    val grantable = accessItems.filter { it.intent != null || it.runtimePermissions.isNotEmpty() }
-    val permissionsDone = grantable.all { it.granted }
-    Section("Getting started") {
-        item {
-            StepRow(
-                number = 1, done = permissionsDone,
-                title = "Allow what Bridge needs",
-                body = if (permissionsDone) "All set." else "Tap each item under Permissions below.",
-                onClick = grantable.firstOrNull { !it.granted }?.let { a -> { onGrantAccess(a) } },
-            )
-        }
-        item {
-            StepRow(
-                number = 2, done = ticket != null,
-                title = "Plug into your Mac once",
-                body = "Open Bridge on the Mac and click Set Up Over USB. The phone will ask twice: " +
-                    "\"Allow USB debugging?\" (tick Always allow, then Allow) and a Bluetooth pairing request (Pair). " +
-                    "Both are needed.",
-                onClick = null,
-            )
-        }
-    }
-}
-
 @Composable
 private fun StepRow(number: Int, done: Boolean, title: String, body: String, onClick: (() -> Unit)?) {
     Row(
@@ -496,7 +588,7 @@ private fun NotificationsSection(tick: Int) {
     val apps = remember(tick) { Prefs.seenApps(context).toList().sortedBy { it.second.lowercase() } }
     val openOnMac = NotificationFilter.openOnMac
 
-    Section("Notifications on the Mac") {
+    Section("Notifications on your computers") {
         item {
             SwitchRow(Icons.Rounded.VolumeOff, "Skip silent notifications",
                       "Ones Android showed without a sound or a peek", skipSilent) {
@@ -504,8 +596,8 @@ private fun NotificationsSection(tick: Int) {
             }
         }
         item {
-            SwitchRow(Icons.Rounded.Laptop, "Skip apps open on the Mac",
-                      "WhatsApp on the Mac already shows its own", skipOpen) {
+            SwitchRow(Icons.Rounded.Laptop, "Skip apps open on your computer",
+                      "WhatsApp on the computer already shows its own", skipOpen) {
                 skipOpen = it; Prefs.setSkipOpenOnMac(context, it)
             }
         }
@@ -515,7 +607,7 @@ private fun NotificationsSection(tick: Int) {
                     icon = Icons.Rounded.Apps,
                     label = if (apps.isEmpty()) "Apps" else "Apps · ${apps.size}",
                     detail = if (apps.isEmpty()) "Apps appear here once they've sent a notification"
-                             else "Switch off any you don't want on the Mac",
+                             else "Switch off any you don't want on your computers",
                     trailing = if (showApps) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
                     onClick = { showApps = !showApps },
                 )
@@ -530,7 +622,7 @@ private fun NotificationsSection(tick: Int) {
                                 Column(Modifier.weight(1f)) {
                                     Text(label, style = MaterialTheme.typography.bodyMedium)
                                     if (pkg in openOnMac) Text(
-                                        "Open on your Mac",
+                                        "Open on your computer",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.primary,
                                     )
@@ -571,6 +663,10 @@ private fun AccessRow(item: Access, onGrant: () -> Unit) {
         }
         if (!item.granted && !clickable) {
             Icon(Icons.Rounded.Cable, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+        } else if (!item.granted) {
+            // Same as tapping the row: straight to the screen that grants it.
+            Spacer(Modifier.width(8.dp))
+            FilledTonalButton(onClick = onGrant, contentPadding = PaddingValues(horizontal = 14.dp)) { Text("Allow") }
         } else if (clickable) {
             Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -693,6 +789,51 @@ private fun AboutFooter(version: String, onOpen: (String) -> Unit) {
             Text("·", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("bonevane.vercel.app", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
                  modifier = Modifier.clickable { onOpen("https://bonevane.vercel.app") })
+        }
+    }
+}
+
+
+// MARK: - Computers
+
+/**
+ * Every computer that has linked, by the name it gives itself, and when it
+ * was last seen. No Forget: pairing lives on the computer, so forgetting
+ * happens there.
+ */
+@Composable
+private fun ComputersSection(linked: List<String>, tick: Int) {
+    val context = LocalContext.current
+    val computers = remember(tick) { Prefs.computers(context) }
+    if (computers.isEmpty()) return
+    Section("Computers") {
+        computers.forEach { c ->
+            item {
+                val now = c.name in linked
+                val ago = android.text.format.DateUtils.getRelativeTimeSpanString(
+                    c.lastSeen, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                ) {
+                    Icon(
+                        if (c.platform == "windows") Icons.Rounded.DesktopWindows else Icons.Rounded.Laptop,
+                        contentDescription = null,
+                        tint = if (now) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(c.name, style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            (if (now) "Linked now" else "Last seen $ago") + " · " +
+                                (if (c.platform == "windows") "Windows" else "Mac"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
     }
 }

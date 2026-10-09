@@ -1,15 +1,29 @@
 import AppKit
+import UserNotifications
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One Bridge at a time. macOS normally refuses a second copy, but not
+        // one launched from a different path (build/Bridge.app beside the
+        // installed one). Two would both link to the phone over Bluetooth and
+        // fight over the tunnel port. Hand over to the running one and quit.
+        if let id = Bundle.main.bundleIdentifier,
+           let other = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+               .first(where: { $0 != NSRunningApplication.current }) {
+            other.activate()
+            NSApp.terminate(nil)
+            return
+        }
         // Menu-bar only: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
         _ = sigterm
         statusItem = StatusItemController(bridge: BridgeController.shared)
         // Resume the background helpers the user had switched on.
         NotificationBridge.requestPermission()
+        UNUserNotificationCenter.current().delegate = PhoneNotificationDelegate.shared
+        NotificationBridge.registerCategories()
         BridgeController.shared.updateBluetooth()
         BridgeController.shared.updateNotificationBridge()
         BridgeController.shared.updateBackgroundClipboard()

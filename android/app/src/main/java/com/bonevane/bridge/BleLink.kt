@@ -82,6 +82,12 @@ class BleLink(private val context: Context) {
         const val TYPE_AUTH: Byte = 6
         /** An app's icon, on request: "<package>\t<base64 PNG>". Cached by the receiver. */
         const val TYPE_ICON: Byte = 7
+        /** A mirrored notification left the phone: "<id>". The computer removes its copy. */
+        const val TYPE_REMOVED: Byte = 8
+        /** Now Playing, see [MediaRelay]: tab-separated key=value pairs, or "state=none". */
+        const val TYPE_MEDIA: Byte = 9
+        /** Album art for Now Playing: "<key>\t<base64 JPEG>". */
+        const val TYPE_ART: Byte = 10
 
         /** Conservative: the default ATT MTU is 23, of which 3 bytes are overhead. */
         private const val MIN_PAYLOAD = 20
@@ -108,6 +114,9 @@ class BleLink(private val context: Context) {
      */
     private inner class Peer(val device: BluetoothDevice, val plain: Boolean) {
         val label = if (plain) "PC" else "Mac"
+        /** The computer's own name and platform, from its "hello" (see [receive]). */
+        @Volatile var name: String? = null
+        var platform = if (plain) "windows" else "mac"
         val characteristic: BluetoothGattCharacteristic? get() = if (plain) txPlain else tx
         @Volatile var verified = false
         var pendingNonce: String? = null
@@ -130,10 +139,60 @@ class BleLink(private val context: Context) {
         private set(value) { field = value; TunnelState.macLinked = value }
     @Volatile private var beating = false
 
-    private fun updateConnected() { connected = peers.values.any { it.verified } }
+    @SuppressLint("MissingPermission")
+    private fun updateConnected() {
+        val linked = peers.values.filter { it.verified }
+        connected = linked.isNotEmpty()
+        // Each linked computer by the name it gave us ("hello"), else its
+        // Bluetooth name, else Mac/PC. The Bluetooth name is often just "Mac".
+        TunnelState.linkedComputers = linked.map { p ->
+            p.name ?: runCatching { p.device.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: p.label
+        }.sorted()
+    }
 
     private val notificationListener: (String) -> Unit = { line ->
         send(TYPE_NOTIFICATION, line)
+    }
+    private val removalListener: (Int) -> Unit = { id -> send(TYPE_REMOVED, id.toString()) }
+    private val mediaListener: (String) -> Unit = { line -> send(TYPE_MEDIA, line) }
+    private val artListener: (String) -> Unit = { art -> send(TYPE_ART, art) }
+
+    /**
+     * Battery and network go out with the status. The battery broadcast fires
+     * for every tenth of a degree too, so only a change of level or charging
+     * counts as news.
+     */
+    private var lastBattery = -1 to false
+    private val batteryWatcher = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            val now = batteryOf(intent)
+            if (now != lastBattery) {
+                lastBattery = now
+                if (peers.isNotEmpty()) sendStatus()
+                // "Last seen" on the phone's Computers card.
+                peers.values.filter { it.verified }.forEach { p ->
+                    p.name?.let { Prefs.rememberComputer(context, it, p.platform) }
+                }
+            }
+        }
+    }
+
+    private fun batteryOf(intent: Intent?): Pair<Int, Boolean> {
+        val level = intent?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
+        val plugged = (intent?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        return (if (level >= 0 && scale > 0) level * 100 / scale else -1) to plugged
+    }
+
+    private fun network(): String {
+        val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+        val caps = cm?.getNetworkCapabilities(cm.activeNetwork) ?: return "none"
+        return when {
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
     }
 
     // MARK: - Lifecycle
@@ -152,12 +211,15 @@ class BleLink(private val context: Context) {
             override fun onReceive(ctx: Context, intent: Intent) {
                 when (intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1)) {
                     android.bluetooth.BluetoothAdapter.STATE_OFF -> {
+                        main.removeCallbacksAndMessages(null)   // no restarts pending for a radio that's off
+                        TunnelState.bluetoothOff = true
                         TunnelState.log("Bluetooth: turned off; link closed")
                         teardown()
                     }
                     android.bluetooth.BluetoothAdapter.STATE_ON -> {
-                        TunnelState.log("Bluetooth: back on; advertising again")
-                        runCatching { start() }.onFailure { TunnelState.log("Bluetooth: restart failed: ${it.message}") }
+                        TunnelState.bluetoothOff = false
+                        TunnelState.log("Bluetooth: back on; restarting the link")
+                        restartWhenReady(1)
                     }
                 }
             }
@@ -180,10 +242,48 @@ class BleLink(private val context: Context) {
         }
     }
 
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    /** Set by the stack's callbacks, so a restart can check it really came up. */
+    @Volatile private var serviceReady = false
+    @Volatile private var advertisingOk = false
+
+    /**
+     * Bluetooth back on. Right after STATE_ON the stack often isn't ready:
+     * openGattServer() returns null, the service is never added, or the
+     * advertiser isn't there yet, and start() used to log "advertising" anyway
+     * and never try again. That was the "won't reconnect until I switch the
+     * app off and on" bug. Now: wait a moment, start, check that both the
+     * service and the advertisement actually came up, and retry if not.
+     */
+    private fun restartWhenReady(attempt: Int) {
+        main.postDelayed({
+            teardown()
+            runCatching { start() }.onFailure { TunnelState.log("Bluetooth: restart failed: ${it.message}") }
+            main.postDelayed({
+                if (serviceReady && advertisingOk) {
+                    TunnelState.log("Bluetooth: link ready again")
+                } else if (TunnelState.bluetoothOff) {
+                    // Switched off again meanwhile; STATE_ON will start over.
+                } else if (attempt < 6) {
+                    TunnelState.log("Bluetooth: not ready yet (service=$serviceReady advertising=$advertisingOk); retry $attempt")
+                    restartWhenReady(attempt + 1)
+                } else {
+                    TunnelState.log("Bluetooth: couldn't restart the link; toggle Bridge off and on")
+                }
+            }, 3_000)
+        }, if (attempt == 1) 1_500L else 2_000L * attempt)
+    }
+
     /** Forgets the (dead) server so start() can make a new one. Keeps the adapter watcher. */
     private fun teardown() {
         beating = false
+        heartbeatGeneration++
+        serviceReady = false
+        advertisingOk = false
         NotificationRelay.unsubscribe(notificationListener)
+        NotificationRelay.unsubscribeRemovals(removalListener)
+        MediaRelay.unsubscribe(mediaListener, artListener)
+        runCatching { context.unregisterReceiver(batteryWatcher) }
         runCatching { stopAdvertising() }
         runCatching { server?.close() }
         server = null
@@ -192,6 +292,7 @@ class BleLink(private val context: Context) {
         peers.clear()
         mtus.clear()
         connected = false
+        TunnelState.linkedComputers = emptyList()
         paramGatts.values.forEach { runCatching { it.close() } }; paramGatts.clear()
     }
 
@@ -205,9 +306,11 @@ class BleLink(private val context: Context) {
         val manager = context.getSystemService(BluetoothManager::class.java)
         val adapter = manager?.adapter
         if (adapter == null || !adapter.isEnabled) {
+            TunnelState.bluetoothOff = adapter != null
             TunnelState.log("Bluetooth: turned off")
             return
         }
+        TunnelState.bluetoothOff = false
 
         val characteristicTx = BluetoothGattCharacteristic(
             TX,
@@ -248,10 +351,14 @@ class BleLink(private val context: Context) {
         }
 
         server = openServer(manager)?.also { it.addService(service) }
+        if (server == null) TunnelState.log("Bluetooth: couldn't open the GATT server yet")
         tx = characteristicTx
         txPlain = characteristicTxPlain
         advertise(adapter)
         NotificationRelay.subscribe(notificationListener)
+        NotificationRelay.subscribeRemovals(removalListener)
+        MediaRelay.subscribe(mediaListener, artListener)
+        lastBattery = batteryOf(context.registerReceiver(batteryWatcher, IntentFilter(Intent.ACTION_BATTERY_CHANGED)))
         startHeartbeat()
         TunnelState.log("Bluetooth: advertising")
     }
@@ -268,12 +375,18 @@ class BleLink(private val context: Context) {
      * link often survives at the controller level even though the GATT service
      * is gone, and the Mac has no way to tell. A ping every 30 s gives it one.
      */
+    @Volatile private var heartbeatGeneration = 0
+
     private fun startHeartbeat() {
         if (beating) return
         beating = true
+        val generation = heartbeatGeneration
         Thread({
-            while (beating) {
+            // A teardown and restart make a new thread; the old one, still
+            // asleep, must not wake up and carry on beside it.
+            while (beating && generation == heartbeatGeneration) {
                 Thread.sleep(30_000)
+                if (generation != heartbeatGeneration) break
                 repinAll()
                 if (peers.isNotEmpty()) sendStatus()
             }
@@ -320,7 +433,14 @@ class BleLink(private val context: Context) {
                 " tunnel=${if (TunnelState.tunnelOn) 1 else 0}" +
                 " keep=${if (Prefs.keepReady(context)) 1 else 0}" +
                 " keepAt=${Prefs.keepReadyAt(context)}" +
-                " paused=${if (paused) 1 else 0}"
+                " paused=${if (paused) 1 else 0}" +
+                // What the computers show in their phone status line.
+                " battery=${lastBattery.first} charging=${if (lastBattery.second) 1 else 0}" +
+                " net=${network()}" +
+                // The mode chosen on the phone (Off can't be reported: Bluetooth
+                // is off with it). Shown as an icon in the computers' top bar.
+                " mode=${if (Prefs.tunnelEnabled(context)) "anywhere" else "nearby"}" +
+                " model=${android.os.Build.MODEL.replace(' ', '_')}"
         )
     }
 
@@ -411,7 +531,32 @@ class BleLink(private val context: Context) {
      * link went to the 720 ms timeout again the moment Windows linked and
      * dropped with "timed out" soon after), so this runs on each new
      * connection and with every heartbeat.
+     *
+     * BALANCED, not LOW_POWER, even though LOW_POWER would save more: its 20 s
+     * supervision timeout is outside Apple's accessory limits (2–6 s), so
+     * macOS rejects the update and the link stays on the 720 ms timeout.
      */
+    /**
+     * Re-pins now and again a little later. The stack tightens the existing
+     * links *after* a new central connects (or drops), so pinning only at
+     * that instant got overwritten a moment later and the Mac then timed out
+     * within seconds; that was the run of 15-second drops whenever another
+     * device was trying to connect.
+     */
+    @Volatile private var lastRepinBurst = 0L
+
+    private fun repinSoon() {
+        // At most one burst per 10 s. With two computers dropping and
+        // reconnecting, a burst per event could pile up into a storm of
+        // parameter updates while the links are at their most fragile.
+        val now = System.currentTimeMillis()
+        if (now - lastRepinBurst < 10_000) return
+        lastRepinBurst = now
+        repinAll()
+        main.postDelayed({ repinAll() }, 1_500)
+        main.postDelayed({ repinAll() }, 5_000)
+    }
+
     @SuppressLint("MissingPermission")
     private fun repinAll() {
         paramGatts.values.forEach { runCatching { it.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) } }
@@ -454,14 +599,25 @@ class BleLink(private val context: Context) {
                 // starts. Windows' plain door never bonds and is left alone.
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     if (device.bondState != BluetoothDevice.BOND_NONE) pinConnectionParameters(device)
-                    repinAll()      // a new link resets the others' parameters
+                    repinSoon()     // a new link resets the others' parameters
                 }
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    repinSoon()     // a link going away renegotiates the rest too
                     mtus.remove(device)
                     val peer = peers.remove(device) ?: return   // a stranger leaving; not our link
                     paramGatts.remove(device)?.let { runCatching { it.close() } }
                     updateConnected()
-                    TunnelState.log("Bluetooth: the ${peer.label} disconnected" +
+                    // The HCI reason says who ended it: 8 = supervision timeout
+                    // (radio/parameters), 19 = the computer hung up, 22 = this
+                    // phone did. Without it every drop looked the same.
+                    val why = when (status) {
+                        8 -> "link timed out"
+                        19 -> "the ${peer.label} closed it"
+                        22 -> "this phone closed it"
+                        62 -> "couldn't establish the link"
+                        else -> "status $status"
+                    }
+                    TunnelState.log("Bluetooth: the ${peer.label} disconnected ($why)" +
                         if (peers.isNotEmpty()) " (${peers.size} still linked)" else "")
                 }
             }
@@ -538,6 +694,11 @@ class BleLink(private val context: Context) {
                 pump(peer)      // next chunk, now that the stack is ready
             }
 
+            override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+                serviceReady = status == BluetoothGatt.GATT_SUCCESS
+                if (!serviceReady) TunnelState.log("Bluetooth: the stack refused the service (status $status)")
+            }
+
             override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
                 val payload = (mtu - 3).coerceIn(MIN_PAYLOAD, MAX_PAYLOAD)
                 mtus[device] = payload
@@ -577,6 +738,10 @@ class BleLink(private val context: Context) {
                 TunnelState.log(if (peer.plain) "Bluetooth: PC verified (encrypted session)" else "Bluetooth: Mac verified")
                 TunnelState.macSeen()
                 sendStatus()
+                // A computer that just linked should see what's playing now.
+                val (media, art) = MediaRelay.snapshot()
+                art?.let { sendTo(peer, TYPE_ART, it) }
+                sendTo(peer, TYPE_MEDIA, media)
             } else {
                 TunnelState.log("Bluetooth: ignored a message from an unverified device")
             }
@@ -594,14 +759,20 @@ class BleLink(private val context: Context) {
                     TunnelState.log("Mac turned the tunnel off over Bluetooth")
                     TunnelService.setTunnel(context, false, remember = false)
                 }
-                "status" -> sendStatus()        // the Mac's refresh button
+                "status" -> sendStatus()        // probes, and "what's your state?"
+                // The refresh button: everything again, Now Playing and its cover included.
+                "sync" -> {
+                    sendStatus()
+                    val (media, art) = MediaRelay.snapshot()
+                    art?.let { sendTo(peer, TYPE_ART, it) }
+                    sendTo(peer, TYPE_MEDIA, media)
+                    TunnelState.log("Bluetooth: resynced the ${peer.label}")
+                }
                 "session over" -> {
                     // The Mac finished mirroring. Same as the tunnel's STOP, but
                     // over Bluetooth, which still works when the tunnel is the
                     // very thing that just died.
-                    TunnelState.log("Mac ended the session (Bluetooth): ${DaemonManager.stop(context)}")
-                    TunnelService.settleTunnelAfterSession(context)
-                    sendStatus()
+                    TunnelService.endSession(context, "A computer (over Bluetooth)")
                 }
                 // "keep on at=<millis>" carries a timestamp, so it can't match exactly.
                 else -> when {
@@ -612,6 +783,39 @@ class BleLink(private val context: Context) {
                     // so the Mac/PC can show it on the notification. Sent once;
                     // the other side caches it.
                     message.startsWith("icon ") -> sendIcon(message.removePrefix("icon ").trim())
+                    // "hello mac Bonevane's MacBook Pro": who this computer is,
+                    // in its own words (the Bluetooth name is often just "Mac").
+                    message.startsWith("hello ") -> {
+                        val rest = message.removePrefix("hello ")
+                        peer.platform = rest.substringBefore(' ').ifEmpty { peer.platform }
+                        peer.name = rest.substringAfter(' ', "").trim().take(60).ifEmpty { null }
+                        peer.name?.let { Prefs.rememberComputer(context, it, peer.platform) }
+                        updateConnected()
+                    }
+                    // "reply 12 On my way": answer notification 12 through its
+                    // own Reply action. The text is the rest of the line.
+                    message.startsWith("reply ") -> {
+                        val rest = message.removePrefix("reply ")
+                        val id = rest.substringBefore(' ').toIntOrNull()
+                        val text = rest.substringAfter(' ', "")
+                        val key = id?.let { NotificationRelay.keyFor(it) }
+                        val why = when {
+                            key == null -> "unknown notification"
+                            text.isBlank() -> "empty reply"
+                            else -> NotificationService.current.let { svc ->
+                                if (svc == null) "notification access is off" else svc.reply(key, text)
+                            }
+                        }
+                        TunnelState.log(if (why == null) "Replied from the ${peer.label}" else "Couldn't reply from the ${peer.label}: $why")
+                    }
+                    // "dismiss 12": cleared on the computer, so clear it here.
+                    message.startsWith("dismiss ") -> {
+                        message.removePrefix("dismiss ").trim().toIntOrNull()
+                            ?.let { NotificationRelay.keyFor(it) }
+                            ?.let { NotificationService.current?.dismiss(it) }
+                    }
+                    // "media play|pause|toggle|next|prev|seek <ms>"
+                    message.startsWith("media ") -> MediaRelay.command(message.removePrefix("media "))
                     message.startsWith("pause") -> {
                         val minutes = message.removePrefix("pause").trim().toIntOrNull() ?: 15
                         val policy = TunnelService.current?.policy
@@ -638,7 +842,15 @@ class BleLink(private val context: Context) {
                 TunnelService.current?.clipboard?.lastValue = message
                 context.getSystemService(android.content.ClipboardManager::class.java)
                     .setPrimaryClip(android.content.ClipData.newPlainText("Bridge", message))
-                TunnelState.log("Clipboard from the Mac over Bluetooth")
+                TunnelState.log("Clipboard from the ${peer.label} over Bluetooth")
+            }
+            // Pass it on to every other linked computer, so a copy on the Mac
+            // reaches the PC too (and the other way round). Before, it stopped
+            // at the phone: the watcher deliberately doesn't echo what a
+            // computer sent, so the other computer never saw it.
+            peers.values.filter { it !== peer && it.verified }.forEach { other ->
+                sendTo(other, TYPE_CLIPBOARD, message)
+                TunnelState.log("Clipboard passed on to the ${other.label}")
             }
         }
     }
@@ -667,7 +879,13 @@ class BleLink(private val context: Context) {
             .build()
         val scanResponse = AdvertiseData.Builder().setIncludeDeviceName(true).build()
         val callback = object : AdvertiseCallback() {
+            override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+                advertisingOk = true
+            }
+
             override fun onStartFailure(errorCode: Int) {
+                // 3 = already started: that's fine, it is advertising.
+                advertisingOk = errorCode == ADVERTISE_FAILED_ALREADY_STARTED
                 TunnelState.log("Bluetooth: advertising failed ($errorCode)")
             }
         }

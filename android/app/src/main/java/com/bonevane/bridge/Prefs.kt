@@ -125,6 +125,23 @@ object Prefs {
         (prefs(ctx).getStringSet("seenApps", emptySet()) ?: emptySet())
             .mapNotNull { it.split('\t', limit = 2).takeIf { p -> p.size == 2 }?.let { p -> p[0] to p[1] } }
             .toMap()
+    /** A computer that has linked: its own name, "mac"/"windows", and when it was last seen. */
+    data class Computer(val name: String, val platform: String, val lastSeen: Long)
+
+    fun computers(ctx: Context): List<Computer> =
+        (prefs(ctx).getStringSet("computers", emptySet()) ?: emptySet())
+            .mapNotNull { e -> e.split('\t').takeIf { it.size == 3 }?.let { Computer(it[0], it[1], it[2].toLongOrNull() ?: 0) } }
+            .sortedByDescending { it.lastSeen }
+
+    /** Keyed by name: a renamed computer shows up once under its new name. */
+    fun rememberComputer(ctx: Context, name: String, platform: String) {
+        val clean = name.replace('\t', ' ').trim().take(60).ifEmpty { return }
+        val others = computers(ctx).filter { it.name != clean }.take(9)
+        val set = (others.map { "${it.name}\t${it.platform}\t${it.lastSeen}" } +
+            "$clean\t$platform\t${System.currentTimeMillis()}").toSet()
+        prefs(ctx).edit().putStringSet("computers", set).apply()
+    }
+
     fun rememberApp(ctx: Context, pkg: String, label: String) {
         val set = (prefs(ctx).getStringSet("seenApps", emptySet()) ?: emptySet()).toMutableSet()
         if (set.add("$pkg\t$label")) prefs(ctx).edit().putStringSet("seenApps", set).apply()

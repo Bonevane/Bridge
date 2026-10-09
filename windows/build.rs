@@ -13,7 +13,18 @@ fn main() {
     // rc.exe, which the CI runner has; skipped elsewhere.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-changed=assets/icon.ico");
-        if let Err(e) = winresource::WindowsResource::new().set_icon("assets/icon.ico").compile() {
+        // Name, publisher and description in the exe's properties. An
+        // unsigned exe with none of these is one more thing antivirus
+        // heuristics hold against it. Version numbers come from Cargo.toml.
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/icon.ico")
+            .set("ProductName", "Bridge")
+            .set("FileDescription", "Bridge: your Android phone on this PC")
+            .set("CompanyName", "Bonevane")
+            .set("LegalCopyright", "Copyright 2026 Bonevane. Apache License 2.0.")
+            .set("OriginalFilename", "Bridge.exe")
+            .set("InternalName", "Bridge");
+        if let Err(e) = res.compile() {
             println!("cargo:warning=no exe icon: {e}");
         }
     }

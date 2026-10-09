@@ -74,6 +74,14 @@ final class TCPStream {
         return out
     }
 
+    /// Whatever has arrived, up to `max` bytes; empty means the other side closed.
+    func readSome(_ max: Int) throws -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: max)
+        let n = out.withUnsafeMutableBufferPointer { Darwin.read(fd, $0.baseAddress, $0.count) }
+        guard n >= 0 else { throw StreamError.failed("read failed") }
+        return Array(out[0..<n])
+    }
+
     func readLine() throws -> String {
         var bytes = [UInt8]()
         while true {

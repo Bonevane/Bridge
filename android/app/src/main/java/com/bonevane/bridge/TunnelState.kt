@@ -15,8 +15,23 @@ object TunnelState {
     @Volatile var ready = false
     @Volatile var status = "Stopped"
     @Volatile var ticket: String? = null
-    /** A Mac is subscribed over Bluetooth right now. */
+    /** A computer is linked (verified) over Bluetooth right now. */
     @Volatile var macLinked = false
+        set(value) { if (field != value) { field = value; notifyListeners() } }
+
+    /** Every computer linked right now, by name ("Bonevane's MacBook Pro", "PC"). */
+    @Volatile var linkedComputers: List<String> = emptyList()
+        set(value) { if (field != value) { field = value; notifyListeners() } }
+
+    /** Video streams open right now: more than zero means a computer is mirroring. */
+    val videoStreams = java.util.concurrent.atomic.AtomicInteger(0)
+    /** Who asked for the last session (sent with START), for "Mirroring to …". */
+    @Volatile var sessionBy: String = ""
+
+    val mirroring: Boolean get() = videoStreams.get() > 0
+
+    /** The phone's own Bluetooth is switched off, so no computer can link. */
+    @Volatile var bluetoothOff = false
         set(value) { if (field != value) { field = value; notifyListeners() } }
 
     /** When the Mac last said anything, and how many streams it has open now. */

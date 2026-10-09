@@ -40,6 +40,12 @@ final class BluetoothLink: NSObject {
     private static let typeAuth: UInt8 = 6
     /// An app's icon, answering `icon <package>`: "package\t<base64 PNG>".
     private static let typeIcon: UInt8 = 7
+    /// A mirrored notification left the phone: "<id>".
+    private static let typeRemoved: UInt8 = 8
+    /// Now Playing: tab-separated key=value pairs, or "state=none" (MediaRelay.kt).
+    private static let typeMedia: UInt8 = 9
+    /// Album art: "<key>\t<base64 JPEG>".
+    private static let typeArt: UInt8 = 10
 
     private var central: CBCentralManager?
     private var phone: CBPeripheral?
@@ -49,6 +55,8 @@ final class BluetoothLink: NSObject {
     private var watchdog: Timer?
     /// When the phone last said anything. Its heartbeat arrives every 30 s.
     private var lastHeard = Date.distantPast
+    /// When we last asked a quiet phone to speak (see ensureScanning).
+    private var probedAt: Date?
     /// Our half of the handshake: the nonce the phone must sign back.
     private var ourNonce: String?
     /// Set once the phone has proved it knows the pairing secret.
@@ -61,6 +69,12 @@ final class BluetoothLink: NSObject {
     var onStatus: (([String: String]) -> Void)?
     /// An app icon from the phone (package name, PNG bytes).
     var onIcon: ((String, Data) -> Void)?
+    /// A notification's id when the phone clears it.
+    var onRemoved: ((Int) -> Void)?
+    /// Now Playing fields (title, artist, state, pos, dur…).
+    var onMedia: (([String: String]) -> Void)?
+    /// Album art: its key and JPEG bytes.
+    var onArt: ((String, Data) -> Void)?
 
     /// True while the phone is connected and subscribed.
     private(set) var isLinked = false {
@@ -131,9 +145,24 @@ final class BluetoothLink: NSObject {
         // A link can look alive long after the phone's app was replaced: the
         // Bluetooth connection survives even though the service behind it is
         // gone. Missing two heartbeats means it's really finished.
-        if isLinked, Date().timeIntervalSince(lastHeard) > 90 {
-            log("Bluetooth: phone stopped answering, reconnecting")
-            isLinked = false
+        // The phone's 30 s heartbeat is a timer, and an idle phone's CPU
+        // sleeps, timers with it: the radio keeps the link but the app goes
+        // quiet. Dropping it after 90 s of silence meant tearing down a
+        // healthy link and redialling every ~100 s all night (and waking the
+        // phone each time). So ask first: a write from us wakes the phone's
+        // app, which answers with its status. Only no answer to that is dead.
+        let silent = Date().timeIntervalSince(lastHeard)
+        if isLinked, silent > 60 {
+            if let asked = probedAt, asked > lastHeard {
+                if Date().timeIntervalSince(asked) > 20 {
+                    log("Bluetooth: phone didn't answer, reconnecting")
+                    probedAt = nil
+                    isLinked = false
+                }
+            } else {
+                probedAt = Date()
+                requestStatus()
+            }
         }
         guard !isLinked else { return }
         // A connection that's mid-handshake is not stale: give it the tick
@@ -184,6 +213,32 @@ final class BluetoothLink: NSObject {
     /// Comes back once as a small PNG and is cached for good.
     func requestIcon(_ package: String) {
         send(type: Self.typeCommand, text: "icon \(package)")
+    }
+
+    /// The refresh button: the phone resends its status, Now Playing and cover.
+    func sync() {
+        send(type: Self.typeCommand, text: "sync")
+    }
+
+    /// Tells the phone this computer's name, for its Computers list and chips.
+    func hello(name: String) {
+        send(type: Self.typeCommand, text: "hello mac \(name)")
+    }
+
+    /// Answers notification `id` on the phone, through its own Reply action.
+    func reply(id: Int, text: String) {
+        let line = text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
+        send(type: Self.typeCommand, text: "reply \(id) \(line)")
+    }
+
+    /// Cleared here, so clear it on the phone.
+    func dismiss(id: Int) {
+        send(type: Self.typeCommand, text: "dismiss \(id)")
+    }
+
+    /// "play", "pause", "toggle", "next", "prev" or "seek <ms>".
+    func media(_ command: String) {
+        send(type: Self.typeCommand, text: "media \(command)")
     }
 
     /// Tells the phone the session is over, so it can turn USB debugging off.
@@ -268,6 +323,19 @@ final class BluetoothLink: NSObject {
         case Self.typeNotification: onNotification(text)
         case Self.typeClipboard: onClipboard(text)
         case Self.typePing: break        // liveness only
+        case Self.typeRemoved:
+            if let id = Int(text.trimmingCharacters(in: .whitespaces)) { onRemoved?(id) }
+        case Self.typeMedia:
+            let fields = Dictionary(text.split(separator: "\t").compactMap { field -> (String, String)? in
+                let parts = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                return parts.count == 2 ? (String(parts[0]), String(parts[1])) : nil
+            }, uniquingKeysWith: { _, last in last })
+            onMedia?(fields)
+        case Self.typeArt:
+            let parts = text.split(separator: "\t", maxSplits: 1)
+            if parts.count == 2, let jpeg = Data(base64Encoded: String(parts[1])) {
+                onArt?(String(parts[0]), jpeg)
+            }
         case Self.typeIcon:
             let parts = text.split(separator: "\t", maxSplits: 1)
             if parts.count == 2, let png = Data(base64Encoded: String(parts[1])) {

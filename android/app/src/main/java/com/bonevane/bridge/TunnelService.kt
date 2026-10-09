@@ -32,6 +32,12 @@ class TunnelService : Service() {
         const val ACTION_STOP = "com.bonevane.bridge.STOP"
         /** Turns the internet tunnel off but leaves Bluetooth running. */
         const val ACTION_TUNNEL = "com.bonevane.bridge.TUNNEL"
+        /** "Stop mirroring", from the phone's screen or its notification. */
+        const val ACTION_END_SESSIONS = "com.bonevane.bridge.END_SESSIONS"
+
+        fun endMirroring(ctx: Context) {
+            ctx.startService(Intent(ctx, TunnelService::class.java).setAction(ACTION_END_SESSIONS))
+        }
 
         private const val CHANNEL_ID = "tunnel"
         /** Same notification, but on a channel Android shows without a status-bar icon. */
@@ -58,6 +64,33 @@ class TunnelService : Service() {
          * it), so if the chosen mode is Nearby, switch it off again. The phone
          * decides this, not the Mac: the Mac can't always tell who turned it on.
          */
+        /**
+         * A computer says its session is over (STOP over the tunnel, or
+         * "session over" over Bluetooth). With two computers, the other one
+         * may still be mirroring: stopping the helper or the tunnel then cut
+         * its session off mid-stream. So wait for the ending computer's own
+         * streams to close (they do within a second or two of its message),
+         * and only wind down if no session stream is left open at all.
+         */
+        fun endSession(ctx: Context, who: String) {
+            Thread {
+                // A beat first, so a reply already written to the tunnel leaves
+                // before the tunnel can be switched off.
+                Thread.sleep(1_000)
+                var waited = 0
+                while (TunnelState.openStreams.get() > 0 && waited < 4_000) {
+                    Thread.sleep(250); waited += 250
+                }
+                if (TunnelState.openStreams.get() > 0) {
+                    TunnelState.log("$who ended its session; another computer is still mirroring, so the helper and tunnel stay up")
+                } else {
+                    TunnelState.log("$who ended the session: ${DaemonManager.stop(ctx)}")
+                    settleTunnelAfterSession(ctx)
+                }
+                current?.ble?.sendStatus()
+            }.start()
+        }
+
         fun settleTunnelAfterSession(ctx: Context) {
             if (!Prefs.tunnelEnabled(ctx) && TunnelState.tunnelOn) {
                 TunnelState.log("Session over: back to Nearby")
@@ -98,6 +131,10 @@ class TunnelService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_END_SESSIONS) {
+            Thread { TunnelState.log("Stop mirroring: ${DaemonManager.endSessions()}") }.start()
+            return START_STICKY
+        }
         if (intent?.action == ACTION_STOP) {
             Prefs.setWantRunning(this, false)
             shutdown()
@@ -128,31 +165,52 @@ class TunnelService : Service() {
     /** Re-posts the status notification, e.g. after the quiet setting changed. */
     fun refreshNotification() = goForeground()
 
+    /** What the status notification last said, so it's only re-posted on a change. */
+    private var shownStatus = ""
+    private val statusListener: () -> Unit = { goForeground() }
+
+    /**
+     * The status notification says what's going on, in one line: who's
+     * linked, or that the screen is being shared and with whom (with Stop).
+     * Re-posted only when that text changes; the state listener fires for
+     * every log line too.
+     */
     private fun goForeground() {
         val nm = getSystemService(NotificationManager::class.java)
-        // A channel's importance is fixed once created, so quiet is a second
-        // channel rather than a change to the first.
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Status", NotificationManager.IMPORTANCE_LOW)
         )
-        nm.createNotificationChannel(
-            NotificationChannel(QUIET_CHANNEL_ID, "Status (quiet)", NotificationManager.IMPORTANCE_MIN)
-        )
-        val channel = if (Prefs.quietStatus(this)) QUIET_CHANNEL_ID else CHANNEL_ID
+        // The old "quiet" channel: Android wouldn't let it hide the icon anyway
+        // (a running service's notification stays visible), so it's gone.
+        runCatching { nm.deleteNotificationChannel(QUIET_CHANNEL_ID) }
+        val mirroring = TunnelState.mirroring
+        val mode = if (TunnelState.tunnelOn) "Anywhere" else "Nearby"
+        val linked = TunnelState.linkedComputers
+        val title = if (mirroring) "Your screen is being shared" else "Bridge · $mode"
+        val text = when {
+            mirroring -> "With ${TunnelState.sessionBy.ifEmpty { "your computer" }}"
+            linked.isNotEmpty() -> "Linked to ${linked.joinToString(", ")}"
+            else -> "No computer nearby"
+        }
+        val key = "$title|$text"
+        if (key == shownStatus && active) return
+        shownStatus = key
         val openApp = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
-        val stopTunnel = PendingIntent.getService(
-            this, 1, Intent(this, TunnelService::class.java).setAction(ACTION_STOP),
+        // Stop ends the mirroring while there is any; otherwise it stops Bridge.
+        val stop = PendingIntent.getService(
+            this, if (mirroring) 2 else 1,
+            Intent(this, TunnelService::class.java).setAction(if (mirroring) ACTION_END_SESSIONS else ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = Notification.Builder(this, channel)
+        val notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_bridge)
-            .setContentTitle("Bridge is on")
-            .setContentText("Your Mac can connect to this phone")
+            .setContentTitle(title)
+            .setContentText(text)
             .setContentIntent(openApp)
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null as Icon?, "Stop", stopTunnel).build())
+            .addAction(Notification.Action.Builder(null as Icon?, if (mirroring) "Stop mirroring" else "Stop", stop).build())
             .build()
 
         if (Build.VERSION.SDK_INT >= 34) {
@@ -162,8 +220,15 @@ class TunnelService : Service() {
         }
     }
 
+    /** Opens Android's own settings for the status notification (Silent, Minimise…). */
+    fun statusChannelSettings(): Intent =
+        Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+            .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, CHANNEL_ID)
+
     private fun launch() {
         active = true
+        TunnelState.addListener(statusListener)
         TunnelState.running = true
         // Tunnel streams land on the proxy, which sorts ADB traffic from commands.
         proxy = ControlProxy(this).also { p ->
@@ -312,6 +377,7 @@ class TunnelService : Service() {
     }
 
     private fun shutdown() {
+        TunnelState.removeListener(statusListener)
         active = false
         tunnelActive = false
         TunnelState.running = false

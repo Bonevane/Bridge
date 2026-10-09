@@ -59,6 +59,8 @@ final class BluetoothLink: NSObject {
     private var probedAt: Date?
     /// Our half of the handshake: the nonce the phone must sign back.
     private var ourNonce: String?
+    /// Subscribe attempts refused for want of pairing, on this connection.
+    private var subscribeRetries = 0
     /// Set once the phone has proved it knows the pairing secret.
     private var verified = false
 
@@ -294,6 +296,12 @@ final class BluetoothLink: NSObject {
         }
     }
 
+    /// The tag our phone advertises: the first 4 bytes of HMAC(secret, "bridge-advertise").
+    static func advertTag(_ secret: String) -> Data {
+        let mac = HMAC<SHA256>.authenticationCode(for: Data("bridge-advertise".utf8), using: SymmetricKey(data: Data(secret.utf8)))
+        return Data(Data(mac).prefix(4))
+    }
+
     private static func hmac(_ secret: String, _ message: String) -> String {
         let key = SymmetricKey(data: Data(secret.utf8))
         return HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
@@ -388,6 +396,17 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         // and remade, the phone gets a new identifier, and the Mac then
         // ignored the real phone forever. So: connect to whoever advertises,
         // and let the challenge sort it out.
+        // ...except a phone that says outright it belongs to another pairing:
+        // its advert carries a tag from its secret (Pairing.advertTag). With
+        // two Bridge phones nearby, dialling the wrong one over and over kept
+        // the right one from ever being reached. A phone without the tag
+        // (older app) still gets the handshake.
+        if let maker = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
+           maker.count >= 6, maker[maker.startIndex] == 0xFF, maker[maker.startIndex + 1] == 0xFF,
+           let secret = Keychain.get("pairSecret"), !secret.isEmpty,
+           Data(maker.dropFirst(2).prefix(4)) != Self.advertTag(secret) {
+            return
+        }
         manager.stopScan()
         phone = peripheral
         peripheral.delegate = self
@@ -395,6 +414,7 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ manager: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        subscribeRetries = 0
         peripheral.discoverServices([Self.service])
     }
 
@@ -436,8 +456,25 @@ extension BluetoothLink: CBCentralManagerDelegate, CBPeripheralDelegate {
                     error: Error?) {
         if let error = error {
             log("Bluetooth: \(error.localizedDescription)")
+            // Refused for want of pairing: the phone (or macOS) is asking to pair
+            // right now. Try again once that has had a moment, rather than
+            // waiting for the watchdog to tear the link down and start over.
+            let code = (error as NSError).code
+            let needsPairing = code == CBATTError.insufficientAuthentication.rawValue ||
+                code == CBATTError.insufficientEncryption.rawValue
+            if needsPairing, subscribeRetries < 20 {   // ~80 s: two prompts take a person a while
+                subscribeRetries += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self, weak peripheral, weak characteristic] in
+                    guard let self = self, let peripheral = peripheral, let characteristic = characteristic,
+                          peripheral.state == .connected, !self.verified else { return }
+                    self.log("Bluetooth: trying to subscribe again (pairing)")
+                    self.lastHeard = Date()   // keep the watchdog off it meanwhile
+                    peripheral.setNotifyValue(true, for: characteristic)
+                }
+            }
             return
         }
+        subscribeRetries = 0
         // Subscribed is not yet linked: the phone now challenges us, and we it.
         verified = false
         if characteristic.isNotifying {

@@ -217,6 +217,25 @@ impl Ble {
                 if link.lock().unwrap().verified {
                     return Ok(()); // already linked; a rescan mustn't tear that down
                 }
+                // A phone whose advert says it belongs to another pairing (a
+                // tag from its secret; see Pairing.advertTag on the phone) is
+                // skipped without connecting, so a second Bridge phone nearby
+                // can't keep us from reaching ours. No tag (older app): try it.
+                if let Ok(makers) = args.Advertisement().and_then(|a| a.ManufacturerData()) {
+                    for maker in makers {
+                        if maker.CompanyId()? != 0xFFFF {
+                            continue;
+                        }
+                        let buffer = maker.Data()?;
+                        let reader = DataReader::FromBuffer(&buffer)?;
+                        let mut tag = vec![0u8; buffer.Length()? as usize];
+                        reader.ReadBytes(&mut tag)?;
+                        let ours = crate::protocol::hmac_hex(&secret, "bridge-advertise");
+                        if tag.len() >= 4 && hex::encode(&tag[..4]) != ours[..8] {
+                            return Ok(());
+                        }
+                    }
+                }
                 // One at a time: stop scanning while we try this one.
                 let _ = w.Stop();
                 let address = args.BluetoothAddress()?;

@@ -131,6 +131,13 @@ class TunnelService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Access granted doesn't mean Android is running our listener: after
+        // a reinstall MIUI leaves it switched on but unbound, and no
+        // notifications arrive. Asking for a rebind is harmless if it's running.
+        if (NotificationRelay.hasAccess(this)) runCatching {
+            android.service.notification.NotificationListenerService.requestRebind(
+                android.content.ComponentName(this, NotificationService::class.java))
+        }
         if (intent?.action == ACTION_END_SESSIONS) {
             Thread { TunnelState.log("Stop mirroring: ${DaemonManager.endSessions()}") }.start()
             return START_STICKY

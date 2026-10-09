@@ -377,6 +377,13 @@ final class BridgeController: ObservableObject {
                                 "android.permission.WRITE_SECURE_SETTINGS"], timeout: 15)
             }
             if !grant.ok { appendLog(grant.output, source: "adb") }
+            // Xiaomi (MIUI/HyperOS) refuses this unless a second switch is on;
+            // without it the phone can't restart its helper, so mirroring
+            // would fail later with nothing to say why. Stop and say so now.
+            if grant.output.contains("GRANT_RUNTIME_PERMISSIONS") {
+                fail("This phone blocks the last setup step. In Developer options, turn on \"USB debugging (Security settings)\" (Xiaomi asks for a SIM and a Mi account), then Set up over USB again.")
+                return
+            }
 
             // Get adbd to trust the phone app's own ADB key. Every later
             // helper restart goes through wireless debugging with that key,
@@ -624,7 +631,12 @@ final class BridgeController: ObservableObject {
             let window = SessionWindow()
             let session = Session(port: port, player: window.player)
             window.session = session
-            session.onLog = { [weak self] line in self?.appendLog(line, source: "video") }
+            // Session logs from its reader threads. The log is @Published, and
+            // changing it off the main thread deadlocked SwiftUI against the
+            // main thread (the app froze as mirroring started), so hop first.
+            session.onLog = { [weak self] line in
+                DispatchQueue.main.async { self?.appendLog(line, source: "video") }
+            }
             session.onSize = { [weak window] w, h in window?.apply(videoWidth: w, videoHeight: h) }
             session.onClipboard = { [weak self] text in self?.phoneClipboardChanged(text) }
             session.onEnd = { [weak self] message in
@@ -919,13 +931,32 @@ final class BridgeController: ObservableObject {
         onNotification: { [weak self] line in Task { @MainActor in self?.showPhoneNotification(line) } },
         onClipboard: { [weak self] text in Task { @MainActor in self?.phoneClipboardChanged(text) } })
 
+    /// The ticket and secret the Bluetooth link was started for.
+    private var linkCredentials = ""
+
     func updateBluetooth() {
         guard useBluetooth, isPaired else {
             bluetoothLink.stop()
             bluetoothLinked = false
             bluetoothState = .searching     // not "off": simply not started yet
+            linkCredentials = ""
             return
         }
+        // Set Up Over USB with a different phone (or a pasted ticket for one):
+        // the link was still running for the old phone, and start() on a
+        // running link does nothing, so the Mac stayed on the old phone and
+        // never even asked the new one to pair. Start over for the new one.
+        let credentials = ticket + " " + pairSecret
+        if !linkCredentials.isEmpty, linkCredentials != credentials {
+            appendLog("New phone paired; dropping the link to the previous one", source: "bluetooth")
+            bluetoothLink.stop()
+            bluetoothLinked = false
+            phoneTunnelOn = false; phoneDaemonAlive = false
+            media = [:]; mediaArt = nil
+            phoneBattery = nil; phoneModel = ""; phoneMode = ""; phoneNetwork = ""
+            iconsRequested.removeAll()
+        }
+        linkCredentials = credentials
         bluetoothLink.onStateChange = { [weak self] state in
             Task { @MainActor in
                 guard let self = self else { return }

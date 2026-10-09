@@ -235,7 +235,13 @@ class BleLink(private val context: Context) {
             @Suppress("DEPRECATION")
             val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
             val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
-            if (state == BluetoothDevice.BOND_BONDING && !paramGatts.containsKey(device)) {
+            // Only a device linked to Bridge: other gadgets pairing with the
+            // phone (earbuds) are none of our business, and pinning their
+            // link got in the way of their own pairing.
+            val ours = runCatching {
+                ctx.getSystemService(BluetoothManager::class.java).getConnectedDevices(BluetoothProfile.GATT_SERVER).contains(device)
+            }.getOrDefault(false)
+            if (state == BluetoothDevice.BOND_BONDING && ours && !paramGatts.containsKey(device)) {
                 TunnelState.log("Bluetooth: ${device.name ?: "a Mac"} is pairing; keeping the link stable")
                 pinConnectionParameters(device)
             }
@@ -630,14 +636,44 @@ class BleLink(private val context: Context) {
                 if (descriptor.uuid == CCCD) {
                     val on = value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                     val plain = descriptor.characteristic.uuid == TX_PLAIN
+                    subscribe(device, requestId, responseNeeded, on, plain, 0)
+                    return
+                }
+                if (responseNeeded) {
+                    server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                }
+            }
+
+            /** A computer subscribing (or unsubscribing) to notifications. */
+            @SuppressLint("MissingPermission")
+            private fun subscribe(device: BluetoothDevice, requestId: Int, responseNeeded: Boolean,
+                                  on: Boolean, plain: Boolean, waited: Long) {
+                run {
+                    // Pairing has just finished but Android hasn't said so yet:
+                    // its bond state lags the radio by seconds (6 s on a Xiaomi),
+                    // and a Mac subscribes the instant the link is encrypted. If
+                    // we refused now, macOS would start pairing all over again
+                    // (a second prompt, and often a failed one). So hold the
+                    // answer a moment, until Android catches up.
+                    if (on && !plain && device.bondState == BluetoothDevice.BOND_BONDING && waited < 12_000) {
+                        main.postDelayed({ subscribe(device, requestId, responseNeeded, on, plain, waited + 250) }, 250)
+                        return
+                    }
                     // Through the bonded door the stack enforces encryption; the
                     // bond is checked here as well, because an encrypted-but-
                     // unbonded link is possible with some pairing modes. The
                     // plain door needs no bond: the handshake and AES-GCM do it.
                     if (on && !plain && device.bondState != BluetoothDevice.BOND_BONDED) {
-                        TunnelState.log("Bluetooth: refused an unpaired device")
+                        // Refuse with "insufficient encryption", which is what Android
+                        // itself answers on a Pixel: macOS then pairs the simple way
+                        // (only the phone asks). "Insufficient authentication" asks
+                        // for the stronger, man-in-the-middle-proof pairing instead:
+                        // number comparison, which needs a confirmation on the Mac
+                        // that macOS never shows, so pairing failed on phones whose
+                        // stack lets this request through to us (Xiaomi, Android 12).
+                        TunnelState.log("Bluetooth: an unpaired Mac tried to subscribe; asking it to pair")
                         if (responseNeeded) server?.sendResponse(device, requestId,
-                            BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION, 0, null)
+                            BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION, 0, null)
                         return
                     }
                     if (responseNeeded) {
@@ -669,10 +705,6 @@ class BleLink(private val context: Context) {
                     val nonce = Pairing.nonce()
                     peer.pendingNonce = nonce
                     sendTo(peer, TYPE_AUTH, "challenge $nonce")
-                    return
-                }
-                if (responseNeeded) {
-                    server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                 }
             }
 
@@ -873,9 +905,16 @@ class BleLink(private val context: Context) {
             .build()
         // The name would push us past the 31-byte limit next to a 128-bit UUID,
         // so it goes in the scan response instead.
+        // Plus a 4-byte tag from the pairing secret, so a computer paired with
+        // another phone can tell this one isn't its own without connecting.
+        // Without it, with two Bridge phones nearby, a Mac kept dialling
+        // whichever it heard first, failed the handshake, and dialled it
+        // again. Reveals nothing: it's a keyed hash, and the service UUID
+        // already marks the phone as running Bridge.
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addServiceUuid(ParcelUuid(SERVICE))
+            .addManufacturerData(0xFFFF, Pairing.advertTag(Prefs.pairSecret(context)))
             .build()
         val scanResponse = AdvertiseData.Builder().setIncludeDeviceName(true).build()
         val callback = object : AdvertiseCallback() {

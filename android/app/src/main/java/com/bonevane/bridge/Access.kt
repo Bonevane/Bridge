@@ -21,6 +21,8 @@ data class Access(
     val intent: Intent?,
     /** True when a runtime permission prompt is the right way to ask. */
     val runtimePermissions: List<String> = emptyList(),
+    /** Where to go instead if [intent]'s screen doesn't exist on this phone. */
+    val fallback: Intent? = null,
 ) {
     companion object {
 
@@ -29,6 +31,7 @@ data class Access(
             notificationAccess(ctx),
             bluetooth(ctx),
             battery(ctx),
+            xiaomiAutostart(ctx),
             secureSettings(ctx),
             developerOptions(ctx),
         )
@@ -85,10 +88,47 @@ data class Access(
          */
         private fun secureSettings(ctx: Context) = Access(
             name = "Change developer settings",
-            why = "Set Up Over USB grants this; you can't tap it. Lets Bridge switch USB debugging on for a session and off afterwards.",
+            why = "Set Up Over USB grants this; you can't tap it. Lets Bridge switch USB debugging on for a session and off afterwards." +
+                if (isXiaomi()) " On Xiaomi, first turn on Developer options → USB debugging (Security settings) " +
+                    "(Xiaomi asks for a SIM and a Mi account), or the grant is refused." else "",
             granted = AdbToggle.isGranted(ctx),
             intent = null,
         )
+
+        /** Xiaomi, Redmi and POCO all run MIUI/HyperOS and report Xiaomi here. */
+        fun isXiaomi(): Boolean =
+            listOf(Build.MANUFACTURER, Build.BRAND).any { it.equals("xiaomi", true) || it.equals("redmi", true) || it.equals("poco", true) }
+
+        /**
+         * MIUI's own switch, on top of Android's: with Autostart off it refuses
+         * to start an app's background parts, including the notification
+         * listener Android itself has to launch. Notification access then looks
+         * granted and nothing arrives ("AutoStartManagerService: Reject service").
+         */
+        private fun xiaomiAutostart(ctx: Context): Access? {
+            if (!isXiaomi()) return null
+            return Access(
+                name = "Autostart (Xiaomi)",
+                why = "Xiaomi phones won't let Bridge run in the background without it, so notifications never reach the " +
+                    "computer. Turn on Autostart for Bridge. In Battery saver, set Bridge to No restrictions as well.",
+                granted = miuiAutostartAllowed(ctx),
+                intent = Intent().setClassName("com.miui.securitycenter",
+                    "com.miui.permcenter.autostart.AutoStartManagementActivity"),
+                fallback = appDetails(ctx),
+            )
+        }
+
+        /**
+         * MIUI keeps Autostart as a private app-op (10008) that no public API
+         * reads. Asked by reflection; if MIUI ever hides that, we can't tell,
+         * so it shows as not done and the user can check.
+         */
+        private fun miuiAutostartAllowed(ctx: Context): Boolean = runCatching {
+            val ops = ctx.getSystemService(android.app.AppOpsManager::class.java)
+            val check = android.app.AppOpsManager::class.java.getMethod(
+                "checkOpNoThrow", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, String::class.java)
+            check.invoke(ops, 10008, android.os.Process.myUid(), ctx.packageName) == android.app.AppOpsManager.MODE_ALLOWED
+        }.getOrDefault(false)
 
         private fun developerOptions(ctx: Context) = Access(
             name = "USB debugging",

@@ -121,6 +121,12 @@ class MainActivity : ComponentActivity() {
         // Bluetooth permission may have just been granted, here or in system
         // settings. Starting again is harmless if the link is already up.
         TunnelService.current?.ble?.let { runCatching { it.start() } }
+        // Back from Xiaomi's Autostart screen, say: MIUI refused the listener
+        // while Autostart was off and won't try again by itself.
+        if (NotificationRelay.hasAccess(this)) runCatching {
+            android.service.notification.NotificationListenerService.requestRebind(
+                android.content.ComponentName(this, NotificationService::class.java))
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -187,6 +193,7 @@ class MainActivity : ComponentActivity() {
         }
         item.intent?.let { intent ->
             runCatching { startActivity(intent) }
+                .recoverCatching { startActivity(item.fallback ?: throw it) }
                 .onFailure { Toast.makeText(this, "Couldn't open that screen", Toast.LENGTH_SHORT).show() }
         }
     }

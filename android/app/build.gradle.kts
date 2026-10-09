@@ -26,8 +26,8 @@ android {
         applicationId = "com.bonevane.bridge"
         minSdk = 30
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.3.1"
         // The bundled dumbpipe binary is arm64 only (every modern phone, including your Pixel).
         ndk { abiFilters += "arm64-v8a" }
     }

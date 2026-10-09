@@ -759,7 +759,15 @@ class BleLink(private val context: Context) {
                     TunnelState.log("Mac turned the tunnel off over Bluetooth")
                     TunnelService.setTunnel(context, false, remember = false)
                 }
-                "status" -> sendStatus()        // the Mac's refresh button
+                "status" -> sendStatus()        // probes, and "what's your state?"
+                // The refresh button: everything again, Now Playing and its cover included.
+                "sync" -> {
+                    sendStatus()
+                    val (media, art) = MediaRelay.snapshot()
+                    art?.let { sendTo(peer, TYPE_ART, it) }
+                    sendTo(peer, TYPE_MEDIA, media)
+                    TunnelState.log("Bluetooth: resynced the ${peer.label}")
+                }
                 "session over" -> {
                     // The Mac finished mirroring. Same as the tunnel's STOP, but
                     // over Bluetooth, which still works when the tunnel is the

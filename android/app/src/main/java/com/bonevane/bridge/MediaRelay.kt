@@ -132,9 +132,20 @@ object MediaRelay {
         // Position alone moving on is not news: the computer extrapolates.
         if (line.substringBefore("\tpos=") == lastLine.substringBefore("\tpos=") &&
             line.contains("state=playing") == lastLine.contains("state=playing") &&
-            kotlin.math.abs(posOf(line) - expectedPos(lastLine)) < 2_000) return
+            kotlin.math.abs(posOf(line) - expectedPos(lastLine)) < 2_000) {
+            // Nothing new to say about the track, but its cover may just have
+            // arrived (players often add it a moment after the title). Send
+            // the cover on its own; the computers attach it to the song on
+            // screen. Without this it waited for the next button press.
+            pendingArt?.let { art -> pendingArt = null; artListeners.forEach { runCatching { it(art) } } }
+            return
+        }
         lastLine = line
         listeners.forEach { runCatching { it(line) } }
+        // The cover goes *after* the line: it's ~20 Bluetooth packets, and
+        // queued first it held the new title and state back until it had all
+        // crawled across, which is why a skip felt slow to show.
+        pendingArt?.let { art -> pendingArt = null; artListeners.forEach { runCatching { it(art) } } }
     }
 
     private fun field(line: String, key: String) =
@@ -150,7 +161,14 @@ object MediaRelay {
         return pos + (System.currentTimeMillis() - at)
     }
 
-    /** Album art, small (128 px JPEG, a few KB), once per track. Returns its key. */
+    /** A new cover, ready to go out once the line describing its track has. */
+    private var pendingArt: String? = null
+
+    /**
+     * Album art, small (96 px JPEG at 70%, about 3 KB: it's shown at 48–56
+     * px, and every KB is several Bluetooth packets), once per track.
+     * Returns its key; the image itself is sent after the line (see publish).
+     */
     private fun sendArtIfNew(meta: MediaMetadata, title: String, artist: String, album: String): String? {
         val bitmap = meta.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: meta.getBitmap(MediaMetadata.METADATA_KEY_ART)
@@ -159,13 +177,13 @@ object MediaRelay {
         val key = Integer.toHexString("$title|$artist|$album".hashCode())
         if (key == lastArtKey) return key
         val jpeg = runCatching {
-            val scaled = Bitmap.createScaledBitmap(bitmap, 128, 128 * bitmap.height / bitmap.width.coerceAtLeast(1), true)
-            java.io.ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray()
+            val scaled = Bitmap.createScaledBitmap(bitmap, 96, 96 * bitmap.height / bitmap.width.coerceAtLeast(1), true)
+            java.io.ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 70, it) }.toByteArray()
         }.getOrNull() ?: return null
         lastArtKey = key
         val message = key + "\t" + android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
         lastArt = message
-        artListeners.forEach { runCatching { it(message) } }
+        pendingArt = message
         return key
     }
 

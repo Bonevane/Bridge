@@ -774,17 +774,24 @@ final class BridgeController: ObservableObject {
     }
 
     /// Menu action: look for the phone again, and re-read what it says it can do.
+    /// Spins the refresh icon while a refresh is under way.
+    @Published var refreshing = false
+
+    /// The refresh button: a fresh connection to the phone. The link can look
+    /// "linked" here long after it has actually died, so this always drops
+    /// it and connects again; the phone then sends status, Now Playing and
+    /// the cover anew, as it does on every new link.
     func refreshBluetooth() {
         guard useBluetooth else {
             notice = "Bluetooth is switched off in Settings."
             return
         }
-        if bluetoothLinked {
-            bluetoothLink.requestStatus()   // a resync without dropping the link
-        } else {
-            bluetoothLink.rescan()
-        }
+        refreshing = true
+        bluetoothLinked = false
+        bluetoothLink.rescan()
+        appendLog("Refreshing: reconnecting to the phone", source: "bluetooth")
         refreshPhoneStatus()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.refreshing = false }
     }
 
     /// Menu action: switch the phone's tunnel on or off from here.
@@ -950,7 +957,12 @@ final class BridgeController: ObservableObject {
                 guard let self = self, let image = NSImage(data: jpeg) else { return }
                 if self.artByKey.count > 30 { self.artByKey.removeAll() }
                 self.artByKey[key] = image
-                if self.media["art"] == key { self.mediaArt = image }
+                // Its own song, or the song on screen that came without a cover
+                // (the phone sends a late cover by itself).
+                if self.media["art"] == key || (!self.media.isEmpty && (self.media["art"] ?? "").isEmpty) {
+                    self.media["art"] = key
+                    self.mediaArt = image
+                }
             }
         }
         bluetoothLink.onIcon = { [weak self] package, png in
@@ -1068,6 +1080,22 @@ final class BridgeController: ObservableObject {
         }
         bluetoothLink.media(command)
         appendLog("Media: \(command)", source: "bluetooth")
+        // React now instead of waiting a round trip for the phone to confirm;
+        // its next update puts things right if the player did something else.
+        let now = Date()
+        let pos = (Double(media["pos"] ?? "") ?? 0) +
+            (media["state"] == "playing" ? now.timeIntervalSince(mediaReceivedAt) * 1000 : 0)
+        switch command {
+        case "toggle":
+            media["state"] = media["state"] == "playing" ? "paused" : "playing"
+            media["pos"] = String(Int(pos)); mediaReceivedAt = now
+        case "next", "prev":
+            media["pos"] = "0"; mediaReceivedAt = now
+        default:
+            if command.hasPrefix("seek "), let ms = Int(command.dropFirst(5)) {
+                media["pos"] = String(ms); mediaReceivedAt = now
+            }
+        }
     }
 
     private lazy var notificationBridge = NotificationBridge(

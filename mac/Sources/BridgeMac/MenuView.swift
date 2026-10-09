@@ -47,9 +47,12 @@ struct MenuView: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(bridge.refreshing ? 360 : 0))
+                        .animation(bridge.refreshing ? .linear(duration: 0.6).repeatForever(autoreverses: false) : .default,
+                                   value: bridge.refreshing)
                 }
                 .buttonStyle(.plain)
-                .help("Look for the phone again")
+                .hoverHint("Reconnect to the phone")
             }
         }
         .frame(maxWidth: .infinity)

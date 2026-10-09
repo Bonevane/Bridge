@@ -57,6 +57,7 @@ export global AppState {
 
     callback primary();
     callback refresh();
+    in-out property <bool> refreshing: false;
     callback pause-phone();
     callback toggle-phone-tunnel();
     callback set-up-over-usb();
@@ -281,7 +282,11 @@ export component MainWindow inherits Window {
                 width: 28px;
                 border-radius: 14px;
                 background: rf.has-hover ? Theme.surface-high : transparent;
-                Icon { source: @image-url("icons/refresh-cw.svg"); width: 18px; height: 18px; x: 5px; y: 5px; }
+                Icon {
+                    source: @image-url("icons/refresh-cw.svg"); width: 18px; height: 18px; x: 5px; y: 5px;
+                    transform-rotation: AppState.refreshing ? 360deg : 0deg;
+                    animate transform-rotation { duration: AppState.refreshing ? 900ms : 0ms; }
+                }
                 rf := TouchArea { clicked => { AppState.refresh(); } }
             }
         }

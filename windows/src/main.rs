@@ -1184,6 +1184,10 @@ impl App {
                             let keep = self.media.get("art").cloned().unwrap_or_default();
                             self.art.retain(|k, _| *k == keep);
                         }
+                        // A late cover for the song on screen comes by itself; attach it.
+                        if self.media.get("art").map(|a| a.is_empty()).unwrap_or(false) {
+                            self.media.insert("art".into(), key.clone());
+                        }
                         self.art.insert(key, slint::Image::from_rgba8(buf));
                         self.show_media();
                     }
@@ -1538,13 +1542,23 @@ fn main() {
             }
         });
         let a = app.clone();
+        // Refresh. Linked: the phone resends everything (status, battery,
+        // mode, Now Playing and its cover). Not linked: any half-made
+        // connection is dropped and the search starts over. The icon spins.
+        let a2 = app.clone();
         ui.on_refresh(move || {
-            let mut app = a.borrow_mut();
-            if app.linked {
-                if let Some(b) = &app.ble { let _ = b.send_command("status"); }
-            } else {
-                app.rescan();
-            }
+            let mut app = a2.borrow_mut();
+            app.window.global::<AppState>().set_refreshing(true);
+            // Always a fresh connection: the link can look linked long after
+            // it has died. The phone resends everything on the new link.
+            if let Some(mut b) = app.ble.take() { b.stop(); }
+            app.linked = false;
+            app.log("bluetooth", "refreshing: reconnecting to the phone");
+            app.start_bluetooth();
+            let w = app.window.as_weak();
+            Timer::single_shot(Duration::from_millis(1200), move || {
+                if let Some(w) = w.upgrade() { w.global::<AppState>().set_refreshing(false); }
+            });
         });
         let a = app.clone();
         ui.on_pause_phone(move || a.borrow_mut().pause_phone());
@@ -1564,15 +1578,49 @@ fn main() {
                     let _ = b.send_command(&format!("media {cmd}"));
                     crate::log!("media", "{cmd}");
                 }
-                _ => crate::log!("media", "{cmd} not sent, the phone isn't linked over Bluetooth"),
+                _ => {
+                    crate::log!("media", "{cmd} not sent, the phone isn't linked over Bluetooth");
+                    return;
+                }
             }
+            drop(app);
+            // React now instead of waiting a round trip for the phone to
+            // confirm; its next update puts things right.
+            let mut app = a.borrow_mut();
+            let playing = app.media.get("state").map(String::as_str) == Some("playing");
+            let pos = app.media.get("pos").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0)
+                + if playing { app.media_received.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+            match cmd.as_str() {
+                "toggle" => {
+                    app.media.insert("state".into(), if playing { "paused" } else { "playing" }.into());
+                    app.media.insert("pos".into(), (pos as i64).to_string());
+                    app.media_received = Instant::now();
+                }
+                "next" | "prev" => {
+                    app.media.insert("pos".into(), "0".into());
+                    app.media_received = Instant::now();
+                }
+                _ => {}
+            }
+            app.show_media();
         });
         let a = app.clone();
         ui.on_seek(move |fraction| {
             let app = a.borrow();
             let dur = app.media.get("dur").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let mut sent = None;
             if let (Some(b), true) = (&app.ble, dur > 0.0) {
-                let _ = b.send_command(&format!("media seek {}", (dur * fraction as f64) as i64));
+                let ms = (dur * fraction as f64) as i64;
+                let _ = b.send_command(&format!("media seek {ms}"));
+                sent = Some(ms);
+            }
+            drop(app);
+            if let Some(ms) = sent {
+                // Move the bar now; the phone's next update confirms it.
+                let mut app = a.borrow_mut();
+                app.media.insert("pos".into(), ms.to_string());
+                app.media_received = Instant::now();
+                app.show_media();
             }
         });
         let sw = settings_window.as_weak();

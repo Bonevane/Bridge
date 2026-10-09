@@ -215,6 +215,11 @@ final class BluetoothLink: NSObject {
         send(type: Self.typeCommand, text: "icon \(package)")
     }
 
+    /// The refresh button: the phone resends its status, Now Playing and cover.
+    func sync() {
+        send(type: Self.typeCommand, text: "sync")
+    }
+
     /// Tells the phone this computer's name, for its Computers list and chips.
     func hello(name: String) {
         send(type: Self.typeCommand, text: "hello mac \(name)")

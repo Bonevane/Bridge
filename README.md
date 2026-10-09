@@ -111,12 +111,12 @@ Jetpack Compose on the phone, SwiftUI on the Mac, Rust and Slint on Windows, and
 
 ### Install a release
 
-1. **Phone:** download `app-release.apk` from [Releases](https://github.com/Bonevane/Bridge/releases) and open it (allow installs from your browser when asked). Requires Android 11+ and an arm64 phone, i.e. anything from the last several years.
+1. **Phone:** download `Bridge-<version>.apk` from [Releases](https://github.com/Bonevane/Bridge/releases) and open it (allow installs from your browser when asked). Requires Android 11+ and an arm64 phone, i.e. anything from the last several years.
 2. **Mac:** download `Bridge-<version>.dmg`, open it and drag Bridge onto Applications. Everything it needs is inside the bundle.
    **Windows:** download `Bridge-<version>-windows.zip` and unzip it anywhere. Keep the five files together.
 3. **Pair, once:** on the phone after allowing all permissions, enable Developer options → USB debugging. Plug in, click **Set Up Over USB** (Bridge's menu on the Mac; Actions or Settings → Pairing on Windows), accept "Allow USB debugging" on the phone with *Always allow*. Unplug. **Mirror Phone.** The first time on each Wi-Fi network Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
 
-macOS will ask for Bluetooth and Notifications the first time; both are needed for the short-range link. On the Mac, Bluetooth pairs the phone in the usual way; Windows needs no Bluetooth pairing at all. A Mac and a PC can both be linked to the phone at the same time.
+macOS will ask for Bluetooth and Notifications the first time; both are needed for the short-range link. On the Mac, Bluetooth pairs the phone in the usual way. Windows needs no Bluetooth pairing at all, and **don't pair the phone in Windows' Bluetooth settings**: it stops Bridge's link working (Bridge spots it and offers to unpair). A Mac and a PC can both be linked to the phone at the same time.
 
 You can turn Developer options off again after setup. Bridge switches USB debugging itself, but **do it on Wi-Fi**: it also turns USB debugging off, and Bridge can only restart its helper through wireless debugging, which Android offers on Wi-Fi only. Once the helper is back (a few seconds), cellular works again. Do it on LTE and you're stuck until the phone next sees Wi-Fi (or you reconnect via a cable).
 
@@ -147,7 +147,7 @@ Put `dumbpipe.exe` and platform-tools' `adb.exe`, `AdbWinApi.dll` and `AdbWinUsb
 
 Then pair as in step 3 above.
 
-Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N notifications · ⌘P power · ⌘O screen off · right-click back (Ctrl instead of ⌘ on Windows).
+The phone window has a bar beside the picture for Back, Home, Recents, volume, rotate, screenshot, notifications, phone files and screen off. Shortcuts: ⌘B back · ⌘H home · ⌘R recents · ⌘N notifications · ⌘P power · ⌘O screen off · right-click back (Ctrl instead of ⌘ on Windows). Drop files on the window to send them to the phone's Download folder.
 
 <br>
 
@@ -167,6 +167,12 @@ Shortcuts in the phone window: ⌘B back · ⌘H home · ⌘R recents · ⌘N no
 - [x] **Native interfaces:** Material 3 Expressive on the phone, a proper menu and Settings window on the Mac, Material 3 on Windows
 - [x] **Windows client:** the same features in Rust; a Mac and a PC can be linked at once
 - [x] **Notification icons:** the phone's app icons on Mac and Windows notifications
+- [x] **Reply from notifications** on the computer, and clearing a notification on one side clears it on the other
+- [x] **Now Playing:** what the phone is playing, with its cover, a seek bar and controls, on the computer
+- [x] **Phone status:** battery, network and mode at a glance
+- [x] **Phone files:** browse the phone's storage and download from it, with search, no mirroring needed; transfers show progress
+- [ ] **Internet notifications and clipboard on Windows** (the Mac has them)
+- [ ] **Images on the clipboard and Share to Bridge** from the phone
 - [ ] **Auto-pause** when a listed app comes to the foreground
 - [ ] **Files over Bluetooth** as well as the tunnel
 - [ ] **Device pairing:** approve new computers on the phone instead of a bearer ticket

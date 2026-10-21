@@ -144,7 +144,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         panel.contentView = hosting
         panel.isOpaque = false
         panel.backgroundColor = .clear          // the view draws its own shape
-        panel.hasShadow = true
+        // No window shadow: the window is transparent, so macOS built the
+        // shadow from the content and it showed through the glass as a second,
+        // blurry layer (which vanished whenever a hover label redrew the
+        // panel). Liquid Glass draws its own edge and depth.
+        panel.hasShadow = false
         panel.level = .statusBar
         panel.hidesOnDeactivate = false
         panel.isMovable = false

@@ -4,7 +4,7 @@
 #   VERSION=0.1.0 SIGN_ID="Bridge Dev" ./release.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="${VERSION:-0.3.2}"
+VERSION="${VERSION:-0.3.3}"
 # Releases are signed with the "Bridge Dev" certificate whenever it's in the
 # keychain. Ad-hoc signatures differ on every build, so macOS treated each
 # update as a new app: Keychain prompts for the pairing, Bluetooth asked

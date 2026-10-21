@@ -10,6 +10,22 @@ export struct Capability {
     state: int,   // 0 off · 1 limited · 2 working
 }
 
+// One button of an update block: what it says, what it asks for, and
+// whether it's the main one (filled) or not (tonal).
+export struct UpdateButton {
+    label: string,
+    action: string,
+    filled: bool,
+}
+
+// One problem the phone reports, worded by the PC (see maintenance.rs).
+export struct HealthItem {
+    title: string,
+    detail: string,
+    error: bool,
+    action: string,   // "usb", "renew" or "" (fixed on the phone)
+}
+
 export global AppState {
     in-out property <string> reach-title: "Pair your phone first";
     in-out property <string> reach-detail: "";
@@ -55,6 +71,19 @@ export global AppState {
     in-out property <string> log-text: "";
     in-out property <string> version: "";
 
+    // The phone's worst problem, under the hero (see maintenance.rs).
+    in-out property <bool> attention-visible: false;
+    in-out property <string> attention-title;
+    in-out property <string> attention-detail;
+    in-out property <bool> attention-error;
+    in-out property <string> attention-action;   // "usb", "renew" or ""
+    in-out property <int> attention-more;
+    callback attention-fix();
+    // Update rows at the top of Actions ("" hides them).
+    in-out property <string> update-row;
+    in-out property <string> phone-update-row;
+    callback open-settings-tab(int);
+
     callback primary();
     callback refresh();
     in-out property <bool> refreshing: false;
@@ -87,6 +116,34 @@ export global SettingsState {
     in-out property <string> pasted-status: "";
     in-out property <string> usb-status: "";
     in-out property <bool> usb-busy: false;
+
+    // Which tab is showing (the update rows open Updates directly).
+    in-out property <int> tab: 0;
+
+    // Updates: this PC's, and the phone app's (see maintenance.rs).
+    // progress: 0..1 shows a bar, -1 hides it, -2 shows "working".
+    in-out property <bool> auto-update: true;
+    in-out property <string> last-checked;
+    in-out property <string> upd-title;
+    in-out property <string> upd-detail;
+    in-out property <string> upd-notes;
+    in-out property <float> upd-progress: -1;
+    in-out property <[UpdateButton]> upd-buttons;
+    in-out property <string> phone-upd-title;
+    in-out property <string> phone-upd-detail;
+    in-out property <float> phone-upd-progress: -1;
+    in-out property <[UpdateButton]> phone-upd-buttons;
+    callback upd-action(string);
+    callback phone-upd-action(string);
+    callback auto-update-changed(bool);
+
+    // The phone's health.
+    in-out property <bool> health-linked;
+    in-out property <[HealthItem]> health;
+    in-out property <string> key-status;
+    in-out property <bool> key-ok: true;
+    callback health-action(string);
+    callback renew-key();
 
     callback changed();
     callback copy-ticket();
@@ -324,6 +381,39 @@ export component MainWindow inherits Window {
             }
         }
 
+        // The phone's worst problem, with the one thing that fixes it.
+        if AppState.attention-visible : Card {
+            fill: AppState.attention-error ? Theme.bad-container : Theme.warn-container;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: start;
+                        Icon { source: @image-url("icons/warning.svg"); tint: AppState.attention-error ? Theme.bad : Theme.warn; width: 20px; height: 20px; }
+                    }
+                    Label { text: AppState.attention-title; font-size: 14px; font-weight: 700; wrap: word-wrap; horizontal-stretch: 1; }
+                }
+                Muted { text: AppState.attention-detail; color: Theme.on-surface; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    if AppState.attention-action == "usb" : PillButton {
+                        text: "Set up over USB"; icon: @image-url("icons/usb.svg");
+                        enabled: !AppState.busy && !AppState.mirroring;
+                        clicked => { AppState.attention-fix(); }
+                    }
+                    if AppState.attention-action == "renew" : PillButton { text: "Renew now"; clicked => { AppState.attention-fix(); } }
+                    if AppState.attention-more > 0 : PillButton {
+                        text: AppState.attention-more == 1 ? "1 more" : AppState.attention-more + " more";
+                        kind: "outlined";
+                        clicked => { AppState.open-settings-tab(1); }
+                    }
+                }
+            }
+        }
+
         if AppState.media-visible : NowPlaying {}
 
         // What works right now.
@@ -339,6 +429,20 @@ export component MainWindow inherits Window {
         // Actions.
         SectionTitle { text: "Actions"; }
         Card {
+            if AppState.update-row != "" : Tile {
+                icon: @image-url("icons/download.svg"); title: AppState.update-row; subtitle: "Opens Settings › Updates";
+                clickable: true;
+                clicked => { AppState.open-settings-tab(4); }
+                Icon { source: @image-url("icons/chevron-right.svg"); }
+            }
+            if AppState.update-row != "" : Divider {}
+            if AppState.phone-update-row != "" : Tile {
+                icon: @image-url("icons/smartphone.svg"); title: AppState.phone-update-row; subtitle: "Opens Settings › Updates";
+                clickable: true;
+                clicked => { AppState.open-settings-tab(4); }
+                Icon { source: @image-url("icons/chevron-right.svg"); }
+            }
+            if AppState.phone-update-row != "" : Divider {}
             Tile {
                 icon: @image-url("icons/pause-circle.svg"); title: "Pause phone for banking"; subtitle: "USB debugging off for 15 minutes";
                 clickable: true; enabled: AppState.linked && !AppState.busy;
@@ -435,6 +539,54 @@ component Choice inherits Rectangle {
     }
 }
 
+// An indeterminate progress bar, for "working" with no percentage.
+component BusyBar inherits Rectangle {
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.surface-highest;
+    clip: true;
+    Rectangle {
+        width: parent.width * 0.3;
+        height: parent.height;
+        border-radius: 3px;
+        background: Theme.primary;
+        x: (Math.mod(animation-tick() / 1ms, 1400) / 1400) * parent.width * 1.3 - parent.width * 0.3;
+    }
+}
+
+// One update (this PC's or the phone's): what's happening, its progress,
+// the release notes folded away, and the buttons that apply right now.
+component UpdateBlock inherits VerticalLayout {
+    in property <string> title;
+    in property <string> detail;
+    in property <string> notes;
+    in property <float> progress: -1;
+    in property <[UpdateButton]> buttons;
+    in-out property <bool> show-notes: false;
+    callback action(string);
+    padding: 16px;
+    spacing: 8px;
+    Label { text: root.title; font-size: 14px; font-weight: 600; wrap: word-wrap; }
+    if root.detail != "" : Muted { text: root.detail; }
+    if root.progress >= 0 : LinearProgress { value: root.progress; }
+    if root.progress < -1.5 : BusyBar {}
+    if root.notes != "" : Text {
+        text: root.show-notes ? "Hide what's new" : "What's new";
+        color: Theme.primary; font-family: Theme.font; font-size: 12px;
+        TouchArea { clicked => { root.show-notes = !root.show-notes; } }
+    }
+    if root.notes != "" && root.show-notes : Muted { text: root.notes; }
+    if root.buttons.length > 0 : HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        for b in root.buttons : PillButton {
+            text: b.label;
+            kind: b.filled ? "filled" : "tonal";
+            clicked => { root.action(b.action); }
+        }
+    }
+}
+
 export component SettingsWindow inherits Window {
     title: "Bridge settings";
     preferred-width: 480px;
@@ -444,7 +596,7 @@ export component SettingsWindow inherits Window {
     background: Theme.background;
     default-font-family: Theme.font;
 
-    tabs := Segmented { items: ["General", "Phone", "Mirroring", "Pairing"]; x: 16px; y: 16px; width: root.width - 32px; }
+    tabs := Segmented { items: ["General", "Phone", "Mirroring", "Pairing", "Updates"]; current <=> SettingsState.tab; x: 16px; y: 16px; width: root.width - 32px; }
 
     ScrollView {
         x: 0; y: 72px; width: root.width; height: root.height - 72px;
@@ -481,6 +633,28 @@ export component SettingsWindow inherits Window {
 
             if tabs.current == 1 : VerticalLayout {
                 spacing: 12px;
+                SectionTitle { text: "Health"; }
+                Card {
+                    if !SettingsState.health-linked : Tile {
+                        icon: @image-url("icons/smartphone.svg"); title: "Phone health"; subtitle: "Shown while the phone is nearby";
+                    }
+                    if SettingsState.health-linked && SettingsState.health.length == 0 : Tile {
+                        icon: @image-url("icons/check.svg"); title: "Everything works"; subtitle: "Nothing on the phone needs you";
+                    }
+                    for item in SettingsState.health : VerticalLayout {
+                        Tile {
+                            icon: @image-url("icons/warning.svg"); title: item.title; subtitle: item.detail;
+                            if item.action == "usb" : PillButton { text: "Set up"; height: 34px; clicked => { SettingsState.health-action("usb"); } }
+                            if item.action == "renew" : PillButton { text: "Renew"; height: 34px; clicked => { SettingsState.health-action("renew"); } }
+                        }
+                        Divider {}
+                    }
+                    if SettingsState.health-linked : Tile {
+                        icon: @image-url("icons/key-round.svg"); title: "Debugging permission"; subtitle: SettingsState.key-status;
+                        PillButton { text: "Renew now"; height: 34px; clicked => { SettingsState.renew-key(); } }
+                    }
+                }
+                Muted { text: "Android forgets debugging permissions that go unused for a while (7 days unless changed). The phone renews Bridge's by itself on Wi-Fi it has used before, and Bridge tells you here and in a notification if something needs you."; horizontal-alignment: center; }
                 SectionTitle { text: "Between sessions"; }
                 Card {
                     SettingRow {
@@ -541,6 +715,40 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 PillButton { text: "Unpair"; kind: "outlined"; icon: @image-url("icons/x.svg"); clicked => { SettingsState.unpair(); } }
+            }
+
+            if tabs.current == 4 : VerticalLayout {
+                spacing: 12px;
+                SectionTitle { text: "This PC"; }
+                Card {
+                    UpdateBlock {
+                        title: SettingsState.upd-title; detail: SettingsState.upd-detail; notes: SettingsState.upd-notes;
+                        progress: SettingsState.upd-progress; buttons: SettingsState.upd-buttons;
+                        action(a) => { SettingsState.upd-action(a); }
+                    }
+                    Divider {}
+                    SettingRow {
+                        icon: @image-url("icons/refresh-cw.svg"); title: "Check for updates automatically";
+                        subtitle: "Once a day, from GitHub. Nothing installs until you click.";
+                        checked: SettingsState.auto-update;
+                        toggled => { SettingsState.auto-update-changed(self.checked); }
+                    }
+                    Divider {}
+                    Tile {
+                        icon: @image-url("icons/download.svg"); title: "Check now"; subtitle: SettingsState.last-checked;
+                        PillButton { text: "Check"; height: 34px; clicked => { SettingsState.upd-action("check"); } }
+                    }
+                }
+                Muted { text: "Updates come from Bridge's releases on GitHub. Each download is checked against its published checksum before it's installed, and the previous version is put back if the new one doesn't start."; horizontal-alignment: center; }
+                SectionTitle { text: "Phone app"; }
+                Card {
+                    UpdateBlock {
+                        title: SettingsState.phone-upd-title; detail: SettingsState.phone-upd-detail;
+                        progress: SettingsState.phone-upd-progress; buttons: SettingsState.phone-upd-buttons;
+                        action(a) => { SettingsState.phone-upd-action(a); }
+                    }
+                }
+                Muted { text: "The phone downloads its own update. It installs silently when its helper is running, or asks you to confirm on the phone, and reconnects by itself afterwards."; horizontal-alignment: center; }
             }
         }
     }

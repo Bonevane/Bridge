@@ -4,8 +4,20 @@
 #   VERSION=0.1.0 SIGN_ID="Bridge Dev" ./release.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-VERSION="${VERSION:-0.3.1}"
-export VERSION SIGN_ID="${SIGN_ID:--}"
+VERSION="${VERSION:-0.3.2}"
+# Releases are signed with the "Bridge Dev" certificate whenever it's in the
+# keychain. Ad-hoc signatures differ on every build, so macOS treated each
+# update as a new app: Keychain prompts for the pairing, Bluetooth asked
+# again. A fixed certificate (even self-signed) keeps all of that.
+if [ -z "${SIGN_ID:-}" ]; then
+    if security find-identity -p codesigning 2>/dev/null | grep -q '"Bridge Dev"'; then
+        SIGN_ID="Bridge Dev"
+    else
+        echo "warning: no \"Bridge Dev\" certificate; signing ad-hoc (updates will re-prompt for permissions)" >&2
+        SIGN_ID="-"
+    fi
+fi
+export VERSION SIGN_ID
 ./make-app.sh
 codesign --verify --deep --strict build/Bridge.app && echo "signature ok"
 

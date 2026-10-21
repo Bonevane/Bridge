@@ -20,6 +20,13 @@ pub struct Settings {
     pub mute_phone: bool,
     /// Clearing a notification on one side clears it on the other.
     pub sync_dismiss: bool,
+    /// Check GitHub for a new Bridge once a day (see updater.rs).
+    pub update_checks: bool,
+    /// Unix millis: the last check, and "GitHub asked us to wait until".
+    pub update_checked_at: i64,
+    pub update_retry_after: i64,
+    /// The newest version already announced in a notification.
+    pub update_announced: String,
 }
 
 impl Default for Settings {
@@ -39,6 +46,10 @@ impl Default for Settings {
             turn_screen_off: false,
             mute_phone: false,
             sync_dismiss: true,
+            update_checks: true,
+            update_checked_at: 0,
+            update_retry_after: 0,
+            update_announced: String::new(),
         }
     }
 }
@@ -74,6 +85,10 @@ impl Settings {
                 "turn_screen_off" => s.turn_screen_off = b,
                 "mute_phone" => s.mute_phone = b,
                 "sync_dismiss" => s.sync_dismiss = b,
+                "update_checks" => s.update_checks = b,
+                "update_checked_at" => s.update_checked_at = n,
+                "update_retry_after" => s.update_retry_after = n,
+                "update_announced" => s.update_announced = v.trim_matches('"').to_string(),
                 _ => {}
             }
         }
@@ -83,10 +98,12 @@ impl Settings {
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(crate::store::data_dir());
         let text = format!(
-            "{{\n  \"launch_at_login\": {},\n  \"use_bluetooth\": {},\n  \"mirror_notifications\": {},\n  \"notifications_anywhere\": {},\n  \"sync_clipboard\": {},\n  \"background_clipboard\": {},\n  \"keep_ready\": {},\n  \"keep_ready_changed_at\": {},\n  \"max_size\": {},\n  \"bitrate_mbps\": {},\n  \"turn_screen_off\": {},\n  \"mute_phone\": {},\n  \"sync_dismiss\": {}\n}}\n",
+            "{{\n  \"launch_at_login\": {},\n  \"use_bluetooth\": {},\n  \"mirror_notifications\": {},\n  \"notifications_anywhere\": {},\n  \"sync_clipboard\": {},\n  \"background_clipboard\": {},\n  \"keep_ready\": {},\n  \"keep_ready_changed_at\": {},\n  \"max_size\": {},\n  \"bitrate_mbps\": {},\n  \"turn_screen_off\": {},\n  \"mute_phone\": {},\n  \"sync_dismiss\": {},\n  \"update_checks\": {},\n  \"update_checked_at\": {},\n  \"update_retry_after\": {},\n  \"update_announced\": \"{}\"\n}}\n",
             self.launch_at_login, self.use_bluetooth, self.mirror_notifications, self.notifications_anywhere,
             self.sync_clipboard, self.background_clipboard, self.keep_ready, self.keep_ready_changed_at,
-            self.max_size, self.bitrate_mbps, self.turn_screen_off, self.mute_phone, self.sync_dismiss
+            self.max_size, self.bitrate_mbps, self.turn_screen_off, self.mute_phone, self.sync_dismiss,
+            self.update_checks, self.update_checked_at, self.update_retry_after,
+            self.update_announced.replace('"', "")
         );
         let _ = std::fs::write(path(), text);
         apply_launch_at_login(self.launch_at_login);

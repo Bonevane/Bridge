@@ -22,6 +22,13 @@ object DaemonManager {
     /** Liveness only: a listening port is enough, no secret needed to ask. */
     fun isDaemonAlive(): Boolean = portOpen(DAEMON_PORT)
 
+    /** The helper that answers was started from an older install of the app. */
+    fun isStale(ctx: Context): Boolean {
+        val hello = probe(DAEMON_PORT) ?: return false
+        val apk = hello.substringAfter("apk=", "")
+        return apk.isNotEmpty() && apk != ctx.applicationInfo.sourceDir
+    }
+
     private fun portOpen(port: Int): Boolean = runCatching {
         Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) }; true
     }.getOrDefault(false)

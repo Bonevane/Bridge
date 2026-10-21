@@ -44,6 +44,51 @@ object Prefs {
     fun adbKeyAuthorized(ctx: Context): Boolean = prefs(ctx).getBoolean("adbKeyOk", false)
     fun setAdbKeyAuthorized(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("adbKeyOk", on).apply()
 
+    // MARK: keeping Bridge's ADB key alive (see KeyKeeper)
+
+    /** When adbd last accepted Bridge's key (epoch ms); 0 = not known yet. */
+    fun keyUsedAt(ctx: Context): Long = prefs(ctx).getLong("keyUsedAt", 0)
+    /** adbd refused the key outright (CERTIFICATE_UNKNOWN): only Set up over USB fixes it. */
+    fun keyLost(ctx: Context): Boolean = prefs(ctx).getBoolean("keyLost", false)
+    fun setKeyUsed(ctx: Context, at: Long) =
+        prefs(ctx).edit().putLong("keyUsedAt", at).putBoolean("keyLost", false).apply()
+    fun setKeyLost(ctx: Context) = prefs(ctx).edit().putBoolean("keyLost", true).apply()
+
+    /** Wi-Fi networks where wireless debugging has worked, so a renewal never meets the "allow on this network?" prompt. */
+    fun goodNetworks(ctx: Context): Set<String> = prefs(ctx).getStringSet("goodNets", emptySet()) ?: emptySet()
+    fun addGoodNetwork(ctx: Context, net: String) =
+        prefs(ctx).edit().putStringSet("goodNets", (goodNetworks(ctx) + net).toList().takeLast(20).toSet()).apply()
+    fun removeGoodNetwork(ctx: Context, net: String) =
+        prefs(ctx).edit().putStringSet("goodNets", goodNetworks(ctx) - net).apply()
+
+    /** Last time a renewal was tried, so a failing one backs off instead of retrying every minute. */
+    fun keyRenewTriedAt(ctx: Context): Long = prefs(ctx).getLong("keyRenewTriedAt", 0)
+    fun setKeyRenewTriedAt(ctx: Context, at: Long) = prefs(ctx).edit().putLong("keyRenewTriedAt", at).apply()
+    fun keyRenewFailures(ctx: Context): Int = prefs(ctx).getInt("keyRenewFailures", 0)
+    fun setKeyRenewFailures(ctx: Context, n: Int) = prefs(ctx).edit().putInt("keyRenewFailures", n).apply()
+
+    /** The opt-in: Bridge set Android's ADB timeout to "never". What it was before, to put back. */
+    fun keyForever(ctx: Context): Boolean = prefs(ctx).getBoolean("keyForever", false)
+    fun savedConnectionTime(ctx: Context): Long = prefs(ctx).getLong("savedConnTime", 0)
+    fun setKeyForever(ctx: Context, on: Boolean, saved: Long) =
+        prefs(ctx).edit().putBoolean("keyForever", on).putLong("savedConnTime", saved).apply()
+
+    // MARK: updates (see Updater)
+
+    fun updateChecks(ctx: Context): Boolean = prefs(ctx).getBoolean("updateChecks", true)
+    fun setUpdateChecks(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("updateChecks", on).apply()
+    fun updateCheckedAt(ctx: Context): Long = prefs(ctx).getLong("updateCheckedAt", 0)
+    fun setUpdateCheckedAt(ctx: Context, at: Long) = prefs(ctx).edit().putLong("updateCheckedAt", at).apply()
+    /** GitHub said "too many requests": don't ask again before this. */
+    fun updateRetryAfter(ctx: Context): Long = prefs(ctx).getLong("updateRetryAfter", 0)
+    fun setUpdateRetryAfter(ctx: Context, at: Long) = prefs(ctx).edit().putLong("updateRetryAfter", at).apply()
+    /** The newest version already announced in a notification, so each is announced once. */
+    fun updateAnnounced(ctx: Context): String = prefs(ctx).getString("updateAnnounced", "") ?: ""
+    fun setUpdateAnnounced(ctx: Context, v: String) = prefs(ctx).edit().putString("updateAnnounced", v).apply()
+    /** Set just before an update installs: bring the service back afterwards whatever "Start after reboot" says. */
+    fun resumeAfterUpdate(ctx: Context): Boolean = prefs(ctx).getBoolean("resumeAfterUpdate", false)
+    fun setResumeAfterUpdate(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("resumeAfterUpdate", on).commit()
+
     fun resetIdentity(ctx: Context) {
         // A new identity means new keys all round: the old secret went with the old ticket.
         prefs(ctx).edit().remove("secret").remove("ticket").remove("pairSecret").apply()

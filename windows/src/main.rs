@@ -19,6 +19,7 @@ mod ble;
 mod clipboard;
 mod files;
 mod log;
+mod maintenance;
 mod notify;
 mod protocol;
 mod scrcpy;
@@ -27,6 +28,7 @@ mod settings;
 mod store;
 mod tunnel;
 mod twins;
+mod updater;
 mod usb;
 mod video;
 
@@ -121,6 +123,16 @@ struct App {
     error: Option<(String, String, bool)>,
     /// Packages whose icon we've already asked the phone for this link.
     icons_requested: BTreeSet<String>,
+    /// This PC's update (updater.rs): where it is, the pause/cancel switch
+    /// its download thread watches, whether the running check was asked for,
+    /// and the swapped files while the new version starts.
+    update_state: updater::State,
+    update_control: updater::Control,
+    update_manual: bool,
+    update_swap: Option<updater::Swap>,
+    /// Phone problems already notified about (see maintenance.rs).
+    notified_issues: BTreeSet<String>,
+    started_at: Instant,
 }
 
 impl App {
@@ -175,6 +187,12 @@ impl App {
             usb_busy: false,
             error: None,
             icons_requested: BTreeSet::new(),
+            update_state: updater::State::Idle,
+            update_control: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            update_manual: false,
+            update_swap: None,
+            notified_issues: BTreeSet::new(),
+            started_at: Instant::now(),
         }
     }
 
@@ -288,6 +306,7 @@ impl App {
         st.set_mute_phone(self.settings.mute_phone);
         st.set_sync_dismiss(self.settings.sync_dismiss);
         st.set_usb_busy(self.usb_busy);
+        self.refresh_maintenance();
         let t = &self.creds.ticket;
         st.set_ticket_short(if t.is_empty() { "Not paired".into() } else if t.len() > 28 { format!("{}…{}", &t[..14], &t[t.len() - 8..]).into() } else { t.clone().into() });
     }
@@ -1068,6 +1087,7 @@ impl App {
             if let Some(b) = self.ble.as_mut() {
                 b.tick();
             }
+            self.maybe_check_updates();
             if self.linked {
                 self.report_twins(false);
             }
@@ -1378,7 +1398,12 @@ impl App {
                     let at = fields.get("keepAt").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
                     self.reconcile_keep_ready(keep == "1", at);
                 }
+                self.on_phone_status_extra();
+                self.refresh_maintenance();
             }
+            Event::UpdateChecked(c) => self.on_update_checked(c),
+            Event::UpdateState(s) => self.on_update_state(s),
+            Event::UpdateLaunched(r) => self.on_update_launched(r),
             Event::Connected(attempt, result) => {
                 if attempt != self.attempt.load(std::sync::atomic::Ordering::SeqCst) {
                     // Cancelled while connecting. If it got through anyway and
@@ -1531,8 +1556,9 @@ fn single_instance() -> Option<windows::Win32::Foundation::HANDLE> {
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE};
     unsafe {
-        // Never closed: it lives as long as this process, which is the point.
-        let _mutex = CreateMutexW(None, true, w!("Local\\Bridge-Bonevane-instance"));
+        // Held as long as this process, which is the point; released only to
+        // hand over to a new version during an update (see release_instance).
+        let mutex = CreateMutexW(None, true, w!("Local\\Bridge-Bonevane-instance"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
             if !std::env::args().any(|a| a == "--tray") {
                 if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, w!("Local\\Bridge-Bonevane-show")) {
@@ -1541,7 +1567,38 @@ fn single_instance() -> Option<windows::Win32::Foundation::HANDLE> {
             }
             std::process::exit(0);
         }
+        if let Ok(m) = mutex { *INSTANCE.lock().unwrap() = m.0 as isize; }
         CreateEventW(None, false, false, w!("Local\\Bridge-Bonevane-show")).ok()
+    }
+}
+
+/// The single-instance mutex's handle, kept so an update can hand it over.
+static INSTANCE: std::sync::Mutex<isize> = std::sync::Mutex::new(0);
+
+/// Lets go of "the one running Bridge", so the new version can start.
+pub(crate) fn release_instance() {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Threading::ReleaseMutex;
+    let mut h = INSTANCE.lock().unwrap();
+    if *h != 0 {
+        unsafe {
+            let handle = HANDLE(*h as *mut _);
+            let _ = ReleaseMutex(handle);
+            let _ = CloseHandle(handle);
+        }
+        *h = 0;
+    }
+}
+
+/// Takes it back after an update that didn't go ahead.
+pub(crate) fn reacquire_instance() {
+    use windows::core::w;
+    use windows::Win32::System::Threading::CreateMutexW;
+    let mut h = INSTANCE.lock().unwrap();
+    if *h == 0 {
+        if let Ok(m) = unsafe { CreateMutexW(None, true, w!("Local\\Bridge-Bonevane-instance")) } {
+            *h = m.0 as isize;
+        }
     }
 }
 
@@ -1672,6 +1729,24 @@ fn main() {
         });
         let sw = settings_window.as_weak();
         ui.on_open_settings(move || { if let Some(w) = sw.upgrade() { let _ = w.show(); } });
+        // The update rows open Settings on Updates; "N more" opens it on Phone.
+        let sw = settings_window.as_weak();
+        ui.on_open_settings_tab(move |tab| {
+            if let Some(w) = sw.upgrade() {
+                w.global::<SettingsState>().set_tab(tab);
+                let _ = w.show();
+            }
+        });
+        let a = app.clone();
+        ui.on_attention_fix(move || {
+            let mut app = a.borrow_mut();
+            let action = app.window.global::<AppState>().get_attention_action().to_string();
+            match action.as_str() {
+                "usb" => app.set_up_over_usb(),
+                "renew" => app.renew_phone_key(),
+                _ => {}
+            }
+        });
         ui.on_open_log_folder(move || {
             let _ = std::process::Command::new("explorer").arg(store::data_dir()).spawn();
         });
@@ -1722,6 +1797,29 @@ fn main() {
         st.on_set_up_over_usb(move || a.borrow_mut().set_up_over_usb());
         let a = app.clone();
         st.on_unpair(move || a.borrow_mut().unpair());
+        // Updates and the phone's health (maintenance.rs).
+        let a = app.clone();
+        st.on_upd_action(move |action| a.borrow_mut().update_action(&action));
+        let a = app.clone();
+        st.on_phone_upd_action(move |verb| a.borrow_mut().phone_update_action(&verb));
+        let a = app.clone();
+        st.on_renew_key(move || a.borrow_mut().renew_phone_key());
+        let a = app.clone();
+        st.on_auto_update_changed(move |on| {
+            let mut app = a.borrow_mut();
+            app.settings.update_checks = on;
+            app.settings.save();
+            app.refresh_maintenance();
+        });
+        let a = app.clone();
+        st.on_health_action(move |action| {
+            let mut app = a.borrow_mut();
+            match action.as_str() {
+                "usb" => app.set_up_over_usb(),
+                "renew" => app.renew_phone_key(),
+                _ => {}
+            }
+        });
         let sw = settings_window.as_weak();
         settings_window.window().on_close_requested(move || {
             if let Some(w) = sw.upgrade() { let _ = w.hide(); }
@@ -1868,6 +1966,15 @@ fn main() {
     if !std::env::args().any(|a| a == "--tray") {
         window.show().expect("window");
     }
+    // Started by the previous version at the end of an update: tell it we're
+    // up (it waits for this, and puts itself back if it never comes).
+    if std::env::args().any(|a| a == "--after-update") {
+        updater::signal_updated();
+        notify::show("Bridge", "Bridge updated", &format!("Now running {VERSION}."));
+        crate::log!("update", "running {VERSION} after an update");
+    }
+    // The previous version's files, once it has gone, and old downloads.
+    updater::clean_up_later();
     slint::run_event_loop_until_quit().expect("event loop");
     crate::log!("", "quit");
 }

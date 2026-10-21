@@ -86,6 +86,11 @@ pub enum Event {
     OpenFiles,
     /// This PC's Bluetooth radio: Some(on) when known, None if it has none.
     Radio(Option<bool>),
+    /// The updater (updater.rs): what a check found, and every step after.
+    UpdateChecked(crate::updater::Checked),
+    UpdateState(crate::updater::State),
+    /// The new version was started after an update: did it come up?
+    UpdateLaunched(Result<(), String>),
 }
 
 /// Watches this PC's Bluetooth radio, so the app can say "Bluetooth is off"
@@ -137,6 +142,8 @@ struct Link {
     last_heard: Instant,
     /// When we last asked a quiet phone to speak (see tick).
     probed_at: Option<Instant>,
+    /// The phone said it's restarting for an update (see phone_is_restarting).
+    restart_expected: Option<Instant>,
     mtu_payload: usize,
     crypto: Option<SessionCrypto>,
     /// Set by stop(): a connect still running for this link must give up
@@ -174,6 +181,7 @@ impl Ble {
                 verified: false,
                 last_heard: Instant::now(),
                 probed_at: None,
+                restart_expected: None,
                 mtu_payload: 20,
                 crypto: None,
                 stopped: false,
@@ -349,7 +357,13 @@ impl Ble {
             let silent = l.last_heard.elapsed();
             if l.device.is_none() {
                 (false, "")
+            } else if l.verified && l.restart_expected.is_some() && silent > Duration::from_secs(8) {
+                l.restart_expected = None;
+                (true, "the phone app is restarting for its update")
             } else if l.verified {
+                if l.restart_expected.map(|t| t.elapsed() > Duration::from_secs(300)).unwrap_or(false) {
+                    l.restart_expected = None;      // it never happened; back to normal
+                }
                 if silent > Duration::from_secs(60) {
                     match l.probed_at {
                         Some(at) if at > l.last_heard => (at.elapsed() > Duration::from_secs(20), "phone didn't answer"),
@@ -385,6 +399,13 @@ impl Ble {
             bail!("not linked");
         }
         self.outbox.send((kind, text.to_string())).map_err(|_| anyhow!("writer gone"))
+    }
+
+    /// The phone is about to restart for an update: its app goes away while
+    /// the Bluetooth connection lingers, so reconnect as soon as it's quiet
+    /// rather than after the usual minute and a half.
+    pub fn phone_is_restarting(&self) {
+        self.link.lock().unwrap().restart_expected = Some(Instant::now());
     }
 
     pub fn send_command(&self, text: &str) -> Result<()> {

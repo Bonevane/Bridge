@@ -30,6 +30,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val ACTION_AUTHORIZE = "com.bonevane.bridge.AUTHORIZE"
         const val ACTION_NEARBY = "com.bonevane.bridge.NEARBY"
+        /** On screen right now: only then may the updater open Android's install confirmation directly. */
+        @Volatile var visible = false
     }
 
     /// Permission state is read once per screen; granting happens in a system
@@ -115,8 +117,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        visible = false
+        super.onPause()
+    }
+
     override fun onResume() {
         super.onResume()
+        visible = true
+        Health.changed(this)
         accessState = Access.all(this)      // a permission may have just been granted
         // Bluetooth permission may have just been granted, here or in system
         // settings. Starting again is harmless if the link is already up.
@@ -174,6 +183,7 @@ class MainActivity : ComponentActivity() {
                 AdbClient("127.0.0.1", 5555, AdbKey.load(this)).use { it.connect(waitForUserMs = 120_000) }
             }.onSuccess {
                 Prefs.setAdbKeyAuthorized(this, true)
+                KeyKeeper.markUsed(this, null)
                 TunnelState.log("adbd trusts Bridge's key now")
             }.onFailure {
                 TunnelState.log("Key not accepted: ${it.message}")

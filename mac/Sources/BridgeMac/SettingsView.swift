@@ -7,19 +7,27 @@ import SwiftUI
 /// useful before you change a thing.
 struct SettingsView: View {
     @ObservedObject var bridge: BridgeController
+    @ObservedObject var updater = MacUpdater.shared
 
     var body: some View {
-        TabView {
+        TabView(selection: $bridge.settingsTab) {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag("general")
             phoneTab
                 .tabItem { Label("Phone", systemImage: "iphone") }
+                .tag("phone")
             displayTab
                 .tabItem { Label("Mirroring", systemImage: "display") }
+                .tag("mirroring")
             pairingTab
                 .tabItem { Label("Pairing", systemImage: "link") }
+                .tag("pairing")
+            UpdatesTab(bridge: bridge, updater: updater)
+                .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
+                .tag("updates")
         }
-        .frame(width: 500, height: 430)
+        .frame(width: 500, height: 470)
     }
 
     // MARK: - General
@@ -113,6 +121,8 @@ struct SettingsView: View {
 
     private var phoneTab: some View {
         Form {
+            PhoneHealthSection(bridge: bridge)
+
             Section {
                 Toggle("Keep the phone ready", isOn: $bridge.keepReady)
             } header: {
@@ -250,7 +260,7 @@ struct SettingsView: View {
 }
 
 /// A read-only line with a tinted icon: state, not a control.
-private struct StatusLine: View {
+struct StatusLine: View {
     let icon: String
     let title: String
     let value: String

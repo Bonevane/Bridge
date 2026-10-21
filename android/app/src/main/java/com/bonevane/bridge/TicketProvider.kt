@@ -43,7 +43,13 @@ class TicketProvider : ContentProvider() {
         val daemon = DaemonManager.probe(DaemonManager.DAEMON_PORT) != null
         return MatrixCursor(arrayOf("ticket", "ready", "status", "secret", "keyOk", "daemon")).apply {
             addRow(arrayOf<Any>(ticket, if (TunnelState.ready) 1 else 0, TunnelState.status,
-                                Prefs.pairSecret(ctx), if (Prefs.adbKeyAuthorized(ctx)) 1 else 0, if (daemon) 1 else 0))
+                                // A key adbd has since refused is not OK: reporting it as
+                                // trusted made Set up over USB skip re-approving it.
+                                // Nor is one that has probably lapsed unnoticed: re-approving
+                                // a key adbd still trusts is silent, so erring this way is free.
+                                Prefs.pairSecret(ctx), if (Prefs.adbKeyAuthorized(ctx) && !Prefs.keyLost(ctx) &&
+                                    (KeyKeeper.expiresAt(ctx) ?: Long.MAX_VALUE) > System.currentTimeMillis()) 1 else 0,
+                                if (daemon) 1 else 0))
         }
     }
 

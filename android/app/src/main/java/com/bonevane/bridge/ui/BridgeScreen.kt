@@ -195,6 +195,11 @@ fun BridgeScreen(
                 onStopMirroring = onStopMirroring,
             )
 
+            // Anything that stops Bridge working, and an update in progress,
+            // straight under the state: the two things worth acting on now.
+            ProblemsCard(tick.intValue)
+            UpdateCard(tick.intValue)
+
             val setupDone = Prefs.setupDone(context)
             if (mode != Mode.OFF && TunnelState.bluetoothOff) {
                 // Say it plainly: with Bluetooth off nothing reaches the
@@ -241,7 +246,7 @@ fun BridgeScreen(
                         )
                     }
                 }
-            } else if (keepReady && helperAlive == false) {
+            } else if (keepReady && helperAlive == false && !Prefs.keyLost(context)) {
                 // Typical after a reboot: the setting says "ready", but the
                 // helper died with the phone and can't come back by itself
                 // without Wi-Fi. Say so, instead of leaving "Ready" on screen.
@@ -279,9 +284,12 @@ fun BridgeScreen(
                 }
                 item { ActionRow(Icons.Rounded.PlayArrow, "Get ready now", "Start the helper so your computer can connect", onGetReady) }
                 item { ActionRow(Icons.Rounded.Lock, "Turn USB debugging off now", null, onLockDown) }
+                keyRows(tick.intValue)
             }
 
             NotificationsSection(tick = tick.intValue)
+
+            UpdatesSection(tick.intValue)
 
             Section("Settings") {
                 item {
@@ -674,7 +682,7 @@ private fun AccessRow(item: Access, onGrant: () -> Unit) {
 }
 
 @Composable
-private fun SwitchRow(
+internal fun SwitchRow(
     icon: ImageVector?,
     label: String,
     detail: String?,
@@ -703,7 +711,7 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun ActionRow(
+internal fun ActionRow(
     icon: ImageVector?,
     label: String,
     detail: String?,
@@ -745,7 +753,7 @@ class SectionScope {
  * as a seam rather than as separate cards.
  */
 @Composable
-private fun Section(title: String, content: SectionScope.() -> Unit) {
+internal fun Section(title: String, content: SectionScope.() -> Unit) {
     val rows = SectionScope().apply(content).items
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(

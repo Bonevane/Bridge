@@ -106,6 +106,9 @@ object Daemon {
             "ENDSESSIONS" -> endSessions(s)
             "PULL" -> pull(s, rest.trim())
             "INSTALL" -> install(s, rest.trim().toLongOrNull() ?: 0)
+            // How the last INSTALL went, for the app: it replies before `pm`
+            // runs (see install), so this is the only way a failure gets back.
+            "LASTINSTALL" -> reply(s, "OK $lastInstall")
             "QUIT" -> { log("quit requested"); reply(s, "OK bye"); System.exit(0) }
             else -> s.getOutputStream().write("ERR unknown command\n".toByteArray())
         }
@@ -310,7 +313,10 @@ object Daemon {
     private const val MAX_APK = 200L * 1024 * 1024
     private const val MAX_PUSH = 4L * 1024 * 1024 * 1024
 
+    @Volatile private var lastInstall = "none"
+
     private fun install(s: Socket, size: Long) {
+        lastInstall = "running"
         if (size <= 0 || size > MAX_APK) { reply(s, "ERR size"); return }
         val apk = File("/data/local/tmp/bridge-update.apk")
         apk.outputStream().use { out ->
@@ -337,6 +343,7 @@ object Daemon {
         val code = p.waitFor()
         apk.delete()
         log(if (code == 0) "install ok: $output" else "install failed: $output")
+        lastInstall = if (code == 0) "ok" else "failed: ${output.lines().lastOrNull { it.isNotBlank() } ?: "pm exit $code"}"
         if (code == 0) {
             // This process still runs the *old* code from an install directory
             // that no longer exists. Spawn a successor from the new APK before

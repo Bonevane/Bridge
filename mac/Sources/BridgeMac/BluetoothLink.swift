@@ -154,6 +154,16 @@ final class BluetoothLink: NSObject {
         // phone each time). So ask first: a write from us wakes the phone's
         // app, which answers with its status. Only no answer to that is dead.
         let silent = Date().timeIntervalSince(lastHeard)
+        if isLinked, let expected = restartExpectedAt {
+            if silent > 8 {
+                log("Bluetooth: the phone app is restarting for its update; reconnecting")
+                restartExpectedAt = nil
+                probedAt = nil
+                isLinked = false
+            } else if Date().timeIntervalSince(expected) > 300 {
+                restartExpectedAt = nil      // it never happened; back to normal
+            }
+        }
         if isLinked, silent > 60 {
             if let asked = probedAt, asked > lastHeard {
                 if Date().timeIntervalSince(asked) > 20 {
@@ -242,6 +252,20 @@ final class BluetoothLink: NSObject {
     func media(_ command: String) {
         send(type: Self.typeCommand, text: "media \(command)")
     }
+
+    /// "update check|install|pause|cancel" for the phone app's own updater,
+    /// or "renew key": things the phone does by itself once asked.
+    func phoneCommand(_ text: String) {
+        send(type: Self.typeCommand, text: text)
+    }
+
+    /// The phone said it's about to restart for an update. Its app goes away
+    /// while the Bluetooth connection lingers, so stop waiting for the usual
+    /// two missed heartbeats and reconnect as soon as it goes quiet.
+    func phoneIsRestarting() {
+        restartExpectedAt = Date()
+    }
+    private var restartExpectedAt: Date?
 
     /// Tells the phone the session is over, so it can turn USB debugging off.
     /// Bluetooth is the right channel for this: the tunnel is often exactly what

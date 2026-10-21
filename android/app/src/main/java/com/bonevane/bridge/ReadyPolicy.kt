@@ -73,8 +73,11 @@ class ReadyPolicy(private val ctx: Context) {
 
     /** Starts the daemon in the background if the setting says so and it's possible. */
     fun maybeStart(reason: String) {
-        if (!Prefs.keepReady(ctx) || isPaused || !AdbToggle.isGranted(ctx)) return
-        if (DaemonManager.isDaemonAlive()) return
+        if (!Prefs.keepReady(ctx) || isPaused || !AdbToggle.isGranted(ctx) || Prefs.keyLost(ctx)) return
+        // A helper left over from before an app update still runs the old
+        // code, from an install folder that no longer exists: it answers, but
+        // mirroring through it fails. Replace it rather than count it as ready.
+        if (DaemonManager.isDaemonAlive() && !DaemonManager.isStale(ctx)) return
         if (!starting.compareAndSet(false, true)) return
         Thread {
             try {
@@ -102,6 +105,12 @@ class ReadyPolicy(private val ctx: Context) {
                 // else would ever bring it back while "keep ready" is on.
                 TunnelService.current?.clipboard?.start()
                 maybeStart("watchdog")
+                // Bridge's ADB key lapses if unused; renew it when it's due
+                // (KeyKeeper decides), and re-check everything the screen and
+                // the computers show as problems (some are time-based).
+                KeyKeeper.maybeRenew(ctx)
+                Health.changed(ctx)
+                Updater.check(ctx, manual = false)      // once a day at most, if allowed
                 val macNearby = TunnelService.current?.ble?.connected == true
                 if (!Prefs.keepReady(ctx) && !isPaused && AdbToggle.isEnabled(ctx) && !macNearby &&
                     !TunnelState.macActive(IDLE_LOCKDOWN_MS) && DaemonManager.isDaemonAlive()) {

@@ -10,7 +10,10 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action
         if (action != Intent.ACTION_BOOT_COMPLETED && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
-        if (!Prefs.autostart(context) || !Prefs.wantRunning(context)) return
+        // An update Bridge installed itself: come back whatever "Start after
+        // reboot" says, because nobody chose to stop it.
+        val afterOwnUpdate = action == Intent.ACTION_MY_PACKAGE_REPLACED && Prefs.resumeAfterUpdate(context)
+        if (!afterOwnUpdate && (!Prefs.autostart(context) || !Prefs.wantRunning(context))) return
         try {
             TunnelService.start(context)
         } catch (e: Exception) {

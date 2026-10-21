@@ -107,6 +107,15 @@ class TunnelService : Service() {
             )
         }
 
+        /** An update didn't install after [prepareForUpdate]: put everything back. */
+        fun restoreAfterFailedUpdate(ctx: Context) {
+            val svc = current ?: updating
+            if (svc != null) svc.launchAgain() else start(ctx)
+        }
+
+        /** The service while it's stopped for an update ([current] is null then). */
+        @Volatile private var updating: TunnelService? = null
+
         const val EXTRA_ON = "on"
         const val EXTRA_REMEMBER = "remember"
     }
@@ -167,6 +176,28 @@ class TunnelService : Service() {
     override fun onDestroy() {
         shutdown()
         super.onDestroy()
+    }
+
+    /**
+     * Just before an update installs: stop the tunnel, Bluetooth, the
+     * clipboard watcher and the proxy in order, so the computers see a clean
+     * disconnect and no dumbpipe is left behind. The service itself (and its
+     * notification) stays, so Android doesn't treat Bridge as gone before
+     * the installer replaces it. The new version starts itself afterwards
+     * (BootReceiver), in the mode the phone was in.
+     */
+    fun prepareForUpdate() {
+        TunnelState.log("Stopping the tunnel and Bluetooth for the update")
+        updating = this
+        shutdown()
+        TunnelState.update("Updating Bridge…", ready = false)
+    }
+
+    /** After a failed update: everything back, as at a normal start. */
+    fun launchAgain() {
+        updating = null
+        if (!active) launch()
+        goForeground()
     }
 
     /** Re-posts the status notification, e.g. after the quiet setting changed. */
@@ -252,6 +283,12 @@ class TunnelService : Service() {
         if (Prefs.tunnelEnabled(this)) startTunnel() else {
             TunnelState.update("Bluetooth only. The tunnel is off.", ready = false)
         }
+        // A fresh start after an update: the flag has done its job, and the
+        // downloaded APK isn't needed any more.
+        Prefs.setResumeAfterUpdate(this, false)
+        Updater.cleanUp(this)
+        Updater.check(this, manual = false)
+        Health.changed(this)
     }
 
     @Synchronized private fun startTunnel() {

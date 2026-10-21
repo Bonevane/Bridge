@@ -15,6 +15,9 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Installing its own updates through Android's installer, when the
+         helper (which installs silently) isn't running. The user allows it once. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Not grantable from the UI. Granted once by the shell-uid daemon with
          `pm grant`, so the app can turn USB debugging on/off by itself. -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
@@ -55,6 +58,11 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Android's installer reports an update's result here (see Updater). -->
+        <receiver
+            android:name=".InstallResultReceiver"
+            android:exported="false" />
 
         <!-- Mirrors notifications to the Mac. An ordinary listener service, so it
              keeps working while USB debugging is off. The user grants access once. -->

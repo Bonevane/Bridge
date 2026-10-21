@@ -8,6 +8,7 @@ import SwiftUI
 /// Everything else is in Settings.
 struct MenuView: View {
     @ObservedObject var bridge: BridgeController
+    @ObservedObject var updater = MacUpdater.shared
     // `openSettings` needs macOS 14; the selector works everywhere Bridge runs.
 
     var body: some View {
@@ -15,6 +16,8 @@ struct MenuView: View {
             VStack(spacing: 10) {
                 header.zIndex(1)   // its hover labels hang over the card below
                 connection
+                // Only what breaks something (or is about to); the rest is in Settings › Phone.
+                if bridge.bluetoothLinked, let problem = bridge.phoneProblems.first(where: { $0.worthNotifying }) { attention(problem) }
                 primaryButton
                 if !bridge.media.isEmpty { NowPlayingCard(bridge: bridge) }
                 capabilities
@@ -145,6 +148,60 @@ struct MenuView: View {
         }
     }
 
+    /// The phone's worst problem, with the one thing that fixes it. Sits
+    /// under the connection card in the same style, tinted by how bad it is.
+    private func attention(_ problem: PhoneIssue) -> some View {
+        let tint: Color = problem.isError ? .red : .orange
+        let others = bridge.phoneProblems.count - 1   // every other problem, minor ones included
+        return HStack(alignment: .top, spacing: 11) {
+            ZStack {
+                Circle().fill(tint.opacity(0.18)).frame(width: 34, height: 34)
+                Image(systemName: problem.isError ? "exclamationmark.triangle.fill" : "clock.badge.exclamationmark")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(tint)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(problem.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(problem.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    switch problem.action {
+                    case .setUpOverUSB:
+                        Button("Set Up Over USB…") { bridge.setUpOverUSB() }
+                            .glassButton().controlSize(.small)
+                            .disabled(bridge.isBusy || bridge.isConnected)
+                    case .renew:
+                        Button("Renew Now") { bridge.renewPhoneKey() }
+                            .glassButton().controlSize(.small)
+                    case .onPhone:
+                        EmptyView()
+                    }
+                    if others > 0 {
+                        Button(others == 1 ? "1 more…" : "\(others) more…") { openSettings(tab: "phone") }
+                            .buttonStyle(.link).font(.system(size: 11))
+                    }
+                }
+                .padding(.top, 2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .innerCard(tint: tint)
+    }
+
+    private func openSettings(tab: String) {
+        bridge.settingsTab = tab
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        openSettingsWindow()
+    }
+
     private var primaryButton: some View {
         Button {
             if bridge.isConnected || bridge.isBusy {
@@ -209,10 +266,24 @@ struct MenuView: View {
             }
             .disabled(bridge.isBusy || bridge.isConnected)
 
+            // Updates, for this Mac and for the phone app, open the Updates
+            // tab where the progress and the details are.
+            if let r = updater.release {
+                MenuRow(updateRowTitle(r), systemImage: "arrow.down.circle",
+                        help: "Opens Settings › Updates") {
+                    openSettings(tab: "updates")
+                }
+            }
+            if let phone = bridge.phoneUpdateInfo, phone.stage != "failed" {
+                MenuRow(phone.stage == "avail" ? "Update Phone App to \(phone.version)…" : "Phone App Updating…",
+                        systemImage: "iphone.and.arrow.forward",
+                        help: "Opens Settings › Updates") {
+                    openSettings(tab: "updates")
+                }
+            }
+
             MenuRow("Settings…", systemImage: "gearshape", shortcut: "⌘,") {
-                NSApp.setActivationPolicy(.regular)
-                NSApp.activate(ignoringOtherApps: true)
-                openSettingsWindow()
+                openSettings(tab: bridge.settingsTab)
             }
 
             Divider().padding(.horizontal, 9).padding(.vertical, 2)
@@ -260,6 +331,16 @@ struct MenuView: View {
                 .font(.system(size: 12))
         }
         .padding(.horizontal, 4)
+    }
+
+    private func updateRowTitle(_ r: MacUpdater.Release) -> String {
+        switch updater.state {
+        case .downloading(_, let done, let total, _):
+            return "Downloading Bridge \(r.version) · \(total > 0 ? Int(done * 100 / total) : 0)%"
+        case .ready: return "Install Bridge \(r.version)…"
+        case .failed: return "Bridge \(r.version): Update Didn't Finish…"
+        default: return "Update Bridge to \(r.version)…"
+        }
     }
 
     // MARK: - How the phone is reachable

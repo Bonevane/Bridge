@@ -446,7 +446,16 @@ class BleLink(private val context: Context) {
                 // The mode chosen on the phone (Off can't be reported: Bluetooth
                 // is off with it). Shown as an icon in the computers' top bar.
                 " mode=${if (Prefs.tunnelEnabled(context)) "anywhere" else "nearby"}" +
-                " model=${android.os.Build.MODEL.replace(' ', '_')}"
+                " model=${android.os.Build.MODEL.replace(' ', '_')}" +
+                // The phone app's version and its updater's state ("avail:0.3.2",
+                // "dl:0.3.2:45"…), so a computer can show and drive the update.
+                " ver=${Updater.currentVersion(context)}" +
+                " upd=${Updater.statusCode()}" +
+                // What's wrong, as short codes the computers word themselves
+                // (see Health): "issues=keylost,battery", or empty.
+                " issues=${Health.codes(context)}" +
+                // When adbd will forget Bridge's key, so the computers can say "in 2 days".
+                " keyexp=${KeyKeeper.expiresAt(context) ?: 0}"
         )
     }
 
@@ -858,6 +867,21 @@ class BleLink(private val context: Context) {
                     // "macapps com.whatsapp org.telegram.messenger": the Android
                     // packages whose Mac twin is open, so their notifications
                     // would only be duplicates. Empty list = none open.
+                    // "update check|install|pause|cancel": the phone app's update,
+                    // driven from a computer. The phone downloads it itself.
+                    message.startsWith("update ") -> {
+                        when (message.removePrefix("update ").trim()) {
+                            "check" -> Updater.check(context, manual = true)
+                            "install" -> Updater.start(context)
+                            "pause" -> Updater.pause(context)
+                            "cancel" -> Updater.cancel(context)
+                        }
+                        TunnelState.log("The ${peer.label} asked for: $message")
+                    }
+                    // "renew key": use Bridge's ADB key now (it resets Android's expiry timer).
+                    message.trim() == "renew key" -> {
+                        if (!KeyKeeper.renew(context, reason = "asked by the ${peer.label}")) sendStatus()
+                    }
                     message.startsWith("macapps") ->
                         NotificationFilter.setOpenOnMac(message.removePrefix("macapps").trim().split(' ').filter { it.isNotEmpty() })
                     else -> TunnelState.log("Unknown Bluetooth command: $message")

@@ -112,18 +112,21 @@ data class Access(
                 why = "Xiaomi phones won't let Bridge run in the background without it, so notifications never reach the " +
                     "computer. Turn on Autostart for Bridge. In Battery saver, set Bridge to No restrictions as well.",
                 granted = miuiAutostartAllowed(ctx),
-                intent = Intent().setClassName("com.miui.securitycenter",
-                    "com.miui.permcenter.autostart.AutoStartManagementActivity"),
+                intent = autostartIntent(),
                 fallback = appDetails(ctx),
             )
         }
+
+        /** MIUI's Autostart screen (callers fall back to App info if it's missing). */
+        fun autostartIntent(): Intent = Intent().setClassName("com.miui.securitycenter",
+            "com.miui.permcenter.autostart.AutoStartManagementActivity")
 
         /**
          * MIUI keeps Autostart as a private app-op (10008) that no public API
          * reads. Asked by reflection; if MIUI ever hides that, we can't tell,
          * so it shows as not done and the user can check.
          */
-        private fun miuiAutostartAllowed(ctx: Context): Boolean = runCatching {
+        fun miuiAutostartAllowed(ctx: Context): Boolean = runCatching {
             val ops = ctx.getSystemService(android.app.AppOpsManager::class.java)
             val check = android.app.AppOpsManager::class.java.getMethod(
                 "checkOpNoThrow", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, String::class.java)

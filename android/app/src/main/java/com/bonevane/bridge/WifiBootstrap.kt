@@ -41,7 +41,16 @@ object WifiBootstrap {
                 ?: error("wireless debugging port not found (is Wi-Fi on?)")
             TunnelState.log("Wireless debugging on port $port")
             return AdbClient("127.0.0.1", port, AdbKey.load(ctx)).use {
-                it.connect()
+                // Every connection tells KeyKeeper how the key is doing: a
+                // success resets Android's expiry timer (and proves this network
+                // is approved); a refusal means the key is gone.
+                try {
+                    it.connect()
+                } catch (e: Exception) {
+                    KeyKeeper.markFailure(ctx, e)
+                    throw e
+                }
+                KeyKeeper.markUsed(ctx, KeyKeeper.currentWifi(ctx))
                 block(it)
             }
         } finally {

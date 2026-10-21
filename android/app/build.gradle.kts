@@ -26,8 +26,8 @@ android {
         applicationId = "com.bonevane.bridge"
         minSdk = 30
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.1"
+        versionCode = 6
+        versionName = "0.3.2"
         // The bundled dumbpipe binary is arm64 only (every modern phone, including your Pixel).
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -81,7 +81,9 @@ dependencies {
     // system wallpaper on Android 12+). The BOM keeps the artefact versions
     // consistent, so only one version number needs maintaining.
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
-    implementation("androidx.compose.material3:material3")
+    // 1.4: Material 3 Expressive (wavy progress, the morphing loading
+    // indicator, expressive shapes and motion) for the newer screens.
+    implementation("androidx.compose.material3:material3:1.4.0-alpha18")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.9.3")

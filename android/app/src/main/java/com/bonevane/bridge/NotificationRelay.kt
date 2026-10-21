@@ -30,12 +30,14 @@ class NotificationService : NotificationListenerService() {
         current = this
         TunnelState.log("Notification access granted")
         MediaRelay.start(this)
+        Health.changed(this)
     }
 
     override fun onListenerDisconnected() {
         NotificationRelay.connected = false
         current = null
         MediaRelay.stop()
+        Health.changed(this)
     }
 
     /** Gone on the phone (read, swiped, answered): gone on the computers too. */

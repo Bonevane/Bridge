@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         BridgeController.shared.updateBluetooth()
         BridgeController.shared.updateNotificationBridge()
         BridgeController.shared.updateBackgroundClipboard()
+        // Daily update check (if allowed), and "updated" once after an update.
+        MacUpdater.shared.start()
 
         // Settings and About are ordinary windows that need a Dock icon while
         // open. When the last one closes, go back to menu-bar only. Watching

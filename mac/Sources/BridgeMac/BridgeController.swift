@@ -954,6 +954,7 @@ final class BridgeController: ObservableObject {
             phoneTunnelOn = false; phoneDaemonAlive = false
             media = [:]; mediaArt = nil
             phoneBattery = nil; phoneModel = ""; phoneMode = ""; phoneNetwork = ""
+            phoneVersion = ""; phoneUpdate = "none"; phoneIssues = []; phoneKeyExpiresAt = 0
             iconsRequested.removeAll()
         }
         linkCredentials = credentials
@@ -1016,6 +1017,16 @@ final class BridgeController: ObservableObject {
                 if let net = fields["net"] { self.phoneNetwork = net }
                 if let model = fields["model"] { self.phoneModel = model.replacingOccurrences(of: "_", with: " ") }
                 if let mode = fields["mode"] { self.phoneMode = mode }
+                if let ver = fields["ver"] { self.phoneVersion = ver }
+                if let upd = fields["upd"] {
+                    self.phoneUpdate = upd
+                    // Its app is about to restart: reconnect as soon as it goes quiet.
+                    if upd.hasPrefix("installing") { self.bluetoothLink.phoneIsRestarting() }
+                }
+                if let issues = fields["issues"] {
+                    self.phoneIssues = issues.split(separator: ",").map(String.init)
+                }
+                if let exp = fields["keyexp"].flatMap(Double.init) { self.phoneKeyExpiresAt = exp / 1000 }
                 if let keep = fields["keep"] {
                     self.reconcileKeepReady(phoneValue: keep == "1",
                                             phoneChangedAt: Double(fields["keepAt"] ?? "0") ?? 0)
@@ -1087,6 +1098,95 @@ final class BridgeController: ObservableObject {
     /// Cleared here: clear it on the phone too.
     func dismissOnPhone(id: Int) {
         if syncDismissals, bluetoothLinked { bluetoothLink.dismiss(id: id) }
+    }
+
+    // MARK: - Phone app version, its update, and what's wrong with the phone
+
+    /// The phone app's version, from its status ("0.3.2"), or "" before it says.
+    @Published var phoneVersion = ""
+    /// The phone's own updater: "none", "avail:0.3.2", "dl:0.3.2:45", "paused:…",
+    /// "verify:…", "perm:…", "confirm:…", "installing:…" or "failed:…".
+    @Published var phoneUpdate = "none"
+    /// Problem codes from the phone (see PhoneIssue for the wording).
+    @Published var phoneIssues: [String] = [] {
+        didSet { notifyNewPhoneIssues() }
+    }
+    /// When the phone's ADB key lapses unless renewed (seconds since 1970), or 0.
+    @Published var phoneKeyExpiresAt: Double = 0
+    /// Which Settings tab to show (menu rows open straight to Updates).
+    @Published var settingsTab = "general"
+
+    /// The phone's problems, worded for this Mac, worst first.
+    var phoneProblems: [PhoneIssue] {
+        phoneIssues.compactMap { PhoneIssue(code: $0) }.sorted { $0.isError && !$1.isError }
+    }
+
+    /// Problems already notified about, so each one is announced once, and
+    /// again only if it goes away and comes back.
+    private var notifiedIssues = Set<String>()
+
+    private func notifyNewPhoneIssues() {
+        let current = Set(phoneIssues.map { $0.components(separatedBy: ":")[0] })
+        notifiedIssues.formIntersection(current)
+        for issue in phoneProblems where issue.worthNotifying && !notifiedIssues.contains(issue.kind) {
+            notifiedIssues.insert(issue.kind)
+            NotificationBridge.post(app: "Bridge", title: issue.title, body: issue.detail)
+        }
+    }
+
+    /// The phone's update, as (version, what's happening, percent).
+    var phoneUpdateInfo: (version: String, stage: String, percent: Int?)? {
+        let parts = phoneUpdate.split(separator: ":").map(String.init)
+        guard parts.count >= 2, parts[0] != "none" else { return nil }
+        return (parts[1], parts[0], parts.count > 2 ? Int(parts[2]) : nil)
+    }
+
+    /// "update install" and friends, over Bluetooth.
+    func phoneUpdateCommand(_ verb: String) {
+        guard bluetoothLinked else {
+            appendLog("Phone update: \(verb) not sent, the phone isn't linked over Bluetooth", source: "update")
+            return
+        }
+        bluetoothLink.phoneCommand("update \(verb)")
+    }
+
+    /// Asks the phone to use its ADB key now, which resets Android's expiry timer.
+    func renewPhoneKey() {
+        guard bluetoothLinked else { return }
+        bluetoothLink.phoneCommand("renew key")
+        appendLog("Asked the phone to renew its debugging permission.", source: "phone")
+    }
+
+    /// Before an update installs: end any session, stop the background
+    /// bridges, Bluetooth and the tunnel, and the adb server if it's ours,
+    /// so nothing is left running from the old copy.
+    func prepareForUpdate() async {
+        appendLog("Stopping the session, tunnel, Bluetooth and adb for the update", source: "update")
+        if isConnected || filesSession {
+            disconnect()
+            for _ in 0..<50 where disconnecting { try? await Task.sleep(nanoseconds: 100_000_000) }
+        }
+        stopClipboardWatch()
+        clipboardBridge.stop()
+        notificationBridge.stop()
+        bluetoothLink.stop()
+        stopProcesses()
+        // Only the adb server this copy started (it lives inside the bundle
+        // being replaced); one from Android Studio or Homebrew is left alone.
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/adb").path
+        await Task.detached {
+            if Shell.run("/usr/bin/pgrep", ["-f", bundled], timeout: 5).ok {
+                _ = Shell.run(bundled, ["kill-server"], timeout: 10)
+            }
+        }.value
+    }
+
+    /// The install didn't go ahead after [prepareForUpdate]: start things again.
+    func resumeAfterFailedUpdate() {
+        userStopped = false
+        updateBluetooth()
+        updateNotificationBridge()
+        updateBackgroundClipboard()
     }
 
     // MARK: - Phone status and Now Playing (shown in the menu)

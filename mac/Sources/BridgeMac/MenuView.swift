@@ -679,7 +679,9 @@ private struct HoverHint: ViewModifier {
                         .fixedSize()
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(.regularMaterial))
+                        // Solid, not a material: a blur here was a second frosted
+                        // layer on the glass, and the panel looked different while it showed.
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: .windowBackgroundColor).opacity(0.92)))
                         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.primary.opacity(0.12)))
                         .offset(y: 18)
                         .transition(.opacity)

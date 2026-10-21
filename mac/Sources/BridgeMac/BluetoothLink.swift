@@ -375,7 +375,9 @@ final class BluetoothLink: NSObject {
             }
         case Self.typeStatus:
             let fields = Dictionary(uniqueKeysWithValues: text.split(separator: " ").compactMap { field -> (String, String)? in
-                let parts = field.split(separator: "=", maxSplits: 1)
+                // Keep empty values: "issues=" means "no problems any more",
+                // and dropping it left the last warning on screen for good.
+                let parts = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                 return parts.count == 2 ? (String(parts[0]), String(parts[1])) : nil
             })
             onStatus?(fields)

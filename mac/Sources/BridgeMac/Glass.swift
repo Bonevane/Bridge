@@ -12,9 +12,11 @@ extension View {
     @ViewBuilder
     func glassPanel(cornerRadius: CGFloat = 16, tint: Color? = nil) -> some View {
         if #available(macOS 26.0, *) {
+            // `.clear`: Liquid Glass without the frosting. `.regular` blurs what's
+            // behind it, which read as a second, foggy layer under the glass.
             // A full-strength tint turns the panel into a solid slab of colour;
             // glass is meant to be a hint of it, so the colour is heavily diluted.
-            let glass = tint.map { Glass.regular.tint($0.opacity(0.22)) } ?? .regular
+            let glass = tint.map { Glass.clear.tint($0.opacity(0.22)) } ?? .clear
             self.glassEffect(glass, in: .rect(cornerRadius: cornerRadius, style: .continuous))
         } else {
             self.background(

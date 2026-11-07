@@ -197,9 +197,28 @@ impl App {
     }
 
     pub fn renew_phone_key(&mut self) {
-        if let Some(b) = &self.ble {
-            let _ = b.send_command("renew key");
-            crate::log!("phone", "asked the phone to renew its debugging permission");
+        match &self.ble {
+            Some(b) if self.linked => {
+                let _ = b.send_command("renew key");
+                crate::log!("phone", "asked the phone to renew its debugging permission");
+            }
+            _ => crate::log!("phone", "renew not sent: the phone isn't linked over Bluetooth"),
+        }
+    }
+
+    fn key_renewing(&self) -> bool {
+        self.phone_status.get("keyrenew").map(|r| r == "busy").unwrap_or(false)
+    }
+
+    /// What became of Renew now, in words, while the phone still reports it.
+    fn key_renew_note(&self) -> Option<&'static str> {
+        match self.phone_status.get("keyrenew").map(|s| s.as_str()) {
+            Some("busy") => Some("Renewing on the phone…"),
+            Some("ok") => Some("Renewed just now."),
+            Some("nowifi") => Some("Couldn't renew: the phone needs to be on Wi-Fi."),
+            Some("refused") => Some("Couldn't renew: Android no longer trusts Bridge. Set up over USB again."),
+            Some("failed") => Some("Couldn't renew. If the phone asks to allow wireless debugging on this network, allow it and try again."),
+            _ => None,
         }
     }
 
@@ -284,10 +303,14 @@ impl App {
         // The phone's worst problem on the main window, under the hero: only
         // what breaks something (or is about to); the rest is in Settings › Phone.
         let problems = if self.linked { self.phone_problems() } else { vec![] };
+        let renew_note = self.key_renew_note();
+        let detail_of = |p: &PhoneIssue| if p.action == "renew" { renew_note.unwrap_or(p.detail) } else { p.detail };
+        ui.set_key_renewing(self.key_renewing());
+        st.set_key_renewing(self.key_renewing());
         if let Some(p) = problems.iter().find(|p| p.worth_notifying()) {
             ui.set_attention_visible(true);
             ui.set_attention_title(p.title.clone().into());
-            ui.set_attention_detail(p.detail.into());
+            ui.set_attention_detail(detail_of(p).into());
             ui.set_attention_error(p.error);
             ui.set_attention_action(p.action.into());
             ui.set_attention_more((problems.len() - 1) as i32);
@@ -298,17 +321,19 @@ impl App {
         // Settings › Phone › Health.
         st.set_health_linked(self.linked);
         st.set_health(model(problems.iter().map(|p| HealthItem {
-            title: p.title.clone().into(), detail: p.detail.into(), error: p.error, action: p.action.into(),
+            title: p.title.clone().into(), detail: detail_of(p).into(), error: p.error, action: p.action.into(),
         }).collect()));
         let issues = self.phone_status.get("issues").cloned().unwrap_or_default();
         let expires = self.phone_status.get("keyexp").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
         let now = chrono::Utc::now().timestamp_millis();
-        st.set_key_status(if issues.contains("keylost") { "Lost: set up over USB again".into() }
+        st.set_key_status(if let Some(note) = renew_note.filter(|_| self.phone_status.get("keyrenew").map(|r| r != "ok").unwrap_or(false)) { note.into() }
+            else if issues.contains("keylost") { "Lost: set up over USB again".into() }
             else if expires <= 0 { "Doesn't expire".into() }
             else if expires < now { "May have expired".into() }
             else {
                 let days = (expires - now) / 86_400_000;
-                if days < 1 { "Lapses today unless renewed".into() } else { format!("Lapses in {days} day{} unless renewed", if days == 1 { "" } else { "s" }).into() }
+                let lapses = if days < 1 { "Lapses today unless renewed".to_string() } else { format!("Lapses in {days} day{} unless renewed", if days == 1 { "" } else { "s" }) };
+                (if renew_note.is_some() { format!("Renewed just now. {lapses}") } else { lapses }).into()
             });
         st.set_key_ok(!issues.contains("keylost") && !issues.contains("keyexp"));
 

@@ -164,7 +164,7 @@ struct MenuView: View {
                 Text(problem.title)
                     .font(.system(size: 13, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text(problem.detail)
+                Text(problem.action == .renew ? bridge.keyRenewNote ?? problem.detail : problem.detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -177,6 +177,7 @@ struct MenuView: View {
                     case .renew:
                         Button("Renew Now") { bridge.renewPhoneKey() }
                             .glassButton().controlSize(.small)
+                            .disabled(bridge.phoneKeyRenew == "busy")
                     case .onPhone:
                         EmptyView()
                     }

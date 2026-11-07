@@ -218,6 +218,7 @@ struct PhoneHealthSection: View {
                 HStack {
                     StatusLine(icon: "key", title: "Debugging permission", value: keyStatus, good: keyHealthy)
                     Button("Renew Now") { bridge.renewPhoneKey() }
+                        .disabled(bridge.phoneKeyRenew == "busy")
                         .help("The phone uses its permission once, which restarts Android's expiry timer. Needs Wi-Fi on the phone.")
                 }
             }
@@ -240,7 +241,7 @@ struct PhoneHealthSection: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(p.title)
-                Text(p.detail).font(.caption).foregroundStyle(.secondary)
+                Text(p.action == .renew ? bridge.keyRenewNote ?? p.detail : p.detail).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
@@ -250,6 +251,7 @@ struct PhoneHealthSection: View {
                     .disabled(bridge.isBusy || bridge.isConnected)
             case .renew:
                 Button("Renew Now") { bridge.renewPhoneKey() }
+                    .disabled(bridge.phoneKeyRenew == "busy")
             case .onPhone:
                 EmptyView()
             }
@@ -261,11 +263,13 @@ struct PhoneHealthSection: View {
     }
 
     private var keyStatus: String {
+        if let note = bridge.keyRenewNote, bridge.phoneKeyRenew != "ok" { return note }
         if bridge.phoneIssues.contains("keylost") { return "Lost: set up over USB" }
         let expires = bridge.phoneKeyExpiresAt
         if expires <= 0 { return "Doesn't expire" }
         let days = Int((expires - Date().timeIntervalSince1970) / 86_400)
         if days < 0 { return "May have expired" }
-        return days < 1 ? "Lapses today unless renewed" : "Lapses in \(days) day\(days == 1 ? "" : "s") unless renewed"
+        let lapses = days < 1 ? "Lapses today unless renewed" : "Lapses in \(days) day\(days == 1 ? "" : "s") unless renewed"
+        return bridge.phoneKeyRenew == "ok" ? "Renewed just now. \(lapses)" : lapses
     }
 }

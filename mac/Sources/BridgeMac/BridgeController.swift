@@ -954,7 +954,7 @@ final class BridgeController: ObservableObject {
             phoneTunnelOn = false; phoneDaemonAlive = false
             media = [:]; mediaArt = nil
             phoneBattery = nil; phoneModel = ""; phoneMode = ""; phoneNetwork = ""
-            phoneVersion = ""; phoneUpdate = "none"; phoneIssues = []; phoneKeyExpiresAt = 0
+            phoneVersion = ""; phoneUpdate = "none"; phoneIssues = []; phoneKeyExpiresAt = 0; phoneKeyRenew = "none"
             iconsRequested.removeAll()
         }
         linkCredentials = credentials
@@ -1027,6 +1027,7 @@ final class BridgeController: ObservableObject {
                     self.phoneIssues = issues.split(separator: ",").map(String.init)
                 }
                 if let exp = fields["keyexp"].flatMap(Double.init) { self.phoneKeyExpiresAt = exp / 1000 }
+                if let renew = fields["keyrenew"] { self.phoneKeyRenew = renew }
                 if let keep = fields["keep"] {
                     self.reconcileKeepReady(phoneValue: keep == "1",
                                             phoneChangedAt: Double(fields["keepAt"] ?? "0") ?? 0)
@@ -1113,6 +1114,25 @@ final class BridgeController: ObservableObject {
     }
     /// When the phone's ADB key lapses unless renewed (seconds since 1970), or 0.
     @Published var phoneKeyExpiresAt: Double = 0
+    /// How the phone's latest key renewal went: "none", "busy", "ok", "nowifi",
+    /// "refused" or "failed".
+    @Published var phoneKeyRenew = "none" {
+        didSet {
+            guard phoneKeyRenew != oldValue, phoneKeyRenew != "busy", let note = keyRenewNote else { return }
+            appendLog(note, source: "phone")
+        }
+    }
+    /// What became of Renew Now, in words, while the phone still reports it.
+    var keyRenewNote: String? {
+        switch phoneKeyRenew {
+        case "busy": return "Renewing on the phone…"
+        case "ok": return "Renewed just now."
+        case "nowifi": return "Couldn't renew: the phone needs to be on Wi-Fi."
+        case "refused": return "Couldn't renew: Android no longer trusts Bridge. Set up over USB again."
+        case "failed": return "Couldn't renew. If the phone asks to allow wireless debugging on this network, allow it and try again."
+        default: return nil
+        }
+    }
     /// Which Settings tab to show (menu rows open straight to Updates).
     @Published var settingsTab = "general"
 
@@ -1152,7 +1172,10 @@ final class BridgeController: ObservableObject {
 
     /// Asks the phone to use its ADB key now, which resets Android's expiry timer.
     func renewPhoneKey() {
-        guard bluetoothLinked else { return }
+        guard bluetoothLinked else {
+            appendLog("Renew not sent: the phone isn't linked over Bluetooth", source: "phone")
+            return
+        }
         bluetoothLink.phoneCommand("renew key")
         appendLog("Asked the phone to renew its debugging permission.", source: "phone")
     }

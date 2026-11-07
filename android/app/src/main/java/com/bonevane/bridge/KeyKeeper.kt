@@ -30,7 +30,26 @@ object KeyKeeper {
     /** Android's own default when the setting has never been touched. */
     private const val DEFAULT_ALLOWED_MS = 7L * 24 * 60 * 60 * 1000
     private const val RETRY_AFTER_FAILURE_MS = 6L * 60 * 60 * 1000
+    private const val RESULT_SHOWN_MS = 10L * 60 * 1000
     private val renewing = AtomicBoolean(false)
+    @Volatile private var renewResult = "none"
+    @Volatile private var renewResultAt = 0L
+
+    /**
+     * How the latest renewal went, for the status line: "busy", "ok", "nowifi",
+     * "refused" or "failed", or "none" once it's old news. A computer can't see
+     * the phone's log, and a success barely moves the expiry it shows, so
+     * without this its Renew button looks dead whatever happens.
+     */
+    fun renewReport(): String =
+        if (renewResult == "busy" || System.currentTimeMillis() - renewResultAt < RESULT_SHOWN_MS) renewResult else "none"
+
+    private fun reportRenewal(ctx: Context, result: String) {
+        renewResult = result
+        renewResultAt = System.currentTimeMillis()
+        TunnelState.notifyListeners()
+        TunnelService.current?.ble?.sendStatus()
+    }
 
     /** How long adbd keeps an unused key, or 0 for never. */
     fun allowedMs(ctx: Context): Long =
@@ -109,7 +128,9 @@ object KeyKeeper {
     /** Uses the key once, now. From [maybeRenew], or the phone's "Renew now". */
     fun renew(ctx: Context, reason: String): Boolean {
         if (!renewing.compareAndSet(false, true)) return false
+        reportRenewal(ctx, "busy")
         Thread {
+            var result = "failed"
             Prefs.setKeyRenewTriedAt(ctx, System.currentTimeMillis())
             // Wireless debugging only exists while USB debugging is on. With
             // "keep ready" off it's normally off between sessions: switch it on
@@ -120,10 +141,13 @@ object KeyKeeper {
                 if (!wasOn) { AdbToggle.set(ctx, true); Thread.sleep(2_000) }
                 WifiBootstrap.withAdb(ctx) { it.shell("true") }
                 TunnelState.log("Debugging permission renewed")
+                result = "ok"
             } catch (e: Exception) {
                 val failures = Prefs.keyRenewFailures(ctx) + 1
                 Prefs.setKeyRenewFailures(ctx, failures)
                 TunnelState.log("Couldn't renew the debugging permission: ${e.message}")
+                if (!WifiBootstrap.wifiConnected(ctx)) result = "nowifi"
+                else if (Prefs.keyLost(ctx)) result = "refused"
                 // Twice in a row on the same network without adbd answering:
                 // its approval for this network was probably withdrawn.
                 if (failures >= 2 && !Prefs.keyLost(ctx)) currentWifi(ctx)?.let { Prefs.removeGoodNetwork(ctx, it) }
@@ -131,6 +155,7 @@ object KeyKeeper {
                 if (!wasOn && !DaemonManager.isDaemonAlive() && !Prefs.keepReady(ctx)) AdbToggle.set(ctx, false)
                 renewing.set(false)
                 Health.changed(ctx)
+                reportRenewal(ctx, result)
             }
         }.start()
         return true

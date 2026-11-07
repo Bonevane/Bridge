@@ -65,7 +65,7 @@ object WifiBootstrap {
             .toSet()
     }.getOrDefault(emptySet())
 
-    private fun wifiConnected(ctx: Context): Boolean {
+    fun wifiConnected(ctx: Context): Boolean {
         val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return false
         return cm.allNetworks.any { n ->
             cm.getNetworkCapabilities(n)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true

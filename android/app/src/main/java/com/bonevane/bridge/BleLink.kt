@@ -455,7 +455,9 @@ class BleLink(private val context: Context) {
                 // (see Health): "issues=keylost,battery", or empty.
                 " issues=${Health.codes(context)}" +
                 // When adbd will forget Bridge's key, so the computers can say "in 2 days".
-                " keyexp=${KeyKeeper.expiresAt(context) ?: 0}"
+                " keyexp=${KeyKeeper.expiresAt(context) ?: 0}" +
+                // How a renewal is going, which is all a computer's Renew button can show.
+                " keyrenew=${KeyKeeper.renewReport()}"
         )
     }
 

@@ -77,6 +77,7 @@ export global AppState {
     in-out property <string> attention-detail;
     in-out property <bool> attention-error;
     in-out property <string> attention-action;   // "usb", "renew" or ""
+    in-out property <bool> key-renewing;
     in-out property <int> attention-more;
     callback attention-fix();
     // Update rows at the top of Actions ("" hides them).
@@ -142,6 +143,7 @@ export global SettingsState {
     in-out property <[HealthItem]> health;
     in-out property <string> key-status;
     in-out property <bool> key-ok: true;
+    in-out property <bool> key-renewing;
     callback health-action(string);
     callback renew-key();
 
@@ -404,7 +406,7 @@ export component MainWindow inherits Window {
                         enabled: !AppState.busy && !AppState.mirroring;
                         clicked => { AppState.attention-fix(); }
                     }
-                    if AppState.attention-action == "renew" : PillButton { text: "Renew now"; clicked => { AppState.attention-fix(); } }
+                    if AppState.attention-action == "renew" : PillButton { text: "Renew now"; enabled: !AppState.key-renewing; clicked => { AppState.attention-fix(); } }
                     if AppState.attention-more > 0 : PillButton {
                         text: AppState.attention-more == 1 ? "1 more" : AppState.attention-more + " more";
                         kind: "outlined";
@@ -645,13 +647,13 @@ export component SettingsWindow inherits Window {
                         Tile {
                             icon: @image-url("icons/warning.svg"); title: item.title; subtitle: item.detail;
                             if item.action == "usb" : PillButton { text: "Set up"; height: 34px; clicked => { SettingsState.health-action("usb"); } }
-                            if item.action == "renew" : PillButton { text: "Renew"; height: 34px; clicked => { SettingsState.health-action("renew"); } }
+                            if item.action == "renew" : PillButton { text: "Renew"; height: 34px; enabled: !SettingsState.key-renewing; clicked => { SettingsState.health-action("renew"); } }
                         }
                         Divider {}
                     }
                     if SettingsState.health-linked : Tile {
                         icon: @image-url("icons/key-round.svg"); title: "Debugging permission"; subtitle: SettingsState.key-status;
-                        PillButton { text: "Renew now"; height: 34px; clicked => { SettingsState.renew-key(); } }
+                        PillButton { text: "Renew now"; height: 34px; enabled: !SettingsState.key-renewing; clicked => { SettingsState.renew-key(); } }
                     }
                 }
                 Muted { text: "Android forgets debugging permissions that go unused for a while (7 days unless changed). The phone renews Bridge's by itself on Wi-Fi it has used before, and Bridge tells you here and in a notification if something needs you."; horizontal-alignment: center; }

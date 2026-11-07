@@ -114,6 +114,8 @@ Jetpack Compose on the phone, SwiftUI on the Mac, Rust and Slint on Windows, and
 1. **Phone:** download `Bridge-<version>.apk` from [Releases](https://github.com/Bonevane/Bridge/releases) and open it (allow installs from your browser when asked). Requires Android 11+ and an arm64 phone, i.e. anything from the last several years.
 2. **Mac:** download `Bridge-<version>.dmg`, open it and drag Bridge onto Applications. Everything it needs is inside the bundle.
    **Windows:** download `Bridge-<version>-windows.zip` and unzip it anywhere. Keep the five files together.
+
+   **Linux (alpha, x86_64):** download `Bridge-<version>-linux-x86_64.zip`, unzip it anywhere and run `Bridge`, keeping the three files together. It adds itself to your app menu. Needs BlueZ, which nearly every desktop has. GNOME shows no tray icon without the AppIndicator extension, and only KDE's notifications have a Reply box. **Not yet tested on real hardware:** reports are welcome.
 3. **Pair, once:** on the phone after allowing all permissions, enable Developer options → USB debugging. Plug in, click **Set Up Over USB** (Bridge's menu on the Mac; Actions or Settings → Pairing on Windows), accept "Allow USB debugging" on the phone with *Always allow*. Unplug. **Mirror Phone.** The first time on each Wi-Fi network Android asks "Allow wireless debugging on this network?"; tick *Always allow*.
 
 macOS will ask for Bluetooth and Notifications the first time; both are needed for the short-range link. On the Mac, Bluetooth pairs the phone in the usual way. Windows needs no Bluetooth pairing at all, and **don't pair the phone in Windows' Bluetooth settings**: it stops Bridge's link working (Bridge spots it and offers to unpair). A Mac and a PC can both be linked to the phone at the same time.
@@ -145,6 +147,17 @@ cd windows && cargo build --release
 ```
 Put `dumbpipe.exe` and platform-tools' `adb.exe`, `AdbWinApi.dll` and `AdbWinUsbApi.dll` next to `Bridge.exe`. The [Windows workflow](.github/workflows/windows.yml) does this and uploads the result as an artifact on every push.
 
+**Linux**
+
+The same crate as Windows; `windows/src/linux/` holds what differs (BlueZ Bluetooth, OpenH264 video, D-Bus notifications and tray).
+
+```bash
+sudo apt install pkg-config nasm libdbus-1-dev libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
+cd windows && cargo build --release
+```
+
+Put `dumbpipe` and platform-tools' `adb` next to `Bridge`. The [Linux workflow](.github/workflows/linux.yml) does this, starts the app under a virtual display, and uploads the result on every push.
+
 Then pair as in step 3 above.
 
 The phone window has a bar beside the picture for Back, Home, Recents, volume, rotate, screenshot, notifications, phone files and screen off. Shortcuts: ⌘B back · ⌘H home · ⌘R recents · ⌘N notifications · ⌘P power · ⌘O screen off · right-click back (Ctrl instead of ⌘ on Windows). Drop files on the window to send them to the phone's Download folder.
@@ -171,6 +184,7 @@ The phone window has a bar beside the picture for Back, Home, Recents, volume, r
 - [x] **Now Playing:** what the phone is playing, with its cover, a seek bar and controls, on the computer
 - [x] **Phone status:** battery, network and mode at a glance
 - [x] **Phone files:** browse the phone's storage and download from it, with search, no mirroring needed; transfers show progress
+- [ ] **Linux client:** built from the Windows code, in alpha until it's been tested on real hardware
 - [ ] **Internet notifications and clipboard on Windows** (the Mac has them)
 - [ ] **Images on the clipboard and Share to Bridge** from the phone
 - [ ] **Auto-pause** when a listed app comes to the foreground

@@ -1,0 +1,66 @@
+name: Linux
+
+on:
+  push:
+    branches: [linux, main, next]
+    paths: ["windows/**", ".github/workflows/linux.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # The oldest supported Ubuntu, because a binary runs on the glibc it was
+    # built against and anything newer, not older.
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+      - name: Build tools and headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config nasm libdbus-1-dev libasound2-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev xvfb imagemagick x11-apps
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test --release
+      - name: Bundle dumbpipe and adb
+        run: |
+          curl -fsSL https://github.com/n0-computer/dumbpipe/releases/download/v0.39.0/dumbpipe-v0.39.0-linux-x86_64.tar.gz | tar xz -C target/release ./dumbpipe
+          curl -fsSL -o pt.zip https://dl.google.com/android/repository/platform-tools-latest-linux.zip
+          unzip -q -j pt.zip platform-tools/adb -d target/release
+      # No Bluetooth or phone here, but this does prove the binary loads its
+      # libraries, opens a window, and keeps running.
+      - name: Start it
+        run: |
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          Xvfb :99 -screen 0 1280x900x24 &
+          export DISPLAY=:99
+          sleep 2
+          dbus-run-session -- bash -c '
+            ./target/release/Bridge & pid=$!
+            sleep 12
+            import -window root "$RUNNER_TEMP/bridge-linux.png"
+            kill -0 $pid || { echo "Bridge died"; exit 1; }
+            ./target/release/Bridge; echo "second launch exited: $?"
+            test -f "$HOME/.local/share/applications/bridge.desktop"
+            kill $pid
+          '
+          cat "$HOME/.config/Bridge/Bridge.log"
+          ! grep -i panic "$HOME/.config/Bridge/Bridge.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Bridge-linux-screenshot
+          path: ${{ runner.temp }}/bridge-linux.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-linux
+          path: |
+            windows/target/release/Bridge
+            windows/target/release/dumbpipe
+            windows/target/release/adb

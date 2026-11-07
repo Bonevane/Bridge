@@ -170,7 +170,7 @@ object Prefs {
         (prefs(ctx).getStringSet("seenApps", emptySet()) ?: emptySet())
             .mapNotNull { it.split('\t', limit = 2).takeIf { p -> p.size == 2 }?.let { p -> p[0] to p[1] } }
             .toMap()
-    /** A computer that has linked: its own name, "mac"/"windows", and when it was last seen. */
+    /** A computer that has linked: its own name, "mac"/"windows"/"linux", and when it was last seen. */
     data class Computer(val name: String, val platform: String, val lastSeen: Long)
 
     fun computers(ctx: Context): List<Computer> =

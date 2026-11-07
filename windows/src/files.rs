@@ -61,7 +61,7 @@ pub fn list(secret: &str, path: &str) -> Result<(String, Vec<Entry>)> {
 
 /// Where downloads land: the user's Downloads folder.
 pub fn downloads_dir() -> PathBuf {
-    std::env::var("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|_| PathBuf::from("."))
+    std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// "photo.jpg" → "photo (1).jpg" …, so a download never overwrites a file.

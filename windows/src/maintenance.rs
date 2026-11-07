@@ -172,13 +172,13 @@ impl App {
                     self.update_control.store(2, Ordering::SeqCst);
                 } else if let Some(r) = self.update_state.release().cloned() {
                     let _ = std::fs::remove_file(updater::zip_file(&r));
-                    let _ = std::fs::remove_file(updater::dir().join(format!("Bridge-{}-windows.zip.part", r.version)));
+                    let _ = std::fs::remove_file(updater::part_file(&r));
                     self.update_state = State::Available(r);
                 }
             }
             "install" => self.install_update(),
             "github" => {
-                let _ = std::process::Command::new("explorer").arg("https://github.com/Bonevane/Bridge/releases/latest").spawn();
+                crate::open_on_desktop("https://github.com/Bonevane/Bridge/releases/latest");
             }
             _ => {}
         }
@@ -345,7 +345,7 @@ impl App {
              else if mins < 48 * 60 { format!("Last checked {} h ago", mins / 60) } else { format!("Last checked {} days ago", mins / 1440) }).into()
         });
         let (title, detail, progress, buttons): (String, String, f32, Vec<UpdateButton>) = match &self.update_state {
-            State::Idle | State::UpToDate => (format!("Bridge {}", updater::current_version()), "Up to date".into(), -1.0, vec![]),
+            State::Idle | State::UpToDate => (format!("Bridge {}", updater::version_label()), "Up to date".into(), -1.0, vec![]),
             State::Checking => ("Checking for updates…".into(), String::new(), -2.0, vec![]),
             State::Available(r) => (format!("Bridge {} is available", r.version), format!("You have {}. Installing restarts Bridge for a few seconds.", updater::current_version()),
                 -1.0, vec![button("Download update", "download", true)]),

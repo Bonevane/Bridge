@@ -21,25 +21,27 @@ pub struct Tunnel {
 }
 
 impl Tunnel {
-    /// `dumbpipe.exe` next to Bridge.exe (the CI build puts it there), or on PATH.
+    /// dumbpipe next to Bridge (the CI build puts it there), or on PATH.
     fn dumbpipe() -> Result<std::path::PathBuf> {
-        let beside = std::env::current_exe()?.with_file_name("dumbpipe.exe");
+        let name = format!("dumbpipe{}", std::env::consts::EXE_SUFFIX);
+        let beside = crate::updater::install_path().with_file_name(&name);
         if beside.exists() {
             return Ok(beside);
         }
-        Ok(std::path::PathBuf::from("dumbpipe.exe"))
+        Ok(std::path::PathBuf::from(name))
     }
 
     pub fn start(ticket: &str) -> Result<Tunnel> {
         let exe = Self::dumbpipe()?;
-        let mut child = Command::new(&exe)
+        let mut command = Command::new(&exe);
+        command
             .args(["connect-tcp", "--addr", &format!("127.0.0.1:{LOCAL_PORT}"), ticket])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .creation_flags_no_window()
-            .spawn()
-            .with_context(|| format!("starting {}", exe.display()))?;
+            .creation_flags_no_window();
+        die_with_this_thread(&mut command);
+        let mut child = command.spawn().with_context(|| format!("starting {}", exe.display()))?;
         tie_to_this_process(&child);
         crate::log!("tunnel", "dumbpipe started");
         if let Some(stderr) = child.stderr.take() {
@@ -71,11 +73,32 @@ impl Drop for Tunnel {
     }
 }
 
+/// Linux's version of the job object below: the kernel kills dumbpipe when
+/// Bridge goes, however it goes. It's tied to the *thread* that started it,
+/// which is why this must only run on the UI thread (it lives as long as Bridge).
+#[cfg(target_os = "linux")]
+fn die_with_this_thread(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
+}
+
+#[cfg(windows)]
+fn die_with_this_thread(_command: &mut Command) {}
+
+#[cfg(target_os = "linux")]
+fn tie_to_this_process(_child: &Child) {}
+
 /// Puts a child in a job object that Windows kills when Bridge exits, for
 /// whatever reason (quit, crash, Task Manager). That's what keeps a stray
 /// dumbpipe from holding the port after a crash. It replaces running
 /// `taskkill /F /IM dumbpipe.exe` before every start, which is the kind of
 /// "kill processes by name" behaviour antivirus heuristics flag.
+#[cfg(windows)]
 fn tie_to_this_process(child: &Child) {
     use std::os::windows::io::AsRawHandle;
     use std::sync::OnceLock;
@@ -113,10 +136,15 @@ pub(crate) trait NoWindow {
     fn creation_flags_no_window(&mut self) -> &mut Self;
 }
 impl NoWindow for Command {
+    #[cfg(windows)]
     fn creation_flags_no_window(&mut self) -> &mut Self {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         self.creation_flags(CREATE_NO_WINDOW)
+    }
+    #[cfg(not(windows))]
+    fn creation_flags_no_window(&mut self) -> &mut Self {
+        self
     }
 }
 

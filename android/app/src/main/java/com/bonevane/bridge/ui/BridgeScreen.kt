@@ -825,7 +825,7 @@ private fun ComputersSection(linked: List<String>, tick: Int) {
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
                 ) {
                     Icon(
-                        if (c.platform == "windows") Icons.Rounded.DesktopWindows else Icons.Rounded.Laptop,
+                        if (c.platform == "mac") Icons.Rounded.Laptop else Icons.Rounded.DesktopWindows,
                         contentDescription = null,
                         tint = if (now) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(22.dp),
@@ -835,7 +835,7 @@ private fun ComputersSection(linked: List<String>, tick: Int) {
                         Text(c.name, style = MaterialTheme.typography.bodyLarge)
                         Text(
                             (if (now) "Linked now" else "Last seen $ago") + " · " +
-                                (if (c.platform == "windows") "Windows" else "Mac"),
+                                (when (c.platform) { "windows" -> "Windows"; "linux" -> "Linux"; else -> "Mac" }),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

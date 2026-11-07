@@ -2,7 +2,7 @@
 name = "bridge-windows"
 version = "0.3.3"
 edition = "2021"
-description = "Bridge for Windows: your Android phone on your PC"
+description = "Bridge for Windows and Linux: your Android phone on your PC"
 license = "Apache-2.0"
 
 [[bin]]
@@ -10,6 +10,30 @@ name = "Bridge"
 path = "src/main.rs"
 
 [dependencies]
+# The pairing handshake (HMAC-SHA256), same as the phone and the Mac.
+hmac = "0.12"
+sha2 = "0.10"
+# App-layer encryption on the plain Bluetooth door (no bond needed).
+aes-gcm = "0.10"
+hex = "0.4"
+rand = "0.8"
+# Clipboard text, both directions.
+arboard = { version = "3", features = ["wayland-data-control"] }
+# Windows toast notifications without a Start Menu shortcut dance.
+# The window, in Windows' own Fluent style.
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-skia", "compat-1-2", "unstable-winit-030"] }
+# Audio: AAC decoding in pure Rust, output through WASAPI (ALSA on Linux).
+symphonia = { version = "0.5", default-features = false, features = ["aac"] }
+cpal = "0.15"
+# Small conveniences.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+anyhow = "1"
+# Updates (updater.rs): the JSON from GitHub and the release zip.
+serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+chrono = "0.4"
+
+[target.'cfg(windows)'.dependencies]
 # Microsoft's own bindings. Only the namespaces we touch, to keep the build small.
 windows = { version = "0.58", features = [
     "Foundation",
@@ -36,34 +60,29 @@ windows = { version = "0.58", features = [
     "UI_Notifications",
     "Data_Xml_Dom",
 ] }
-# The pairing handshake (HMAC-SHA256), same as the phone and the Mac.
-hmac = "0.12"
-sha2 = "0.10"
-# App-layer encryption on the plain Bluetooth door (no bond needed).
-aes-gcm = "0.10"
-hex = "0.4"
-rand = "0.8"
 # Tray icon and its menu.
 tray-icon = "0.19"
-# Clipboard text, both directions.
-arboard = "3"
-# Windows toast notifications without a Start Menu shortcut dance.
-# The window, in Windows' own Fluent style.
-slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-skia", "compat-1-2", "unstable-winit-030"] }
-# Audio: AAC decoding in pure Rust, output through WASAPI.
-symphonia = { version = "0.5", default-features = false, features = ["aac"] }
-cpal = "0.15"
-# Small conveniences.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-anyhow = "1"
-# Updates (updater.rs): HTTPS to GitHub, its JSON, and the release zip.
-# Windows' own TLS (SChannel) rather than rustls/ring: no C code to build,
-# and it trusts what Windows trusts (corporate proxies included).
+# HTTPS with Windows' own TLS (SChannel) rather than rustls/ring: no C code to
+# build, and it trusts what Windows trusts (corporate proxies included).
 ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
 native-tls = "0.2"
-serde_json = "1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-chrono = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# BlueZ, the Linux Bluetooth stack, over D-Bus.
+bluer = { version = "0.17", features = ["bluetoothd"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+futures = "0.3"
+# Tray icon as a StatusNotifierItem: plain D-Bus, so no GTK to depend on.
+ksni = { version = "0.3", default-features = false, features = ["blocking", "tokio"] }
+# Desktop notifications (replies and dismissals need the raw interface).
+zbus = { version = "5", default-features = false, features = ["tokio", "blocking-api"] }
+# H.264 in software, built into the binary: nothing for the user to install.
+openh264 = "0.8"
+# The desktop's keyring for the pairing secret.
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+libc = "0.2"
+# rustls rather than the system OpenSSL, whose version differs between distros.
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 
 [build-dependencies]
 slint-build = "1.18"

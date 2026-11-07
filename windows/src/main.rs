@@ -1,4 +1,5 @@
-//! Bridge for Windows.
+//! Bridge for Windows and Linux. The Linux versions of the platform modules
+//! are in src/linux/ and take the place of the Windows ones at compile time.
 //!
 //! Milestone 1 (done): pair by copying the ticket from the phone; Bluetooth
 //! link with the handshake and app-layer encryption; notifications as
@@ -13,23 +14,36 @@
 //! that a timer drains on the UI thread.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Windows-only events and fields (its pairing trouble, say) are never used here.
+#![cfg_attr(target_os = "linux", allow(dead_code))]
 
 mod audio;
+#[cfg_attr(target_os = "linux", path = "linux/ble.rs")]
 mod ble;
 mod clipboard;
+#[cfg(target_os = "linux")]
+#[path = "linux/desktop.rs"]
+mod desktop;
+mod event;
 mod files;
+#[cfg_attr(target_os = "linux", path = "linux/instance.rs")]
+mod instance;
 mod log;
 mod maintenance;
+#[cfg_attr(target_os = "linux", path = "linux/notify.rs")]
 mod notify;
 mod protocol;
 mod scrcpy;
 mod session;
 mod settings;
 mod store;
+#[cfg_attr(target_os = "linux", path = "linux/tray.rs")]
+mod tray;
 mod tunnel;
 mod twins;
 mod updater;
 mod usb;
+#[cfg_attr(target_os = "linux", path = "linux/video.rs")]
 mod video;
 
 use ble::Event;
@@ -45,6 +59,15 @@ use std::time::{Duration, Instant};
 slint::include_modules!();
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// What this client calls itself to the phone (its "hello").
+const PLATFORM: &str = if cfg!(windows) { "windows" } else { "linux" };
+pub(crate) use instance::{reacquire_instance, release_instance};
+
+/// Opens a folder or a web page with whatever the desktop uses for it.
+pub(crate) fn open_on_desktop(target: impl AsRef<std::ffi::OsStr>) {
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    let _ = std::process::Command::new(opener).arg(target).spawn();
+}
 
 /// Everything the UI thread owns.
 struct App {
@@ -101,7 +124,7 @@ struct App {
     retry_ble_at: Option<Instant>,
     /// This PC's Bluetooth radio (kept alive for its change events) and
     /// whether it's on: None until known, or if there's no adapter at all.
-    radio: Option<windows::Devices::Radios::Radio>,
+    radio: Option<ble::Radio>,
     pc_bluetooth: Option<bool>,
     no_adapter: bool,
     /// The phone is paired in Windows' Bluetooth settings: its name and address.
@@ -220,7 +243,7 @@ impl App {
         ui.set_phone_tunnel_on(self.phone_tunnel_on);
         ui.set_phone_paused(self.phone_paused);
         ui.set_mirroring(self.mirroring);
-        ui.set_version(VERSION.into());
+        ui.set_version(updater::version_label().into());
         // The phone in the top bar, while it's linked.
         let ps = &self.phone_status;
         let battery = ps.get("battery").and_then(|b| b.parse::<i32>().ok()).filter(|b| *b >= 0);
@@ -1168,7 +1191,7 @@ impl App {
                 self.report_twins(true);
                 if let Some(b) = &self.ble {
                     // Who we are, for the phone's Computers list and chips.
-                    let _ = b.send_command(&format!("hello windows {}", computer_name()));
+                    let _ = b.send_command(&format!("hello {PLATFORM} {}", computer_name()));
                     let _ = b.send_command("status");
                 }
             }
@@ -1519,6 +1542,7 @@ fn friendly(raw: &str) -> String {
     RULES.iter().find(|(k, _)| raw.contains(k)).map(|(_, v)| v.to_string()).unwrap_or_else(|| raw.to_string())
 }
 
+#[cfg(windows)]
 /// This PC's name as shown in Settings › System › About, case kept
 /// (COMPUTERNAME is the all-caps NetBIOS form).
 fn computer_name() -> String {
@@ -1533,78 +1557,31 @@ fn computer_name() -> String {
     }
 }
 
+/// The machine's host name.
+#[cfg(target_os = "linux")]
+fn computer_name() -> String {
+    let mut buf = [0u8; 256];
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } == 0;
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(0);
+    if ok && len > 0 { String::from_utf8_lossy(&buf[..len]).into_owned() } else { "PC".into() }
+}
+
 /// 125000 ms → "2:05"; an hour or more → "1:02:05".
 fn clock(ms: f64) -> String {
     let s = (ms / 1000.0) as u64;
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }
 
-/// The navy square with the white mark (assets/icon-32.png, from make-icons.sh).
-fn tray_icon() -> tray_icon::Icon {
-    let img = image::load_from_memory(include_bytes!("../assets/icon-32.png")).expect("tray icon png").into_rgba8();
-    let (w, h) = img.dimensions();
-    tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("icon")
-}
-
-/// One Bridge at a time. A second copy would link to the phone over
-/// Bluetooth from the same PC (the phone saw two subscriptions from one
-/// device and one failed its handshake) and fight the first over the tunnel
-/// port. A second launch asks the running one to show its window, then quits.
-/// Returns the "show yourself" event the running instance waits on.
-fn single_instance() -> Option<windows::Win32::Foundation::HANDLE> {
-    use windows::core::w;
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE};
-    unsafe {
-        // Held as long as this process, which is the point; released only to
-        // hand over to a new version during an update (see release_instance).
-        let mutex = CreateMutexW(None, true, w!("Local\\Bridge-Bonevane-instance"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            if !std::env::args().any(|a| a == "--tray") {
-                if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, w!("Local\\Bridge-Bonevane-show")) {
-                    let _ = SetEvent(ev);
-                }
-            }
-            std::process::exit(0);
-        }
-        if let Ok(m) = mutex { *INSTANCE.lock().unwrap() = m.0 as isize; }
-        CreateEventW(None, false, false, w!("Local\\Bridge-Bonevane-show")).ok()
-    }
-}
-
-/// The single-instance mutex's handle, kept so an update can hand it over.
-static INSTANCE: std::sync::Mutex<isize> = std::sync::Mutex::new(0);
-
-/// Lets go of "the one running Bridge", so the new version can start.
-pub(crate) fn release_instance() {
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::System::Threading::ReleaseMutex;
-    let mut h = INSTANCE.lock().unwrap();
-    if *h != 0 {
-        unsafe {
-            let handle = HANDLE(*h as *mut _);
-            let _ = ReleaseMutex(handle);
-            let _ = CloseHandle(handle);
-        }
-        *h = 0;
-    }
-}
-
-/// Takes it back after an update that didn't go ahead.
-pub(crate) fn reacquire_instance() {
-    use windows::core::w;
-    use windows::Win32::System::Threading::CreateMutexW;
-    let mut h = INSTANCE.lock().unwrap();
-    if *h == 0 {
-        if let Ok(m) = unsafe { CreateMutexW(None, true, w!("Local\\Bridge-Bonevane-instance")) } {
-            *h = m.0 as isize;
-        }
-    }
-}
-
 fn main() {
-    let show_event = single_instance();
+    let show_event = instance::single_instance();
     log::init();
+    updater::remember_install_path();
+    #[cfg(target_os = "linux")]
+    {
+        // Matches StartupWMClass, so the window gets the app menu entry's icon.
+        let _ = slint::set_xdg_app_id("bridge");
+        desktop::install_launcher(updater::install_path());
+    }
     crate::log!("", "Bridge {VERSION} starting");
 
     let window = MainWindow::new().expect("window");
@@ -1612,18 +1589,7 @@ fn main() {
     let files_window = FilesWindow::new().expect("files window");
     let app = Rc::new(RefCell::new(App::new(window.clone_strong(), settings_window.clone_strong(), files_window.clone_strong())));
 
-    // Tray: left-click shows the window; the menu has Open, Settings and Quit.
-    let menu = tray_icon::menu::Menu::new();
-    let show = tray_icon::menu::MenuItem::new("Open Bridge", true, None);
-    let settings_item = tray_icon::menu::MenuItem::new("Settings…", true, None);
-    let quit = tray_icon::menu::MenuItem::new("Quit Bridge", true, None);
-    let _ = menu.append_items(&[&show, &settings_item, &tray_icon::menu::PredefinedMenuItem::separator(), &quit]);
-    let _tray = tray_icon::TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("Bridge")
-        .with_icon(tray_icon())
-        .build()
-        .expect("tray icon");
+    let tray = tray::Tray::new();
 
     // Main window callbacks.
     {
@@ -1748,7 +1714,7 @@ fn main() {
             }
         });
         ui.on_open_log_folder(move || {
-            let _ = std::process::Command::new("explorer").arg(store::data_dir()).spawn();
+            open_on_desktop(store::data_dir());
         });
         let a = app.clone();
         ui.on_quit(move || {
@@ -1764,10 +1730,9 @@ fn main() {
         st.on_changed(move || a.borrow_mut().settings_changed());
         let a = app.clone();
         st.on_copy_ticket(move || {
-            let app = a.borrow();
-            if let Ok(mut c) = arboard::Clipboard::new() {
-                let _ = c.set_text(format!("{} {}", app.creds.ticket, app.creds.secret));
-            }
+            let mut app = a.borrow_mut();
+            let text = format!("{} {}", app.creds.ticket, app.creds.secret);
+            app.clipboard.set(&text);
         });
         let sw = settings_window.as_weak();
         st.on_paste_ticket(move || {
@@ -1848,7 +1813,7 @@ fn main() {
             app.list_files(&p);
         });
         files_window.on_open_downloads(|| {
-            let _ = std::process::Command::new("explorer").arg(files::downloads_dir()).spawn();
+            open_on_desktop(files::downloads_dir());
         });
         // Drops need the secret at drop time (it changes on re-pairing), so
         // read it from the app then rather than capturing it now.
@@ -1887,9 +1852,15 @@ fn main() {
     // Closing the window hides it; the tray brings it back.
     {
         let w = window.as_weak();
+        let mut told = false;
         window.window().on_close_requested(move || {
             if let Some(w) = w.upgrade() {
                 let _ = w.hide();
+            }
+            // Nothing on screen says Bridge is still there without a tray.
+            if !tray::available() && !told {
+                told = true;
+                notify::show("Bridge", "Bridge is still running", "Open it again from your apps to bring the window back.");
             }
             slint::CloseRequestResponse::HideWindow
         });
@@ -1908,51 +1879,44 @@ fn main() {
         let a = app.clone();
         let w = window.as_weak();
         let sw = settings_window.as_weak();
-        let tray_events = tray_icon::menu::MenuEvent::receiver();
-        let tray_clicks = tray_icon::TrayIconEvent::receiver();
         timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
             a.borrow_mut().poll();
             // Minimise = to the tray, like close. Slint has no minimise
             // callback, so watch the state: un-minimise (so a later show()
             // brings a normal window back) and hide.
-            if let Some(w) = w.upgrade() {
+            if let Some(w) = w.upgrade().filter(|_| tray::available()) {
                 if w.window().is_minimized() {
                     w.window().set_minimized(false);
                     let _ = w.hide();
                 }
             }
-            if let Some(s) = sw.upgrade() {
+            if let Some(s) = sw.upgrade().filter(|_| tray::available()) {
                 if s.window().is_minimized() {
                     s.window().set_minimized(false);
                     let _ = s.hide();
                 }
             }
-            while let Ok(e) = tray_events.try_recv() {
-                if e.id == show.id() {
-                    if let Some(w) = w.upgrade() {
-                        let _ = w.show();
+            while let Some(action) = tray.poll() {
+                match action {
+                    tray::TrayAction::Open => {
+                        if let Some(w) = w.upgrade() {
+                            let _ = w.show();
+                        }
                     }
-                } else if e.id == settings_item.id() {
-                    if let Some(s) = sw.upgrade() {
-                        let _ = s.show();
+                    tray::TrayAction::Settings => {
+                        if let Some(s) = sw.upgrade() {
+                            let _ = s.show();
+                        }
                     }
-                } else if e.id == quit.id() {
-                    a.borrow_mut().disconnect();
-                    let _ = slint::quit_event_loop();
+                    tray::TrayAction::Quit => {
+                        a.borrow_mut().disconnect();
+                        let _ = slint::quit_event_loop();
+                    }
                 }
             }
             // Someone launched Bridge again: show this one instead.
-            if let Some(ev) = show_event {
-                use windows::Win32::Foundation::WAIT_OBJECT_0;
-                use windows::Win32::System::Threading::WaitForSingleObject;
-                if unsafe { WaitForSingleObject(ev, 0) } == WAIT_OBJECT_0 {
-                    if let Some(w) = w.upgrade() {
-                        let _ = w.show();
-                    }
-                }
-            }
-            while let Ok(e) = tray_clicks.try_recv() {
-                if let tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = e {
+            if let Some(ev) = &show_event {
+                if instance::show_requested(ev) {
                     if let Some(w) = w.upgrade() {
                         let _ = w.show();
                     }

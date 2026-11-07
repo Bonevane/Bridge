@@ -1,4 +1,4 @@
-//! Keeps Bridge for Windows up to date from the project's GitHub releases.
+//! Keeps Bridge for Windows and Linux up to date from the project's GitHub releases.
 //!
 //! - Checks once a day (unless switched off) and whenever asked. Nothing is
 //!   downloaded until someone clicks Update.
@@ -6,7 +6,7 @@
 //!   connection retries by itself, a pause or a restart carries on.
 //! - The zip must match the release's SHA256SUMS and contain Bridge.exe.
 //! - Installing stops everything cleanly first (main.rs), then swaps the
-//!   files: Windows lets a running .exe or .dll be *renamed*, so each file is
+//!   files: a running program can be *renamed* on both systems, so each file is
 //!   moved aside to `.old` and the new one put in its place. The new Bridge is
 //!   started with `--after-update`, and this one waits for it to say it's up.
 //!   If it doesn't, the old files go back and this copy carries on.
@@ -26,7 +26,17 @@ use crate::ble::Event;
 
 const API: &str = "https://api.github.com/repos/Bonevane/Bridge/releases/latest";
 /// The event the new copy sets once it's running (see `signal_updated`).
+#[cfg(windows)]
 const UPDATED_EVENT: &str = "Local\\Bridge-Bonevane-updated";
+/// How this platform's release file is named after `Bridge-<version>`.
+#[cfg(windows)]
+const ASSET_TAG: &str = "-windows";
+#[cfg(target_os = "linux")]
+const ASSET_TAG: &str = "-linux-x86_64";
+#[cfg(windows)]
+const PROGRAM: &str = "Bridge.exe";
+#[cfg(target_os = "linux")]
+const PROGRAM: &str = "Bridge";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
@@ -77,6 +87,26 @@ pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// The version as shown to people. Linux is an alpha until it's been tested
+/// on real hardware.
+pub fn version_label() -> String {
+    if cfg!(target_os = "linux") { format!("{} (alpha)", current_version()) } else { current_version().to_string() }
+}
+
+static INSTALL_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Called first thing in main. On Linux, asking later gives the wrong answer:
+/// once an update has renamed the running file, current_exe() follows it to
+/// `Bridge.old`, and that's what would be started again.
+pub fn remember_install_path() {
+    install_path();
+}
+
+/// Where Bridge's program file lives (the bundled tools sit beside it).
+pub fn install_path() -> &'static Path {
+    INSTALL_PATH.get_or_init(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from(PROGRAM)))
+}
+
 /// "0.3.10" is newer than "0.3.9"; unparsable parts count as 0.
 pub fn is_newer(a: &str, b: &str) -> bool {
     let parse = |v: &str| v.split(['.', '-']).map(|p| p.parse::<i64>().unwrap_or(0)).collect::<Vec<_>>();
@@ -91,7 +121,9 @@ pub fn is_newer(a: &str, b: &str) -> bool {
 }
 
 fn agent(redirects: u32) -> ureq::Agent {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut builder = ureq::AgentBuilder::new();
+    #[cfg(windows)]
     if let Ok(tls) = native_tls::TlsConnector::new() {
         builder = builder.tls_connector(Arc::new(tls));
     }
@@ -99,7 +131,7 @@ fn agent(redirects: u32) -> ureq::Agent {
         .redirects(redirects)
         .timeout_connect(Duration::from_secs(15))
         .timeout_read(Duration::from_secs(30))
-        .user_agent(&format!("Bridge-Windows/{}", current_version()))
+        .user_agent(&format!("Bridge-{}/{}", if cfg!(windows) { "Windows" } else { "Linux" }, current_version()))
         .build()
 }
 
@@ -108,8 +140,8 @@ pub fn dir() -> PathBuf {
     let _ = fs::create_dir_all(&d);
     d
 }
-fn part_file(r: &Release) -> PathBuf { dir().join(format!("Bridge-{}-windows.zip.part", r.version)) }
-pub fn zip_file(r: &Release) -> PathBuf { dir().join(format!("Bridge-{}-windows.zip", r.version)) }
+pub fn part_file(r: &Release) -> PathBuf { dir().join(format!("Bridge-{}{ASSET_TAG}.zip.part", r.version)) }
+pub fn zip_file(r: &Release) -> PathBuf { dir().join(format!("Bridge-{}{ASSET_TAG}.zip", r.version)) }
 
 // MARK: - Checking
 
@@ -138,7 +170,7 @@ fn check_now() -> Checked {
     };
     let version = json["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
     let assets = json["assets"].as_array().cloned().unwrap_or_default();
-    let zip = assets.iter().find(|a| a["name"].as_str().unwrap_or("").ends_with("-windows.zip"));
+    let zip = assets.iter().find(|a| a["name"].as_str().unwrap_or("").ends_with(&format!("{ASSET_TAG}.zip")));
     let sums = assets.iter().find(|a| a["name"].as_str().unwrap_or("").starts_with("SHA256SUMS"));
     let Some(zip) = zip else { return Checked::Current };
     if !is_newer(&version, current_version()) {
@@ -339,8 +371,8 @@ fn verify(r: &Release) -> std::result::Result<(), (String, bool)> {
     let file = File::open(&path).map_err(|e| (format!("Couldn't open the download: {e}"), true))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|_| ("The download isn't a valid zip.".to_string(), true))?;
     let names: Vec<String> = (0..zip.len()).filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string())).collect();
-    if !names.iter().any(|n| n.eq_ignore_ascii_case("Bridge.exe")) {
-        return Err(("The download doesn't contain Bridge.exe.".into(), true));
+    if !names.iter().any(|n| n.eq_ignore_ascii_case(PROGRAM)) {
+        return Err((format!("The download doesn't contain {PROGRAM}."), true));
     }
     if names.iter().any(|n| n.contains(['/', '\\']) || n.contains("..")) {
         return Err(("The download has an unexpected layout, so it won't be installed.".into(), true));
@@ -348,6 +380,18 @@ fn verify(r: &Release) -> std::result::Result<(), (String, bool)> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn free_space(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+#[cfg(windows)]
 fn free_space(path: &Path) -> Option<u64> {
     use windows::core::HSTRING;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -377,11 +421,10 @@ impl Swap {
 }
 
 /// Moves each current file aside and writes the new one. Running programs
-/// (this Bridge.exe, an adb server) can be renamed on Windows, just not
-/// overwritten, which is what makes an in-place update possible.
+/// (this Bridge, an adb server) can be renamed, just not overwritten, which
+/// is what makes an in-place update possible.
 pub fn swap_in(r: &Release) -> Result<Swap> {
-    let exe = std::env::current_exe()?;
-    let dir = exe.parent().ok_or_else(|| anyhow!("no folder for Bridge.exe"))?.to_path_buf();
+    let dir = install_path().parent().ok_or_else(|| anyhow!("no folder for {PROGRAM}"))?.to_path_buf();
     let mut zip = zip::ZipArchive::new(File::open(zip_file(r))?)?;
     let mut swap = Swap { dir: dir.clone(), files: vec![] };
     for i in 0..zip.len() {
@@ -395,6 +438,12 @@ pub fn swap_in(r: &Release) -> Result<Swap> {
             std::io::copy(&mut entry, &mut out)?;
             out.sync_all()?;
             drop(out);
+            // Everything in the zip is a program, and a new file isn't executable.
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
+            }
             let old = dir.join(format!("{name}.old"));
             let _ = fs::remove_file(&old);
             if target.exists() { fs::rename(&target, &old).with_context(|| format!("moving the old {name} aside"))?; }
@@ -411,15 +460,44 @@ pub fn swap_in(r: &Release) -> Result<Swap> {
     Ok(swap)
 }
 
-/// Starts the new Bridge.exe and waits (on this thread) up to 30 s for it to
-/// say it's running. Err means it didn't, and the caller should undo.
+/// Starts the new Bridge and waits (on this thread) up to 30 s for it to say
+/// it's running. Err means it didn't, and the caller should undo.
+#[cfg(target_os = "linux")]
+pub fn launch_and_wait() -> Result<()> {
+    use std::os::unix::net::UnixListener;
+    let listener = UnixListener::bind_addr(&crate::instance::address("updated")?).context("waiting for the new version")?;
+    listener.set_nonblocking(true)?;
+    let mut child = std::process::Command::new(install_path()).arg("--after-update").spawn().context("starting the new version")?;
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(30) {
+        if listener.accept().is_ok() {
+            return Ok(());
+        }
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break; // it has already gone, so it won't be calling
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(anyhow!("the new version didn't start"))
+}
+
+/// Called by the new copy once it's up (`--after-update`).
+#[cfg(target_os = "linux")]
+pub fn signal_updated() {
+    if let Ok(address) = crate::instance::address("updated") {
+        let _ = std::os::unix::net::UnixStream::connect_addr(&address);
+    }
+}
+
+#[cfg(windows)]
 pub fn launch_and_wait() -> Result<()> {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
     let event = unsafe { CreateEventW(None, true, false, &HSTRING::from(UPDATED_EVENT))? };
-    let exe = std::env::current_exe()?;
-    let mut child = std::process::Command::new(&exe).arg("--after-update").spawn().context("starting the new version")?;
+    let mut child = std::process::Command::new(install_path()).arg("--after-update").spawn().context("starting the new version")?;
     let waited = unsafe { WaitForSingleObject(event, 30_000) };
     unsafe { let _ = CloseHandle(event); }
     if waited == WAIT_OBJECT_0 {
@@ -430,6 +508,7 @@ pub fn launch_and_wait() -> Result<()> {
 }
 
 /// Called by the new copy once it's up (`--after-update`).
+#[cfg(windows)]
 pub fn signal_updated() {
     use windows::core::HSTRING;
     use windows::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
@@ -445,8 +524,7 @@ pub fn clean_up_later() {
     std::thread::spawn(|| {
         for wait in [3u64, 10, 30] {
             std::thread::sleep(Duration::from_secs(wait));
-            let Ok(exe) = std::env::current_exe() else { return };
-            let Some(dir) = exe.parent() else { return };
+            let Some(dir) = install_path().parent() else { return };
             let mut left = 0;
             for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
                 let p = entry.path();
@@ -459,7 +537,7 @@ pub fn clean_up_later() {
         }
         for entry in fs::read_dir(dir()).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            let v = name.trim_start_matches("Bridge-").split("-windows").next().unwrap_or("").to_string();
+            let v = name.trim_start_matches("Bridge-").split(ASSET_TAG).next().unwrap_or("").to_string();
             if !is_newer(&v, current_version()) { let _ = fs::remove_file(entry.path()); }
         }
     });
@@ -469,9 +547,9 @@ pub fn clean_up_later() {
 /// one: the adb server Bridge started (asked politely first), a stray
 /// dumbpipe. Anything from elsewhere (Android Studio's adb) is left alone.
 pub fn stop_own_helpers() {
-    let Ok(exe) = std::env::current_exe() else { return };
+    let exe = install_path();
     let Some(dir) = exe.parent() else { return };
-    let adb = dir.join("adb.exe");
+    let adb = dir.join(format!("adb{}", std::env::consts::EXE_SUFFIX));
     let adb_name = adb.to_string_lossy().to_lowercase();
     if adb.exists() && own_processes(dir).iter().any(|(_, p)| p.to_string_lossy().to_lowercase() == adb_name) {
         let _ = std::process::Command::new(&adb).arg("kill-server").output();
@@ -484,6 +562,26 @@ pub fn stop_own_helpers() {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn own_processes(dir: &Path) -> Vec<(u32, PathBuf)> {
+    let me = std::process::id();
+    let mut out = vec![];
+    for entry in fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        if pid == me { continue; }
+        // Unreadable for other users' processes, which aren't ours to stop anyway.
+        let Ok(path) = fs::read_link(entry.path().join("exe")) else { continue };
+        if path.parent() == Some(dir) { out.push((pid, path)); }
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn terminate(pid: u32) {
+    unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+}
+
+#[cfg(windows)]
 fn own_processes(dir: &Path) -> Vec<(u32, PathBuf)> {
     use windows::core::PWSTR;
     use windows::Win32::Foundation::CloseHandle;
@@ -511,6 +609,7 @@ fn own_processes(dir: &Path) -> Vec<(u32, PathBuf)> {
     out
 }
 
+#[cfg(windows)]
 fn terminate(pid: u32) {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};

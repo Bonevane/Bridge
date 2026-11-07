@@ -22,21 +22,21 @@ const PACKAGE: &str = "com.bonevane.bridge";
 const ACTIVITY: &str = "com.bonevane.bridge/.MainActivity";
 const TICKET_URI: &str = "content://com.bonevane.bridge.ticket/ticket";
 
-/// Beside Bridge.exe (CI bundle), then the SDK's usual place, then PATH.
+/// Beside Bridge (CI bundle), then the SDK's usual place, then PATH.
 fn adb() -> Result<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        let beside = exe.with_file_name("adb.exe");
-        if beside.exists() {
-            return Ok(beside);
-        }
+    let name = format!("adb{}", std::env::consts::EXE_SUFFIX);
+    let beside = crate::updater::install_path().with_file_name(&name);
+    if beside.exists() {
+        return Ok(beside);
     }
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let sdk = std::path::PathBuf::from(local).join("Android").join("Sdk").join("platform-tools").join("adb.exe");
-        if sdk.exists() {
-            return Ok(sdk);
-        }
+    #[cfg(windows)]
+    let sdk = std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(l).join("Android").join("Sdk"));
+    #[cfg(target_os = "linux")]
+    let sdk = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Android").join("Sdk"));
+    if let Some(sdk) = sdk.map(|s| s.join("platform-tools").join(&name)).filter(|s| s.exists()) {
+        return Ok(sdk);
     }
-    Ok(std::path::PathBuf::from("adb.exe"))
+    Ok(std::path::PathBuf::from(name))
 }
 
 /// Runs adb with the arguments, returns combined stdout+stderr.

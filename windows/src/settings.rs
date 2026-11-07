@@ -110,12 +110,18 @@ impl Settings {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn apply_launch_at_login(on: bool) {
+    crate::desktop::set_launch_at_login(crate::updater::install_path(), on);
+}
+
 /// HKCU\Software\Microsoft\Windows\CurrentVersion\Run, the per-user autostart list.
 ///
 /// Written with the registry API, and only when the choice changes. It used
 /// to run a hidden `reg.exe add …\Run` on every settings save: exactly the
 /// "spawns a hidden process to install itself at startup" pattern antivirus
 /// heuristics look for, and part of why Bridge.exe was flagged.
+#[cfg(windows)]
 fn apply_launch_at_login(on: bool) {
     use std::sync::Mutex;
     use windows::core::{HSTRING, PCWSTR};

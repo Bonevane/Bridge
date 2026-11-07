@@ -38,6 +38,7 @@ jobs:
       - name: Start it
         run: |
           export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          export XDG_CONFIG_HOME="$HOME/.config"
           Xvfb :99 -screen 0 1280x900x24 &
           export DISPLAY=:99
           sleep 2
@@ -57,10 +58,12 @@ jobs:
         with:
           name: Bridge-linux-screenshot
           path: ${{ runner.temp }}/bridge-linux.png
+      # Zipped here because artifacts lose the executable bit; the zip keeps it.
+      - name: Package
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          zip -j "Bridge-$version-linux-x86_64.zip" target/release/Bridge target/release/dumbpipe target/release/adb
       - uses: actions/upload-artifact@v4
         with:
           name: Bridge-linux
-          path: |
-            windows/target/release/Bridge
-            windows/target/release/dumbpipe
-            windows/target/release/adb
+          path: windows/Bridge-*-linux-x86_64.zip

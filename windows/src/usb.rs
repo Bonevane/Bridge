@@ -7,8 +7,13 @@
 //! phone app's own ADB key (once per install), starts the helper over the
 //! cable, and hands the phone back to Nearby mode.
 //!
-//! `adb.exe` comes from Android's platform-tools; the CI build puts it next
-//! to Bridge.exe with its two DLLs. It is only ever used over the cable.
+//! adb comes from Android's platform-tools; the CI build puts it next to
+//! Bridge (on Windows with its two DLLs). It is only ever used over the cable.
+//!
+//! Linux only lets a normal user open a USB device that a udev rule allows,
+//! and has none for phones out of the box: adb then lists the phone as "no
+//! permissions". Bridge installs the rule itself, once, behind the system's
+//! own password prompt (see [allow_usb]).
 
 use crate::ble::Event;
 use crate::store::Credentials;
@@ -58,6 +63,63 @@ struct Phone {
     name: String,
 }
 
+/// The state `adb devices` gives a phone it isn't allowed to open: the line
+/// reads "no permissions (…)", and the first word is all [usb_devices] keeps.
+const NO_PERMISSIONS: &str = "no";
+
+/// The udev rule (assets/51-bridge-android.rules, which says what it matches).
+const UDEV_RULE: &str = include_str!("../assets/51-bridge-android.rules");
+const UDEV_RULE_PATH: &str = "/etc/udev/rules.d/51-bridge-android.rules";
+
+/// Installs the udev rule as root through pkexec, which shows the desktop's
+/// own password prompt (Bridge never sees the password), then has udev apply
+/// it to what's already plugged in. The rule goes in on stdin, so nothing
+/// but fixed text reaches the root shell.
+fn allow_usb() -> Result<()> {
+    use std::io::Write;
+    let script = format!(
+        "cat > {UDEV_RULE_PATH} && chmod 644 {UDEV_RULE_PATH} && udevadm control --reload-rules && udevadm trigger --subsystem-match=usb --action=change"
+    );
+    let manual = format!(
+        "Or run this in a terminal, then unplug the phone and plug it back in:\n\
+         echo '{}' | sudo tee {UDEV_RULE_PATH} && sudo udevadm control --reload-rules",
+        UDEV_RULE.lines().filter(|l| !l.starts_with('#')).collect::<String>()
+    );
+    let mut child = match Command::new("pkexec").args(["/bin/sh", "-c", &script]).stdin(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(_) => bail!("Linux needs to allow Bridge to use phones over USB, and there's no password prompt (pkexec) on this computer. {manual}"),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(UDEV_RULE.as_bytes());
+    }
+    let status = child.wait()?;
+    match status.code() {
+        Some(0) => {
+            crate::log!("usb", "installed {UDEV_RULE_PATH}");
+            Ok(())
+        }
+        // pkexec: 126 = the prompt was dismissed, 127 = not authorised.
+        Some(126) | Some(127) => bail!("Bridge needs your password once to use phones over USB. Run Set up over USB again and enter it when asked. {manual}"),
+        _ => bail!("Couldn't allow USB access ({status}). {manual}"),
+    }
+}
+
+/// After the rule: adb opened the phone while it wasn't allowed to, so start
+/// it afresh, and give udev a few seconds to apply the rule.
+fn wait_for_access(adb: &std::path::Path) -> Vec<Phone> {
+    run(adb, &["kill-server"]);
+    run(adb, &["start-server"]);
+    let mut phones = usb_devices(&run(adb, &["devices", "-l"]));
+    for _ in 0..10 {
+        if !phones.iter().any(|p| p.state == NO_PERMISSIONS) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        phones = usb_devices(&run(adb, &["devices", "-l"]));
+    }
+    phones
+}
+
 /// Parses `adb devices -l`, keeping only phones on USB (not TCP endpoints).
 fn usb_devices(listing: &str) -> Vec<Phone> {
     listing
@@ -98,9 +160,18 @@ fn flow(events: &Sender<Event>) -> Result<Credentials> {
     progress(events, "Looking for your phone on USB…");
     let probe = run(&adb, &["start-server"]);
     if probe.contains("not recognized") || probe.starts_with("adb: ") {
-        bail!("adb.exe isn't available. Put Android's platform-tools next to Bridge.exe (adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll).");
+        if cfg!(windows) {
+            bail!("adb.exe isn't available. Put Android's platform-tools next to Bridge.exe (adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll).");
+        }
+        bail!("adb isn't available. Keep the adb file that came with Bridge next to it.");
     }
-    let phones = usb_devices(&run(&adb, &["devices", "-l"]));
+    let mut phones = usb_devices(&run(&adb, &["devices", "-l"]));
+    if cfg!(target_os = "linux") && phones.iter().any(|p| p.state == NO_PERMISSIONS) {
+        progress(events, "Linux needs your password once to let Bridge use phones over USB…");
+        allow_usb()?;
+        progress(events, "Looking for your phone on USB…");
+        phones = wait_for_access(&adb);
+    }
     let phone = match phones.len() {
         0 => bail!("No phone found on USB. Plug it in, unlock it, and turn on USB debugging."),
         1 => &phones[0],
@@ -108,6 +179,7 @@ fn flow(events: &Sender<Event>) -> Result<Credentials> {
     };
     match phone.state.as_str() {
         "device" => {}
+        NO_PERMISSIONS => bail!("This computer still won't let Bridge use the phone over USB. Unplug it, plug it back in, and run Set up over USB again."),
         "unauthorized" => bail!("The phone is waiting for you: accept \"Allow USB debugging?\" on it (tick Always allow), then run Set up over USB again."),
         other => bail!("The phone is {other}; unlock it and check USB debugging is on."),
     }
@@ -225,6 +297,14 @@ mod tests {
         assert_eq!(phones[0].serial, "4B121FDAP000UK");
         assert_eq!(phones[0].name, "Pixel 9 Pro");
         assert_eq!(phones[0].state, "device");
+    }
+
+    #[test]
+    fn spots_a_phone_linux_wont_open() {
+        let listing = "List of devices attached\n4B121FDAP000UK         no permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html] usb:1-1\n";
+        let phones = usb_devices(listing);
+        assert_eq!(phones.len(), 1);
+        assert_eq!(phones[0].state, NO_PERMISSIONS);
     }
 
     #[test]

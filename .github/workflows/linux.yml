@@ -28,6 +28,15 @@ jobs:
         run: cargo build --release
       - name: Test
         run: cargo test --release
+      # No phone here either, but the real udev can at least read the rule
+      # Set up over USB installs, and would complain about any mistake in it.
+      - name: Check the USB rule
+        run: |
+          sudo cp assets/51-bridge-android.rules /etc/udev/rules.d/
+          sudo udevadm control --reload-rules
+          out=$(sudo udevadm test /sys/bus/usb/devices/usb1 2>&1)
+          echo "$out" | grep -i "51-bridge" || true
+          ! echo "$out" | grep -iE "51-bridge.*(invalid|error|unknown|ignoring)"
       - name: Bundle dumbpipe and adb
         run: |
           curl -fsSL https://github.com/n0-computer/dumbpipe/releases/download/v0.39.0/dumbpipe-v0.39.0-linux-x86_64.tar.gz | tar xz -C target/release ./dumbpipe

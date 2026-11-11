@@ -1,0 +1,7 @@
+# Installed by Bridge so Set up over USB can reach the phone: gives whoever is
+# sitting at this computer access to any Android phone in USB debugging mode.
+# It matches adb's own USB interface (class ff, subclass 42, protocol 01), so
+# it works for every phone maker without a list of vendor IDs.
+# Numbered 51 so it runs after udev has read the interfaces (50) and before
+# logind turns the uaccess tag into access for the user (73).
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ff4201:*", MODE="0660", TAG+="uaccess"

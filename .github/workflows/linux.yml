@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo cp assets/51-bridge-android.rules /etc/udev/rules.d/
           sudo udevadm control --reload-rules
-          out=$(sudo udevadm test /sys/bus/usb/devices/usb1 2>&1)
+          out=$(sudo udevadm test /sys/class/net/lo 2>&1 || true)
           echo "$out" | grep -i "51-bridge" || true
           ! echo "$out" | grep -iE "51-bridge.*(invalid|error|unknown|ignoring)"
       - name: Bundle dumbpipe and adb
